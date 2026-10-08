@@ -1,26 +1,29 @@
-const GROQ_MODEL = process.env["GROQ_MODEL"]?.trim() || "openai/gpt-oss-120b";
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const MISTRAL_MODEL = "mistral-small-latest";
 
-class GroqError extends Error {
+type ModelMessage = { role: "user" | "assistant"; content: string };
+const MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions";
+
+class MistralError extends Error {
   statusCode?: number;
   constructor(message: string, statusCode?: number) {
     super(message);
-    this.name = "GroqError";
+    this.name = "MistralError";
     this.statusCode = statusCode;
   }
 }
 
-function groqErrorMessage(status: number, detail: string): string {
+function mistralErrorMessage(status: number, body: string): string {
+  const message = body.trim();
   if (status === 401) {
-    return "Groq rejected the API key. Check GROQ_API_KEY in your Vercel environment variables and redeploy.";
+    return "Mistral rejected the API key. Check MISTRAL_API_KEY in your Vercel environment variables and redeploy.";
   }
-  if (status === 403) {
-    return `Groq denied the request${detail ? `: ${detail}` : "."}`;
+  if (status === 402) {
+    return "Mistral requires billing for this request. Check your Mistral Studio plan and usage limits.";
   }
   if (status === 429) {
-    return "Groq rate limit reached. Please wait a moment and try again.";
+    return "Mistral rate limit reached. Please wait a moment and try again.";
   }
-  return `Groq request failed${detail ? `: ${detail}` : ". Please try again."}`;
+  return `Mistral request failed${message ? `: ${message.slice(0, 1000)}` : ` (HTTP ${status}).`}`;
 }
 
 /** Appended to every AI system prompt: the student's materials are the primary source. */
@@ -46,54 +49,45 @@ QUALITY RULES:
 - Focus on important testable ideas rather than trivia.
 `;
 
-async function callGroq(system: string, messages: ModelMessage[]): Promise<string> {
-  const groqKey = process.env["GROQ_API_KEY"]?.trim();
-  if (!groqKey) {
-    throw new GroqError(
-      "Groq is not configured on the server. Set GROQ_API_KEY in the Vercel environment variables, then redeploy.",
+async function callMistral(system: string, messages: ModelMessage[]): Promise<string> {
+  const mistralKey = process.env["MISTRAL_API_KEY"]?.trim();
+  if (!mistralKey) {
+    throw new MistralError(
+      "Mistral is not configured on the server. Set MISTRAL_API_KEY in the Vercel environment variables, then redeploy.",
     );
   }
 
-  const response = await fetch(GROQ_URL, {
+  const response = await fetch(MISTRAL_URL, {
     method: "POST",
     headers: {
+      Authorization: `Bearer ${mistralKey}`,
       "Content-Type": "application/json",
-      Authorization: `Bearer ${groqKey}`,
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model: MISTRAL_MODEL,
+      temperature: 0.2,
       messages: [
         { role: "system", content: system },
-        ...messages.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
+        ...messages.map((message) => ({ role: message.role, content: message.content })),
       ],
-      temperature: 0.2,
     }),
   });
 
-  const raw = await response.text();
-  let data: any = null;
-  try {
-    data = raw ? JSON.parse(raw) : null;
-  } catch {
-    data = null;
-  }
-
   if (!response.ok) {
-    const detail = data?.error?.message || raw || `HTTP ${response.status}`;
-    throw new GroqError(groqErrorMessage(response.status, detail), response.status);
+    const body = await response.text();
+    throw new MistralError(mistralErrorMessage(response.status, body), response.status);
   }
 
-  const text = data?.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new GroqError("Groq returned an empty response.");
+  const payload = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string | null } }>;
+  };
+  const text = payload.choices?.[0]?.message?.content?.trim();
+  if (!text) throw new MistralError("Mistral returned an empty response.");
   return text;
 }
 
-async function aiTextOnce(system: string, messages: ModelMessage[]): Promise<string> {
-  return callGroq(system, messages);
-}
-
 function retryable(err: unknown) {
-  const status = err instanceof GroqError ? err.statusCode : undefined;
+  const status = err instanceof MistralError ? err.statusCode : undefined;
   return status === 429 || (typeof status === "number" && status >= 500);
 }
 
@@ -104,13 +98,22 @@ export async function aiText(
 ): Promise<string> {
   if (opts.grounded !== false) system += GROUNDING;
 
-  try {
-    return await aiTextOnce(system, messages);
-  } catch (e) {
-    if (!retryable(e)) throw e instanceof Error ? e : new Error("AI request failed.");
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    return aiTextOnce(system, messages);
+  // Mistral Free mode can temporarily rate-limit or return a transient 5xx.
+  // Retry a few times instead of failing an entire study-set generation.
+  const delays = [1000, 2000, 4000];
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    try {
+      return await callMistral(system, messages);
+    } catch (error) {
+      lastError = error;
+      if (!retryable(error) || attempt === delays.length) break;
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+    }
   }
+
+  throw lastError instanceof Error ? lastError : new Error("Mistral request failed. Please try again.");
 }
 
 export function parseJson<T>(text: string): T {

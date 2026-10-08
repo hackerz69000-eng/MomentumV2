@@ -35,7 +35,7 @@ Set these environment variables in Vercel for the environments you deploy to:
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
 - `VITE_SUPABASE_PROJECT_ID` (if used by the client)
-- `GROQ_API_KEY` for AI study generation
+- `MISTRAL_API_KEY` for AI study generation
 - `LOVABLE_API_KEY` for audio/transcription features that use the Lovable AI gateway
 
 The `VITE_` Supabase values are intentionally public client configuration; never put service-role or other private secrets in a `VITE_` variable.

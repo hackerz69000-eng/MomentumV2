@@ -2,5 +2,5 @@
   "name": "Momentum",
   "description": "Momentum is an AI study platform that turns your study material into notes, flashcards, quizzes, guided study sessions, and tutor support.",
   "permissions": [],
-  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GROQ_API"]
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
