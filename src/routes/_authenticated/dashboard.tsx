@@ -17,6 +17,7 @@ import { SessionHistory } from "@/components/SessionHistory";
 import { PomodoroTimer } from "@/components/PomodoroTimer";
 import { StudyAnalytics } from "@/components/StudyAnalytics";
 import { MilestoneRewards } from "@/components/MilestoneRewards";
+import { ProgressionHub } from "@/components/ProgressionHub";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -116,6 +117,8 @@ function Dashboard() {
       <section className="px-5 md:px-8 pt-6">
         <MilestoneRewards />
       </section>
+
+      <ProgressionHub />
 
       {isLoading ? (
         <div className="grid place-items-center py-24">

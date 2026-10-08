@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { BarChart3, Clock3 } from "lucide-react";
-import { Bar, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { getSessionHistory, HISTORY_EVENT, type StudySessionRecord } from "./SessionHistory";
 
 function minutesFromRecord(record: StudySessionRecord) {
