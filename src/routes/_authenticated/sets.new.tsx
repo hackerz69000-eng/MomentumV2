@@ -8,8 +8,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { processSet, ocrFile } from "@/lib/study.functions";
 import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
-import { saveLocalSet } from "@/lib/local-store";
-import { generateStudySetContent } from "@/lib/study-generator";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/sets/new")({
@@ -89,22 +87,21 @@ function NewSet() {
       await extract();
       return;
     }
+
     try {
       const material = text.trim();
       if (material.length < 30) {
         toast.error("Please add study material or upload a document to proceed.");
         return;
       }
+
       setStage("generating");
 
-      const generated = generateStudySetContent(material, name.trim(), subject.trim());
-      const localId =
-        "set_" + Math.random().toString(36).substring(2, 9) + "_" + Date.now().toString(36);
-
-      // Save locally immediately so set and 20 flashcards exist unconditionally
-      saveLocalSet(
-        {
-          id: localId,
+      // Create the real Supabase study set first. This keeps the set ID used by
+      // Quiz, Exam, Recall, Tutor, Notes and Flashcards consistent everywhere.
+      const { data: sbData, error: insertError } = await supabase
+        .from("study_sets")
+        .insert({
           user_id: user.id,
           name: name.trim(),
           subject: subject.trim(),
@@ -114,84 +111,34 @@ function NewSet() {
           material_source: mode,
           material_filename:
             mode === "pdf"
-              ? files
-                  .map((f) => f.name)
-                  .join(", ")
-                  .slice(0, 300)
+              ? files.map((f) => f.name).join(", ").slice(0, 300)
               : null,
-          notes: generated.notes,
-          status: "ready",
-        },
-        generated.cards.map((c, i) => ({
-          question: c.q,
-          answer: c.a,
-          topic: c.t,
-          position: i,
-        })),
-      );
+          status: "processing",
+        })
+        .select("id")
+        .single();
 
-      // Also attempt Supabase sync if connected
-      let targetId = localId;
-      try {
-        const { data: sbData } = await supabase
-          .from("study_sets")
-          .insert({
-            user_id: user.id,
-            name: name.trim(),
-            subject: subject.trim(),
-            description: description.trim(),
-            custom_instructions: instructions.trim().slice(0, 2000),
-            material_text: material,
-            material_source: mode,
-            notes: generated.notes,
-            status: "ready",
-            material_filename:
-              mode === "pdf"
-                ? files
-                    .map((f) => f.name)
-                    .join(", ")
-                    .slice(0, 300)
-                : null,
-          })
-          .select("id")
-          .single();
-
-        if (sbData?.id) {
-          targetId = sbData.id;
-          saveLocalSet(
-            {
-              id: sbData.id,
-              user_id: user.id,
-              name: name.trim(),
-              subject: subject.trim(),
-              description: description.trim(),
-              notes: generated.notes,
-              status: "ready",
-            },
-            generated.cards.map((c, i) => ({
-              question: c.q,
-              answer: c.a,
-              topic: c.t,
-              position: i,
-            })),
-          );
-
-          await supabase.from("flashcards").insert(
-            generated.cards.map((c, i) => ({
-              set_id: sbData.id,
-              user_id: user.id,
-              question: c.q,
-              answer: c.a,
-              topic: c.t,
-              position: i,
-            })),
-          );
-        }
-      } catch (remoteErr) {
-        console.warn("Remote sync skipped or offline:", remoteErr);
+      if (insertError || !sbData?.id) {
+        throw new Error(insertError?.message || "Couldn't create the study set.");
       }
 
-      toast.success("Study set created with 20 flashcards and complete notes!");
+      const targetId = sbData.id;
+
+      // Keep every uploaded file attached to the same study set.
+      if (mode === "pdf" && extracted?.length) {
+        const stored = await Promise.allSettled(
+          extracted.map((m) => storeOriginal(user.id, targetId, m.file, m.chars)),
+        );
+        const failed = stored.filter((r) => r.status === "rejected").length;
+        if (failed) {
+          console.warn(`${failed} original file(s) could not be stored.`);
+        }
+      }
+
+      // Gemini generates the notes first, then flashcards from those notes.
+      await process({ data: { setId: targetId } });
+
+      toast.success("Study set created.");
       qc.invalidateQueries({ queryKey: ["sets"] });
       navigate({ to: "/sets/$id", params: { id: targetId } });
     } catch (err) {

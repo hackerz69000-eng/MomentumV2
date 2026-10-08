@@ -166,12 +166,6 @@ export function generateNotesFromMaterial(material: string, title: string, subje
     }
   }
 
-  // Exhaustive Class Review & Synthesis Section
-  notesBody += `## Comprehensive Class Review & Synthesis\n`;
-  notesBody += `- **Core Curriculum Scope:** Every major section, definition, and mechanism detailed above forms part of the examinable material.\n`;
-  notesBody += `- **Interconnected Themes:** Review how the individual concepts connect back to foundational principles and real-world cases.\n`;
-  notesBody += `- **Spaced Repetition & Recall:** Use the 20 generated spaced repetition flashcards daily (Again / Hard / Good / Easy) to commit high-yield terms to long-term memory.\n`;
-
   // Key Takeaways
   notesBody += `\n## Key Takeaways\n`;
   if (keyPoints.length >= 4) {
@@ -180,10 +174,8 @@ export function generateNotesFromMaterial(material: string, title: string, subje
       notesBody += `- ${kp.point}\n`;
     }
   } else {
-    notesBody += `- Master all primary definitions and terminology outlined in the comprehensive notes above.\n`;
-    notesBody += `- Understand the cause-and-effect relationships and mechanisms discussed throughout the document.\n`;
-    notesBody += `- Review the full deck of flashcards regularly with spaced repetition intervals.\n`;
-    notesBody += `- Self-test with active recall questions before class exams.\n`;
+    notesBody += `- Review the primary definitions and terminology identified in the source.\n`;
+    notesBody += `- Review the main concepts and relationships extracted from the source material.\n`;
   }
 
   return titleHeader + notesBody;

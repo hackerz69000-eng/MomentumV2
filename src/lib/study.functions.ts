@@ -5,7 +5,7 @@ import { aiText, parseJson, clip } from "./ai.server";
 import { setStats, type Attempt, type AttemptResult, type Flashcard } from "./stats";
 import { activityStats } from "./activity";
 import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server";
-import { generateNotesFromMaterial, generate20Flashcards } from "./study-generator";
+import { generateNotesFromMaterial } from "./study-generator";
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -14,17 +14,39 @@ const mistakeLines = (ms: MistakeRow[]) =>
       `[${m.topic}] ${m.question.slice(0, 200)} (missed ${m.wrong_count}x; correct answer: ${m.correct_answer.slice(0, 160)})`,
   );
 
-const NOTES_SYSTEM = `You are an expert study-guide writer. Turn the student's material into exhaustive, complete study notes in Markdown covering ALL the material in the uploaded document or PDF from start to finish, not just a summary.
-Structure: a "# Title", then "## " sections for EVERY main topic, chapter, and section found in the document.
-Do not skip or condense any chapter or topic. Within each section include:
-- Thorough breakdown of all core concepts explained clearly and in depth
-- **Definitions** in bold-term form ("**Term** — meaning") for all terminology
-- Key facts, mechanisms, and details as comprehensive bullet lists
-- Concrete examples where useful (prefix with "Example:")
-End with "## Key Takeaways" as 6-10 high-yield bullets. Only use information supported by the material. No preamble.`;
+const NOTES_SYSTEM = `You are an expert academic note-taking editor. Convert the student's source material into polished, genuinely useful study notes in Markdown.
 
-const CARDS_SYSTEM = `You create flashcards from study material. Return ONLY JSON: {"cards":[{"q":"question or term","a":"concise answer","t":"short topic name (2-4 words)"}]}.
-Create exactly 20 high-value flashcards covering the most important concepts, definitions and facts. Number of cards must be exactly 20. Answers under 40 words.`;
+ORGANIZATION:
+- Start with exactly one "# " title that accurately describes the material.
+- Preserve the source's order and major topics/chapters/sections. Create a clear "## " heading for each meaningful topic and "### " headings for important subtopics.
+- Use short paragraphs for explanations and bullets for lists, facts, properties, steps, causes/effects, comparisons, and examples.
+- Put important terminology in the form "**Term** — definition".
+- For processes, use numbered steps when the source describes a sequence.
+- For comparisons, use a small Markdown table only when it makes the distinction clearer.
+- Highlight genuinely high-yield details with "**Key point:**" or a short bullet; do not decorate ordinary facts.
+- Finish with "## Key Takeaways" containing 6-10 of the most important ideas from the material.
+
+QUALITY:
+- Cover the material thoroughly rather than producing a vague summary.
+- Combine repeated or fragmented source passages into one coherent explanation when they clearly belong to the same topic.
+- Keep important qualifiers, conditions, formulas, examples, exceptions, and relationships.
+- Do NOT invent examples, facts, headings, conclusions, or "testable" claims that are not supported by the source.
+- Do NOT add generic study advice or statements such as "this is examinable" unless the source explicitly says so.
+- Do not include a preamble or commentary about being an AI.
+- Use only information supported by the provided material.`;
+
+const CARDS_SYSTEM = `You create high-value review flashcards from the GENERATED STUDY NOTES below. Return ONLY JSON:
+{"cards":[{"q":"question or prompt","a":"concise answer","t":"short topic name (2-4 words)"}]}
+
+Create up to 20 cards, but never pad the deck with weak or generic cards. Every card must test something explicitly stated in the notes.
+Prioritize:
+1. core definitions and terminology
+2. important mechanisms, processes, steps, formulas, and cause/effect relationships
+3. distinctions and comparisons that are easy to confuse
+4. high-yield facts, exceptions, and relationships
+5. concepts that require actual recall rather than recognition
+
+Avoid trivial wording, vague prompts, duplicate questions, questions whose answer is obvious from the question, and generic study advice. Answers should be concise but complete (normally under 60 words). Each card's topic must match the section/topic it came from.`;
 
 async function recentQuestions(supabase: any, setId: string): Promise<string[]> {
   const { data } = await supabase
@@ -65,30 +87,35 @@ async function makeNotes(set: {
   }
 }
 
-async function makeCards(set: { name?: string; subject?: string; material_text: string; custom_instructions?: string }) {
-  try {
-    const text = await aiText(CARDS_SYSTEM + ci(set), [
-      { role: "user", content: `MATERIAL:\n${clip(set.material_text)}` },
-    ]);
-    const parsed = parseJson<{ cards?: { q: string; a: string; t?: string }[] }>(text);
-    const draft = (parsed.cards ?? []).filter((c) => c?.q && c?.a);
+async function makeCards(set: {
+  name?: string;
+  subject?: string;
+  material_text: string;
+  notes: string;
+  custom_instructions?: string;
+}) {
+  const text = await aiText(CARDS_SYSTEM + ci(set), [
+    {
+      role: "user",
+      content: `STUDY SET: ${set.name || "Study Set"} (${set.subject || "general"})
 
-    const resultCards = [...draft];
-    if (resultCards.length < 20) {
-      const extra = generate20Flashcards(set.material_text, set.name || "", set.subject || "");
-      const seen = new Set(resultCards.map((c) => c.q.toLowerCase().trim()));
-      for (const card of extra) {
-        if (!seen.has(card.q.toLowerCase().trim()) && resultCards.length < 20) {
-          resultCards.push(card);
-          seen.add(card.q.toLowerCase().trim());
-        }
-      }
-    }
-    return resultCards.slice(0, 20);
-  } catch (err) {
-    console.warn("AI cards generation fallback active:", err);
-    return generate20Flashcards(set.material_text, set.name || "", set.subject || "");
+GENERATED STUDY NOTES:
+${clip(set.notes, 50000)}
+
+SOURCE MATERIAL FOR VERIFICATION:
+${clip(set.material_text, 50000)}`,
+    },
+  ]);
+  const parsed = parseJson<{ cards?: { q: string; a: string; t?: string }[] }>(text);
+  const cards = (parsed.cards ?? [])
+    .filter((c) => c?.q?.trim() && c?.a?.trim())
+    .map((c) => ({ q: c.q.trim(), a: c.a.trim(), t: (c.t ?? "").trim() }))
+    .slice(0, 20);
+
+  if (!cards.length) {
+    throw new Error("No useful flashcards could be generated from the study notes.");
   }
+  return cards;
 }
 
 const idInput = (d: unknown) => z.object({ setId: z.string().min(1) }).parse(d);
@@ -104,7 +131,10 @@ export const processSet = createServerFn({ method: "POST" })
       .update({ status: "processing", error: null })
       .eq("id", set.id);
     try {
-      const [notes, cards] = await Promise.all([makeNotes(set), makeCards(set)]);
+      // Notes come first: flashcards are deliberately generated from the
+      // finished notes so the deck is coherent with what the student will review.
+      const notes = await makeNotes(set);
+      const cards = await makeCards({ ...set, notes });
       await supabase.from("flashcards").delete().eq("set_id", set.id);
       const { error: insErr } = await supabase
         .from("flashcards")
@@ -161,7 +191,7 @@ export const regenerateCards = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const sb = context.supabase;
     const set = await loadSet(sb, data.setId);
-    const cards = await makeCards(set);
+    const cards = await makeCards({ ...set, notes: set.notes ?? "" });
     const { data: old } = await sb.from("flashcards").select("*").eq("set_id", set.id);
     if (old?.length)
       await sb
