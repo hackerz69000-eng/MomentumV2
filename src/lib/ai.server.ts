@@ -1,27 +1,26 @@
-const GEMINI_MODEL = "gemini-3.8-flash";
+const GROQ_MODEL = process.env["GROQ_MODEL"]?.trim() || "openai/gpt-oss-120b";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
-class GeminiError extends Error {
+class GroqError extends Error {
   statusCode?: number;
   constructor(message: string, statusCode?: number) {
     super(message);
-    this.name = "GeminiError";
+    this.name = "GroqError";
     this.statusCode = statusCode;
   }
 }
 
-function geminiErrorMessage(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err ?? "Unknown Gemini error");
-  const message = raw.trim();
-  if (/api key|api_key|authentication|unauthenticated|401/i.test(message)) {
-    return "Gemini rejected the API key. Check GEMINI_API_KEY in your Vercel environment variables and redeploy.";
+function groqErrorMessage(status: number, detail: string): string {
+  if (status === 401) {
+    return "Groq rejected the API key. Check GROQ_API_KEY in your Vercel environment variables and redeploy.";
   }
-  if (/quota|rate.?limit|429|resource exhausted/i.test(message)) {
-    return "Gemini rate limit or quota reached. Please wait and try again.";
+  if (status === 403) {
+    return `Groq denied the request${detail ? `: ${detail}` : "."}`;
   }
-  if (/permission|403|forbidden/i.test(message)) {
-    return `Gemini denied the request${message ? `: ${message}` : "."}`;
+  if (status === 429) {
+    return "Groq rate limit reached. Please wait a moment and try again.";
   }
-  return `Gemini request failed${message ? `: ${message}` : ". Please try again."}`;
+  return `Groq request failed${detail ? `: ${detail}` : ". Please try again."}`;
 }
 
 /** Appended to every AI system prompt: the student's materials are the primary source. */
@@ -47,41 +46,54 @@ QUALITY RULES:
 - Focus on important testable ideas rather than trivia.
 `;
 
-async function callGemini(system: string, messages: ModelMessage[]): Promise<string> {
-  const geminiKey = process.env["GEMINI_API_KEY"]?.trim();
-  if (!geminiKey) {
-    throw new GeminiError(
-      "Gemini is not configured on the server. Set GEMINI_API_KEY in the Vercel environment variables, then redeploy.",
+async function callGroq(system: string, messages: ModelMessage[]): Promise<string> {
+  const groqKey = process.env["GROQ_API_KEY"]?.trim();
+  if (!groqKey) {
+    throw new GroqError(
+      "Groq is not configured on the server. Set GROQ_API_KEY in the Vercel environment variables, then redeploy.",
     );
   }
 
+  const response = await fetch(GROQ_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${groqKey}`,
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages: [
+        { role: "system", content: system },
+        ...messages.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
+      ],
+      temperature: 0.2,
+    }),
+  });
+
+  const raw = await response.text();
+  let data: any = null;
   try {
-    const { GoogleGenAI } = await import("@google/genai");
-    const ai = new GoogleGenAI({ apiKey: geminiKey });
-    const userPrompt = messages.map((m) => `${m.content}`).join("\n\n");
-    const response = await ai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: userPrompt,
-      config: {
-        systemInstruction: system,
-      },
-    });
-    const text = response.text?.trim();
-    if (!text) throw new GeminiError("Gemini returned an empty response.");
-    return text;
-  } catch (err) {
-    if (err instanceof GeminiError) throw err;
-    console.error("Gemini request failed", err);
-    throw new GeminiError(geminiErrorMessage(err));
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = null;
   }
+
+  if (!response.ok) {
+    const detail = data?.error?.message || raw || `HTTP ${response.status}`;
+    throw new GroqError(groqErrorMessage(response.status, detail), response.status);
+  }
+
+  const text = data?.choices?.[0]?.message?.content?.trim();
+  if (!text) throw new GroqError("Groq returned an empty response.");
+  return text;
 }
 
 async function aiTextOnce(system: string, messages: ModelMessage[]): Promise<string> {
-  return callGemini(system, messages);
+  return callGroq(system, messages);
 }
 
 function retryable(err: unknown) {
-  const status = err instanceof GeminiError ? err.statusCode : undefined;
+  const status = err instanceof GroqError ? err.statusCode : undefined;
   return status === 429 || (typeof status === "number" && status >= 500);
 }
 
@@ -96,7 +108,7 @@ export async function aiText(
     return await aiTextOnce(system, messages);
   } catch (e) {
     if (!retryable(e)) throw e instanceof Error ? e : new Error("AI request failed.");
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
     return aiTextOnce(system, messages);
   }
 }
