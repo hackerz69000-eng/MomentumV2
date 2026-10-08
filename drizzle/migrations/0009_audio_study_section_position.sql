@@ -1,0 +1,1 @@
+ALTER TABLE public.audio_study_sessions ADD COLUMN section_index integer NOT NULL DEFAULT 0 CHECK (section_index >= 0);

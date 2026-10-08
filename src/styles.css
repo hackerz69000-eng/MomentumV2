@@ -1,0 +1,204 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ink: var(--ink);
+  --color-ink2: var(--ink2);
+  --color-panel: var(--panel);
+  --color-line: var(--line);
+  --color-cool: var(--cool);
+  --color-cool2: var(--cool2);
+  --color-mint: var(--mint);
+  --color-violet: var(--violet);
+  --color-soft: var(--soft);
+}
+
+:root {
+  --radius: 0.5rem;
+  --ink: oklch(0.155 0.026 259.7);
+  --ink2: oklch(0.21 0.034 264.7);
+  --panel: oklch(0.21 0.034 264.7);
+  --line: oklch(0.287 0.039 261.7);
+  --cool: oklch(0.623 0.214 259.8);
+  --cool2: oklch(0.707 0.165 254.6);
+  --mint: oklch(0.707 0.165 254.6);
+  --violet: oklch(0.623 0.214 259.8);
+  --soft: oklch(0.704 0.04 256.8);
+
+  --background: var(--ink);
+  --foreground: oklch(0.984 0.003 247.9);
+  --card: var(--panel);
+  --card-foreground: oklch(0.984 0.003 247.9);
+  --popover: oklch(0.244 0.039 263.4);
+  --popover-foreground: oklch(0.984 0.003 247.9);
+  --primary: var(--cool);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.244 0.039 263.4);
+  --secondary-foreground: oklch(0.984 0.003 247.9);
+  --muted: oklch(0.244 0.039 263.4);
+  --muted-foreground: var(--soft);
+  --accent: oklch(0.244 0.039 263.4);
+  --accent-foreground: oklch(0.984 0.003 247.9);
+  --destructive: oklch(0.64 0.21 22);
+  --destructive-foreground: oklch(0.99 0 0);
+  --border: oklch(0.287 0.039 261.7);
+  --input: oklch(0.287 0.039 261.7);
+  --ring: var(--cool2);
+
+  --gradient-brand: linear-gradient(135deg, var(--cool), var(--cool2));
+  --gradient-progress: linear-gradient(90deg, var(--cool), var(--cool2));
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html {
+    color-scheme: dark;
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+  }
+}
+
+@utility dpanel {
+  background: linear-gradient(
+    145deg,
+    oklch(0.244 0.039 263.4 / 0.92),
+    oklch(0.21 0.034 264.7 / 0.96)
+  );
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--line);
+}
+@utility bg-brand {
+  background-image: var(--gradient-brand);
+}
+@utility bg-progress {
+  background-image: var(--gradient-progress);
+}
+@utility eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.flip-scene {
+  perspective: 1400px;
+}
+.flip-card {
+  transform-style: preserve-3d;
+  transition: transform 0.6s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.flip-card.is-flipped {
+  transform: rotateY(180deg);
+}
+.flip-face {
+  backface-visibility: hidden;
+  position: absolute;
+  inset: 0;
+}
+.flip-back {
+  transform: rotateY(180deg);
+}
+
+.md {
+  line-height: 1.7;
+  color: var(--foreground);
+}
+.md h1 {
+  font-family: var(--font-display);
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 1.5rem 0 0.75rem;
+}
+.md h2 {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 2rem 0 0.75rem;
+  color: var(--cool2);
+}
+.md h3 {
+  font-weight: 700;
+  font-size: 1.1rem;
+  margin: 1.25rem 0 0.5rem;
+}
+.md p {
+  margin: 0.6rem 0;
+  color: oklch(0.9 0.02 260);
+}
+.md ul,
+.md ol {
+  margin: 0.6rem 0 0.6rem 1.25rem;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  margin: 0.3rem 0;
+  color: oklch(0.9 0.02 260);
+}
+.md li::marker {
+  color: var(--cool2);
+}
+.md strong {
+  color: var(--foreground);
+  font-weight: 700;
+}
+.md code {
+  background: var(--muted);
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.3rem;
+  font-size: 0.9em;
+}
+.md blockquote {
+  border-left: 3px solid var(--mint);
+  padding: 0.25rem 0 0.25rem 1rem;
+  margin: 1rem 0;
+  background: oklch(0.86 0.19 160 / 0.06);
+  border-radius: 0 0.5rem 0.5rem 0;
+}
+.md hr {
+  border-color: var(--border);
+  margin: 1.5rem 0;
+}
+.md > :first-child {
+  margin-top: 0;
+}
