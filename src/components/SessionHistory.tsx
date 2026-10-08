@@ -10,7 +10,6 @@ export interface StudySessionRecord {
   topic: string;
   type: string; // e.g. "20 Flashcards Run", "Quiz Session", "Focused Reading"
   notes?: string;
-  setId?: string;
 }
 
 const HISTORY_KEY = "momentum_session_history";
@@ -69,10 +68,9 @@ export function addSessionRecord(session: Omit<StudySessionRecord, "id">) {
 
 interface SessionHistoryProps {
   className?: string;
-  setId?: string;
 }
 
-export function SessionHistory({ className = "", setId }: SessionHistoryProps) {
+export function SessionHistory({ className = "" }: SessionHistoryProps) {
   const [sessions, setSessions] = useState<StudySessionRecord[]>(DEFAULT_SESSIONS);
   const [showLogModal, setShowLogModal] = useState(false);
   const [logTopic, setLogTopic] = useState("");
@@ -80,14 +78,14 @@ export function SessionHistory({ className = "", setId }: SessionHistoryProps) {
   const [logType, setLogType] = useState("Flashcards Review");
 
   useEffect(() => {
-    setSessions(getSessionHistory().filter((s) => !setId || s.setId === setId));
+    setSessions(getSessionHistory());
 
     const handleUpdate = () => {
-      setSessions(getSessionHistory().filter((s) => !setId || s.setId === setId));
+      setSessions(getSessionHistory());
     };
     window.addEventListener(HISTORY_EVENT, handleUpdate);
     return () => window.removeEventListener(HISTORY_EVENT, handleUpdate);
-  }, [setId]);
+  }, []);
 
   const handleLogManualSession = (e: React.FormEvent) => {
     e.preventDefault();
@@ -99,7 +97,6 @@ export function SessionHistory({ className = "", setId }: SessionHistoryProps) {
       duration: `${mins}m`,
       topic: logTopic.trim(),
       type: logType,
-      setId,
     });
 
     // Also update daily streak

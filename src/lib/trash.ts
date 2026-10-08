@@ -10,8 +10,6 @@ const CHILDREN = [
   "mistakes",
   "tutor_messages",
   "material_messages",
-  "audio_study_sessions",
-  "audio_study_events",
 ] as const;
 export const KEEP_DAYS = 30;
 const sb = supabase as any;
@@ -112,7 +110,6 @@ export async function purgeItem(item: TrashItem) {
   if (item.kind === "set") {
     for (const f of item.data.children?.study_files ?? []) paths.push(f.path);
     for (const l of item.data.children?.lectures ?? []) paths.push(...(l.audio_paths ?? []));
-    for (const a of item.data.children?.audio_study_sessions ?? []) paths.push(...(a.audio_paths ?? []));
   }
   if (paths.length) await supabase.storage.from("study-files").remove(paths);
   await sb.from("trash").delete().eq("id", item.id);

@@ -88,6 +88,7 @@ export function saveLocalSet(
     quiz_total: set.quiz_total ?? null,
     created_at: set.created_at ?? now,
     updated_at: now,
+    folder_id: set.folder_id ?? null,
   };
 
   const existingIdx = sets.findIndex((s) => s.id === set.id);

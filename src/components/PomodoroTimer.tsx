@@ -60,7 +60,7 @@ export function PomodoroTimer({ setId = null, topicName = "Pomodoro Focus", clas
       const duration = Math.max(1, Math.round((Date.now() - (sessionStarted.current ?? Date.now())) / 60000));
       const mins = Math.max(1, Math.min(focusMinutes, duration));
       recordStudySessionCompletion(mins, topicName);
-      addSessionRecord({ timestamp: new Date().toISOString(), duration: `${mins}m`, topic: topicName, type: "Pomodoro Focus", notes: `Completed a ${focusMinutes}-minute focus block.`, setId: setId ?? undefined });
+      addSessionRecord({ timestamp: new Date().toISOString(), duration: `${mins}m`, topic: topicName, type: "Pomodoro Focus", notes: `Completed a ${focusMinutes}-minute focus block.` });
       void logActivity("session", setId, 1, undefined, { duration_seconds: mins * 60, meta: { source: "pomodoro", focusMinutes } });
       if (sound) playTone("chime");
       const recapScore = Math.min(100, Math.round(55 + (mins / Math.max(1, focusMinutes)) * 35 + (mins >= focusMinutes ? 10 : 0)));

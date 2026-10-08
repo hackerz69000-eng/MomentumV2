@@ -135,7 +135,7 @@ export async function startRecorder(
   };
 }
 
-/** Sends one WAV segment to the transcription endpoint. */
+/** Sends one WAV segment to the transcription endpoint and streams text back. */
 export async function transcribeSegment(
   file: File,
   onDelta: (t: string) => void,
@@ -152,20 +152,52 @@ export async function transcribeSegment(
     body: form,
     signal: signal ?? null,
   });
-  if (!res.ok) {
+  if (!res.ok || !res.body) {
     let msg = `Transcription failed (${res.status})`;
     try {
       const j = await res.json();
       msg = j?.error?.message ?? j?.error ?? j?.message ?? msg;
     } catch {
-      /* ignore malformed error bodies */
+      /* ignore */
     }
     if (res.status === 429) msg = "Transcription is busy right now. Please try again in a minute.";
+    if (res.status === 402)
+      msg = "AI credits are used up for this workspace. Add credits to continue.";
     throw new Error(typeof msg === "string" ? msg : "Transcription failed");
   }
-  const result = (await res.json()) as { text?: string };
-  const text = result.text?.trim() ?? "";
-  if (!text) throw new Error("The transcription ended without any text. The audio may be silent.");
-  onDelta(text);
-  return text;
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let pending = "",
+    text = "",
+    final: string | null = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    pending += dec.decode(value, { stream: true });
+    const events = pending.split(/\r?\n\r?\n/);
+    pending = events.pop() ?? "";
+    for (const ev of events) {
+      const line = ev
+        .split(/\r?\n/)
+        .filter((l) => l.startsWith("data:"))
+        .map((l) => l.slice(5).trim())
+        .join("");
+      if (!line || line === "[DONE]") continue;
+      try {
+        const j = JSON.parse(line);
+        if (j.type === "transcript.text.delta" && j.delta) {
+          text += j.delta;
+          onDelta(j.delta);
+        } else if (j.type === "transcript.text.done") final = String(j.text ?? text);
+        else if (j.type === "error" || j.error)
+          throw new Error(j.error?.message ?? j.message ?? "Transcription failed");
+      } catch (e) {
+        if (e instanceof SyntaxError) continue;
+        throw e;
+      }
+    }
+  }
+  if (final == null && !text)
+    throw new Error("The transcription ended without any text. The audio may be silent.");
+  return (final ?? text).trim();
 }

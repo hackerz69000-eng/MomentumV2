@@ -622,7 +622,7 @@ export type Database = {
           description: string;
           error: string | null;
           exam_date: string | null;
-            folder_id: string | null;
+          folder_id: string | null;
           id: string;
           material_filename: string | null;
           material_source: string;
@@ -646,8 +646,8 @@ export type Database = {
           description?: string;
           error?: string | null;
           exam_date?: string | null;
-          id?: string;
           folder_id?: string | null;
+          id?: string;
           material_filename?: string | null;
           material_source?: string;
           material_text?: string;
@@ -670,8 +670,8 @@ export type Database = {
           description?: string;
           error?: string | null;
           exam_date?: string | null;
-          id?: string;
           folder_id?: string | null;
+          id?: string;
           material_filename?: string | null;
           material_source?: string;
           material_text?: string;
@@ -690,11 +690,11 @@ export type Database = {
         };
         Relationships: [
           {
-            foreignKey: ["folder_id"],
-            columns: ["folder_id"],
-            isOneToOne: false,
-            referencedRelation: "study_folders",
-            referencedColumns: ["id"],
+            foreignKeyName: "study_sets_folder_id_fkey";
+            columns: ["folder_id"];
+            isOneToOne: false;
+            referencedRelation: "study_folders";
+            referencedColumns: ["id"];
           },
         ];
       };

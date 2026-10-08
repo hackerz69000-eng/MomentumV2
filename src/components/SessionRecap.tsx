@@ -11,14 +11,14 @@ function score(s: StudySessionRecord) {
   return Math.max(0, Math.min(100, Math.round(45 + Math.min(m, 60) * 0.55 + (/(flashcard|recall|quiz|exam)/i.test(s.type) ? 18 : 8) - (m > 90 ? 12 : 0))));
 }
 
-export function SessionRecap({ setId }: { setId?: string }) {
+export function SessionRecap() {
   const [session, setSession] = useState<StudySessionRecord | null>(null);
   useEffect(() => {
-    const update = () => setSession(getSessionHistory().filter((s) => !s.id.startsWith("sess_demo_") && (!setId || s.setId === setId)).at(0) ?? null);
+    const update = () => setSession(getSessionHistory().filter((s) => !s.id.startsWith("sess_demo_")).at(0) ?? null);
     update();
     window.addEventListener(HISTORY_EVENT, update);
     return () => window.removeEventListener(HISTORY_EVENT, update);
-  }, [setId]);
+  }, []);
 
   return (
     <div className="rounded-2xl border border-line bg-panel p-5 md:p-6">

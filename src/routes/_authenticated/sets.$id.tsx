@@ -5,16 +5,13 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { z } from "zod";
 import { toast } from "sonner";
-import { trashSet } from "@/lib/trash";
-import { ArrowLeft, Loader2, RefreshCw, Send, AlertCircle, MoreHorizontal, Trash2 } from "lucide-react";
+import { ArrowLeft, Loader2, RefreshCw, Send, AlertCircle } from "lucide-react";
 import { fetchCards, fetchSet, type StudySet } from "@/lib/queries";
-import { fetchStudyFolders, type StudyFolder } from "@/lib/folders";
 import { supabase } from "@/integrations/supabase/client";
 import { askTutor, processSet } from "@/lib/study.functions";
 import { setStats, type Attempt } from "@/lib/stats";
 import { cn } from "@/lib/utils";
 import { ErrorBox } from "@/components/set/ui";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Overview, type Tab } from "@/components/set/Overview";
 import { Notes } from "@/components/set/Notes";
 import { Flashcards } from "@/components/set/Flashcards";
@@ -34,29 +31,41 @@ import { Levels } from "@/components/Levels";
 import { DailyStreak } from "@/components/DailyStreak";
 
 const TABS = [
-  "overview", "everything", "audio", "search", "ask", "mistakes", "lectures",
-  "notes", "guide", "flashcards", "recall", "quiz", "exam", "tutor", "plan", "materials",
+  "overview",
+  "everything",
+  "audio",
+  "search",
+  "ask",
+  "mistakes",
+  "lectures",
+  "notes",
+  "guide",
+  "flashcards",
+  "recall",
+  "quiz",
+  "exam",
+  "tutor",
+  "plan",
+  "materials",
 ] as const satisfies readonly Tab[];
-
 const LABELS: Record<Tab, string> = {
-  overview: "Overview", everything: "Study Everything", audio: "Audio Study", search: "Search",
-  ask: "Ask Your Materials", mistakes: "Mistake Bank", lectures: "Lectures", notes: "Notes",
-  guide: "Study Guide", recall: "Active Recall", flashcards: "Flashcards", quiz: "Quiz",
-  exam: "Practice Exam", tutor: "AI Tutor", plan: "Study Plan", materials: "Materials",
+  overview: "Overview",
+  everything: "Study Everything",
+  audio: "Audio Study",
+  search: "Search",
+  ask: "Ask Your Materials",
+  mistakes: "Mistake Bank",
+  lectures: "Lectures",
+  notes: "Notes",
+  guide: "Study Guide",
+  recall: "Active Recall",
+  flashcards: "Flashcards",
+  quiz: "Quiz",
+  exam: "Practice Exam",
+  tutor: "AI Tutor",
+  plan: "Study Plan",
+  materials: "Materials",
 };
-
-const MAIN_NAV: { tab: Tab; label: string }[] = [
-  { tab: "overview", label: "Overview" },
-  { tab: "everything", label: "Study" },
-  { tab: "flashcards", label: "Practice" },
-  { tab: "mistakes", label: "Review" },
-  { tab: "plan", label: "Plan" },
-  { tab: "materials", label: "Materials" },
-];
-
-const MORE_NAV: Tab[] = [
-  "audio", "notes", "guide", "recall", "quiz", "exam", "tutor", "ask", "search", "lectures",
-];
 
 export const Route = createFileRoute("/_authenticated/sets/$id")({
   ssr: false,
@@ -86,11 +95,6 @@ function SetPage() {
   const { id } = Route.useParams();
   const { tab = "overview" } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [folders, setFolders] = useState<StudyFolder[]>([]);
-  const [folderSaving, setFolderSaving] = useState(false);
   const setQ = useQuery({ queryKey: ["set", id], queryFn: () => fetchSet(id), retry: 1 });
   const cardsQ = useQuery({ queryKey: ["cards", id], queryFn: () => fetchCards(id) });
   const attemptsQ = useQuery({
@@ -111,29 +115,6 @@ function SetPage() {
   });
 
   const mistakesQ = useQuery({ queryKey: ["mistakes", id], queryFn: () => fetchMistakes(id) });
-  useEffect(() => { fetchStudyFolders().then(setFolders).catch(() => undefined); }, []);
-
-  const deleteStudySet = async () => {
-    setDeleting(true);
-    try {
-      await trashSet(id);
-      localStorage.removeItem("momentum_active_study_set");
-      toast.success("Study set moved to Recently Deleted");
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["sets"] }),
-        qc.invalidateQueries({ queryKey: ["trash"] }),
-      ]);
-      qc.removeQueries({ queryKey: ["set", id] });
-      qc.removeQueries({ queryKey: ["cards", id] });
-      await navigate({ to: "/dashboard" });
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Couldn't delete the study set");
-    } finally {
-      setDeleting(false);
-      setDeleteOpen(false);
-    }
-  };
-
 
   if (setQ.isLoading)
     return (
@@ -175,48 +156,24 @@ function SetPage() {
             <Levels percentage={stats.readiness} />
             <DailyStreak />
             <span className="eyebrow text-cool2 hidden sm:inline-block">{set.subject || "General"}</span>
-            <select
-              value={set.folder_id ?? ""}
-              disabled={folderSaving}
-              onChange={async (e) => {
-                const next = e.target.value || null;
-                setFolderSaving(true);
-                const { error } = await supabase.from("study_sets").update({ folder_id: next, updated_at: new Date().toISOString() }).eq("id", set.id);
-                if (error) toast.error("Couldn't move this study set");
-                else { setQ.refetch(); toast.success(next ? "Study set moved" : "Study set moved to Unfiled"); }
-                setFolderSaving(false);
-              }}
-              className="max-w-[180px] bg-foreground/5 border border-line rounded-lg px-2.5 py-1.5 text-xs outline-none"
-              aria-label="Study set folder"
-            >
-              <option value="">Unfiled</option>
-              {folders.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-            </select>
           </div>
         </div>
-        <nav className="flex items-center gap-1 mt-4 pb-3 overflow-x-auto" aria-label="Study set navigation">
-          {MAIN_NAV.map((item) => (
-            <button key={item.tab} onClick={() => { setMoreOpen(false); navigate({ search: { tab: item.tab }, replace: true }); }} className={cn(
-              "px-3.5 py-2 text-sm font-semibold rounded-lg whitespace-nowrap border transition-colors",
-              tab === item.tab ? "bg-cool/20 text-foreground border-cool/30" : "text-soft border-transparent hover:text-foreground hover:bg-foreground/5",
-            )}>{item.label}</button>
+        <nav className="flex gap-1 mt-4 pb-3 overflow-x-auto">
+          {TABS.map((t) => (
+            <button
+              key={t}
+              onClick={() => navigate({ search: { tab: t }, replace: true })}
+              className={cn(
+                "px-4 py-2 text-sm font-semibold rounded-lg whitespace-nowrap border transition-colors",
+                tab === t
+                  ? "bg-cool/20 text-foreground border-cool/30"
+                  : "text-soft border-transparent hover:text-foreground",
+                t === "tutor" && tab !== t && "text-mint",
+              )}
+            >
+              {LABELS[t]}
+            </button>
           ))}
-          <div className="relative shrink-0">
-            <button type="button" aria-expanded={moreOpen} onClick={() => setMoreOpen((v) => !v)} className={cn(
-              "px-3.5 py-2 text-sm font-semibold rounded-lg whitespace-nowrap border inline-flex items-center gap-2 transition-colors",
-              MORE_NAV.includes(tab) ? "bg-cool/20 text-foreground border-cool/30" : "text-soft border-transparent hover:text-foreground hover:bg-foreground/5",
-            )}><MoreHorizontal className="size-4" /> More</button>
-            {moreOpen && <div className="absolute right-0 top-full mt-2 z-50 w-60 rounded-xl border border-line bg-panel p-2 shadow-2xl">
-              <p className="px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-soft">More study tools</p>
-              <div className="grid grid-cols-2 gap-1">
-                {MORE_NAV.map((t) => <button key={t} onClick={() => { setMoreOpen(false); navigate({ search: { tab: t }, replace: true }); }} className={cn(
-                  "rounded-lg px-3 py-2 text-left text-sm font-semibold hover:bg-foreground/5",
-                  tab === t ? "bg-cool/15 text-cool2" : "text-soft hover:text-foreground",
-                  t === "tutor" && "text-mint",
-                )}>{LABELS[t]}</button>)}
-              </div>
-            </div>}
-          </div>
         </nav>
       </header>
       <div className="p-5 md:p-8">
@@ -262,26 +219,6 @@ function SetPage() {
           </div>
         )}
       </div>
-
-      <section className="mx-5 md:mx-8 mb-10 rounded-2xl border border-destructive/25 bg-destructive/5 p-5 md:p-6">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <p className="eyebrow text-destructive">Danger zone</p>
-            <h2 className="font-display text-lg font-bold mt-1">Delete this study set</h2>
-            <p className="text-sm text-soft mt-1 max-w-2xl">Move this entire study set to Recently Deleted. You can restore it for 30 days, including its cards, notes, files, lectures and study history.</p>
-          </div>
-          <button type="button" onClick={() => setDeleteOpen(true)} className="shrink-0 inline-flex items-center justify-center gap-2 rounded-lg border border-destructive/40 text-destructive px-4 py-2.5 text-sm font-semibold hover:bg-destructive/10">
-            <Trash2 className="size-4" /> Delete study set
-          </button>
-        </div>
-      </section>
-
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Delete “{set.name}”?</AlertDialogTitle><AlertDialogDescription>This will move the entire study set to Recently Deleted for 30 days. You can restore it during that time.</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel><AlertDialogAction disabled={deleting} onClick={deleteStudySet} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{deleting ? <Loader2 className="size-4 mr-2 animate-spin" /> : <Trash2 className="size-4 mr-2" />}Delete study set</AlertDialogAction></AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </main>
   );
 }

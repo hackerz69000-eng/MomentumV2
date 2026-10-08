@@ -11,9 +11,8 @@ function dayDiff(a: Date, b: Date) { return Math.floor((startOfDay(a).getTime()-
 
 async function fetchActivity() { const { data, error } = await supabase.from("study_activity").select("id,set_id,kind,count,created_at,duration_seconds,meta").order("created_at", { ascending: false }).limit(1000); if (error) throw error; return (data ?? []) as Activity[]; }
 
-export function ProgressionHub({ setId }: { setId?: string }) {
-  const { data: allRows = [] } = useQuery({ queryKey: ["progression-activity"], queryFn: fetchActivity, staleTime: 30_000 });
-  const rows = useMemo(() => setId ? allRows.filter((r) => r.set_id === setId) : allRows, [allRows, setId]);
+export function ProgressionHub() {
+  const { data: rows = [] } = useQuery({ queryKey: ["progression-activity"], queryFn: fetchActivity, staleTime: 30_000 });
   const [, refresh] = useState(0);
   useEffect(() => { const f=()=>refresh(x=>x+1); window.addEventListener("momentum_xp_updated",f); window.addEventListener("momentum_streak_updated",f); window.addEventListener("momentum_freeze_updated",f); return()=>{window.removeEventListener("momentum_xp_updated",f);window.removeEventListener("momentum_streak_updated",f);window.removeEventListener("momentum_freeze_updated",f)} },[]);
   const streak = getStreakData();

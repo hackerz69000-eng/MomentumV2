@@ -1,15 +1,14 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import { FileText, Upload, Loader2, X, FolderPlus } from "lucide-react";
+import { useState } from "react";
+import { FileText, Upload, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { processSet, ocrFile } from "@/lib/study.functions";
 import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { cn } from "@/lib/utils";
-import { fetchStudyFolders, createStudyFolder, type StudyFolder } from "@/lib/folders";
 
 export const Route = createFileRoute("/_authenticated/sets/new")({
   ssr: false,
@@ -49,13 +48,6 @@ function NewSet() {
   const [extracted, setExtracted] = useState<{ file: File; chars: number }[] | null>(null);
   const [progressMsg, setProgressMsg] = useState("");
   const [stage, setStage] = useState<null | "reading" | "generating">(null);
-  const [folders, setFolders] = useState<StudyFolder[]>([]);
-  const [folderId, setFolderId] = useState<string>("");
-  const [newFolder, setNewFolder] = useState("");
-
-  useEffect(() => {
-    fetchStudyFolders().then(setFolders).catch((e) => toast.error(e instanceof Error ? e.message : "Couldn't load folders"));
-  }, []);
 
   const extract = async () => {
     if (!files.length) {
@@ -97,10 +89,6 @@ function NewSet() {
     }
 
     try {
-      if (!folderId) {
-        toast.error("Choose an existing folder or create a new one before creating this study set.");
-        return;
-      }
       const material = text.trim();
       if (material.length < 30) {
         toast.error("Please add study material or upload a document to proceed.");
@@ -119,7 +107,6 @@ function NewSet() {
           subject: subject.trim(),
           description: description.trim(),
           custom_instructions: instructions.trim().slice(0, 2000),
-          folder_id: folderId,
           material_text: material,
           material_source: mode,
           material_filename:
@@ -238,21 +225,6 @@ function NewSet() {
               onChange={(e) => setInstructions(e.target.value)}
             />
           </label>
-        </div>
-
-        <div className="rounded-2xl bg-panel border border-line/70 p-5 md:p-6 space-y-4">
-          <div><p className="eyebrow text-cool2">Folder</p><p className="text-sm text-soft mt-1">Every new study set lives inside a folder so your subjects stay organized.</p></div>
-          <div className="grid sm:grid-cols-[1fr_auto] gap-3">
-            <select required value={folderId} onChange={(e) => setFolderId(e.target.value)} className={inputCls}>
-              <option value="">Choose a folder…</option>
-              {folders.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-            </select>
-            <div className="flex gap-2">
-              <input value={newFolder} onChange={(e) => setNewFolder(e.target.value)} maxLength={80} placeholder="New folder name" className={inputCls} />
-              <button type="button" disabled={!newFolder.trim()} onClick={async () => { try { const f = await createStudyFolder(newFolder); setFolders((x) => [...x, f].sort((a,b) => a.name.localeCompare(b.name))); setFolderId(f.id); setNewFolder(""); toast.success(`Created ${f.name}`); } catch (e) { toast.error(e instanceof Error ? e.message : "Couldn't create folder"); } }} className="shrink-0 inline-flex items-center gap-2 rounded-lg bg-brand text-ink px-3 py-2 text-sm font-semibold disabled:opacity-50"><FolderPlus className="size-4" />Create</button>
-            </div>
-          </div>
-          {!folders.length && <p className="text-xs text-soft">No folders yet — create your first one above.</p>}
         </div>
 
         <div className="rounded-2xl bg-panel border border-line/70 p-5 md:p-6 space-y-4">

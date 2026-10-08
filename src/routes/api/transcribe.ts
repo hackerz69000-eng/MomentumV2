@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { verifySupabaseAccessToken } from "@/integrations/supabase/verify-token.server";
 
-const MODEL = "nova-3";
-const MAX_FILE = 13 * 1024 * 1024;
+const MODEL = "google/gemini-3.5-transcribe";
+const MAX_FILE = 13 * 1024 * 1024; // model cap is 14 MB
 
 function json(data: unknown, status: number) {
   return new Response(JSON.stringify(data), {
@@ -14,6 +14,7 @@ function json(data: unknown, status: number) {
 async function authorized(request: Request) {
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+
   try {
     return !!(await verifySupabaseAccessToken(token));
   } catch {
@@ -28,44 +29,35 @@ export const Route = createFileRoute("/api/transcribe")({
         if (!(await authorized(request))) return json({ error: "Please sign in again." }, 401);
         const len = Number(request.headers.get("content-length") ?? 0);
         if (len > MAX_FILE + 64 * 1024) return json({ error: "Audio segment too large." }, 413);
-        const apiKey = process.env["DEEPGRAM_API_KEY"]?.trim();
-        if (!apiKey) return json({ error: "Transcription is not configured. Add DEEPGRAM_API_KEY." }, 500);
-
+        const apiKey = process.env["LOVABLE_API_KEY"];
+        if (!apiKey) return json({ error: "Transcription is not configured." }, 500);
         const form = await request.formData();
         const file = form.get("file");
-        if (!(file instanceof File) || !file.size || file.size > MAX_FILE) {
+        if (!(file instanceof File) || !file.size || file.size > MAX_FILE)
           return json({ error: "Invalid audio segment." }, 400);
-        }
-
+        const out = new FormData();
+        out.append("model", MODEL);
+        out.append("file", new File([file], file.name || "segment.wav", { type: "audio/wav" }));
+        out.append("response_format", "json");
+        out.append("stream", "true");
         try {
-          const upstream = await fetch(
-            `https://api.deepgram.com/v1/listen?model=${encodeURIComponent(MODEL)}&smart_format=true&punctuate=true&utterances=true`,
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Token ${apiKey}`,
-                "Content-Type": file.type || "audio/wav",
-              },
-              body: file,
-              signal: request.signal,
-            },
-          );
-
-          if (!upstream.ok) {
-            const body = await upstream.text();
-            const status = upstream.status === 429 ? 429 : upstream.status >= 500 ? 502 : upstream.status;
-            return json({ error: `Transcription failed: ${body.slice(0, 500)}` }, status);
-          }
-
-          const result = (await upstream.json()) as {
-            results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> };
-          };
-          const transcript = result.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ?? "";
-          if (!transcript) return json({ error: "The audio ended without any speech to transcribe." }, 422);
-          return json({ text: transcript }, 200);
+          const upstream = await fetch("https://ai.gateway.lovable.dev/v1/audio/transcriptions", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${apiKey}`, "X-Lovable-AIG-SDK": "fetch" },
+            body: out,
+            signal: request.signal,
+          });
+          const headers = new Headers({
+            "Content-Type": upstream.headers.get("content-type") ?? "text/event-stream",
+            "Cache-Control": "no-cache",
+          });
+          upstream.headers.forEach((v, k) => {
+            if (k.toLowerCase().startsWith("x-lovable-aig-")) headers.set(k, v);
+          });
+          return new Response(upstream.body, { status: upstream.status, headers });
         } catch (e) {
           if (request.signal.aborted) return new Response(null, { status: 499 });
-          return json({ error: e instanceof Error ? e.message : "Transcription failed." }, 502);
+          return json({ error: "Transcription failed." }, 502);
         }
       },
     },
