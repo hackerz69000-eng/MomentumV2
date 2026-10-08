@@ -1,8 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./types";
+import { normalizeSupabaseUrl } from "./url";
 
 function getSupabaseConfig() {
-  const url = process.env["SUPABASE_URL"] || "https://placeholder-project.supabase.co";
+  const url = normalizeSupabaseUrl(
+    process.env["SUPABASE_URL"] || "https://placeholder-project.supabase.co",
+  );
   const key =
     process.env["SUPABASE_PUBLISHABLE_KEY"] ||
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.placeholder";

@@ -2,6 +2,7 @@ import { createMiddleware } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./types";
+import { normalizeSupabaseUrl } from "./url";
 import { supabase } from "./client";
 
 function isNewSupabaseApiKey(value: string): boolean {
@@ -63,7 +64,9 @@ export const requireSupabaseAuth = createMiddleware({ type: "function" })
     });
   })
   .server(async ({ next }) => {
-    const SUPABASE_URL = process.env["SUPABASE_URL"] || "https://placeholder-project.supabase.co";
+    const SUPABASE_URL = normalizeSupabaseUrl(
+      process.env["SUPABASE_URL"] || "https://placeholder-project.supabase.co",
+    );
     const SUPABASE_PUBLISHABLE_KEY =
       process.env["SUPABASE_PUBLISHABLE_KEY"] ||
       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.placeholder";
