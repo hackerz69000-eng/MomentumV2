@@ -1,6 +1,5 @@
 // Local persistence for study sets, flashcards, and study activity using localStorage.
 import type { StudySet, Flashcard, SetWithCards } from "./queries";
-import { getActiveUser } from "./local-auth";
 
 const SETS_KEY = "momentum_local_study_sets";
 const CARDS_KEY = "momentum_local_flashcards";
@@ -13,12 +12,12 @@ export function getLocalSets(userId?: string): SetWithCards[] {
     const rawCards = localStorage.getItem(CARDS_KEY);
     const cards: Flashcard[] = rawCards ? JSON.parse(rawCards) : [];
 
-    const currentUserId = userId || getActiveUser()?.id;
+    const currentUserId = userId;
 
-    // Filter sets for user or allow all local sets if single user
+    // Legacy local-auth records use usr_* IDs and cannot be sent to Supabase.
     const filteredSets = currentUserId
-      ? sets.filter((s) => s.user_id === currentUserId || !s.user_id || s.user_id.startsWith("usr_"))
-      : sets;
+      ? sets.filter((s) => s.user_id === currentUserId || !s.user_id)
+      : sets.filter((s) => !s.user_id);
 
     return filteredSets.map((s) => {
       const setCards = cards.filter((c) => c.set_id === s.id);
@@ -67,7 +66,10 @@ export function saveLocalSet(
   const allCards: Flashcard[] = rawCards ? JSON.parse(rawCards) : [];
 
   const now = new Date().toISOString();
-  const userId = set.user_id || getActiveUser()?.id || "local-user";
+  const userId = set.user_id;
+  if (!userId || userId.startsWith("usr_")) {
+    throw new Error("A real Supabase Auth user is required to save study data.");
+  }
 
   const fullSet: StudySet = {
     id: set.id,

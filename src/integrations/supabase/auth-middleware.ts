@@ -38,20 +38,7 @@ export const requireSupabaseAuth = createMiddleware({ type: "function" })
       data: { session },
     } = await supabase.auth.getSession();
 
-    let token = session?.access_token;
-    if (!token && typeof window !== "undefined") {
-      const local = localStorage.getItem("momentum_active_user");
-      if (local) {
-        try {
-          const parsed = JSON.parse(local);
-          if (parsed.id) {
-            token = `local_${parsed.id}_${encodeURIComponent(parsed.username || "student")}`;
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
+    const token = session?.access_token;
 
     if (!token) {
       throw new Error("Unauthorized: Please sign in again.");
@@ -106,18 +93,6 @@ export const requireSupabaseAuth = createMiddleware({ type: "function" })
         autoRefreshToken: false,
       },
     });
-
-    if (token.startsWith("local_")) {
-      const parts = token.slice("local_".length).split("_");
-      const userId = parts[0] || "local-user";
-      return next({
-        context: {
-          supabase: supabaseServer,
-          userId,
-          claims: { sub: userId },
-        },
-      });
-    }
 
     // Validate the access token with Supabase Auth itself. This avoids relying
     // on local JWT/JWKS claim verification and works with the current Supabase
