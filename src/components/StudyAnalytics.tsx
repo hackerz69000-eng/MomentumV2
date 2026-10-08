@@ -23,15 +23,15 @@ function lastSevenDays(sessions: StudySessionRecord[]) {
   });
 }
 
-export function StudyAnalytics({ className = "" }: { className?: string }) {
+export function StudyAnalytics({ className = "", setId }: { className?: string; setId?: string }) {
   const [sessions, setSessions] = useState<StudySessionRecord[]>([]);
 
   useEffect(() => {
-    setSessions(getSessionHistory());
-    const update = () => setSessions(getSessionHistory());
+    setSessions(getSessionHistory().filter((s) => !setId || s.setId === setId));
+    const update = () => setSessions(getSessionHistory().filter((s) => !setId || s.setId === setId));
     window.addEventListener(HISTORY_EVENT, update);
     return () => window.removeEventListener(HISTORY_EVENT, update);
-  }, []);
+  }, [setId]);
 
   const data = useMemo(() => lastSevenDays(sessions), [sessions]);
   const totalMinutes = data.reduce((sum, d) => sum + d.minutes, 0);

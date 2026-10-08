@@ -5,13 +5,15 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { z } from "zod";
 import { toast } from "sonner";
-import { ArrowLeft, Loader2, RefreshCw, Send, AlertCircle, MoreHorizontal } from "lucide-react";
+import { trashSet } from "@/lib/trash";
+import { ArrowLeft, Loader2, RefreshCw, Send, AlertCircle, MoreHorizontal, Trash2 } from "lucide-react";
 import { fetchCards, fetchSet, type StudySet } from "@/lib/queries";
 import { supabase } from "@/integrations/supabase/client";
 import { askTutor, processSet } from "@/lib/study.functions";
 import { setStats, type Attempt } from "@/lib/stats";
 import { cn } from "@/lib/utils";
 import { ErrorBox } from "@/components/set/ui";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Overview, type Tab } from "@/components/set/Overview";
 import { Notes } from "@/components/set/Notes";
 import { Flashcards } from "@/components/set/Flashcards";
@@ -84,6 +86,8 @@ function SetPage() {
   const { tab = "overview" } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const [moreOpen, setMoreOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const setQ = useQuery({ queryKey: ["set", id], queryFn: () => fetchSet(id), retry: 1 });
   const cardsQ = useQuery({ queryKey: ["cards", id], queryFn: () => fetchCards(id) });
   const attemptsQ = useQuery({
@@ -104,6 +108,28 @@ function SetPage() {
   });
 
   const mistakesQ = useQuery({ queryKey: ["mistakes", id], queryFn: () => fetchMistakes(id) });
+
+  const deleteStudySet = async () => {
+    setDeleting(true);
+    try {
+      await trashSet(id);
+      localStorage.removeItem("momentum_active_study_set");
+      toast.success("Study set moved to Recently Deleted");
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["sets"] }),
+        qc.invalidateQueries({ queryKey: ["trash"] }),
+      ]);
+      qc.removeQueries({ queryKey: ["set", id] });
+      qc.removeQueries({ queryKey: ["cards", id] });
+      await navigate({ to: "/dashboard" });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't delete the study set");
+    } finally {
+      setDeleting(false);
+      setDeleteOpen(false);
+    }
+  };
+
 
   if (setQ.isLoading)
     return (
@@ -215,6 +241,26 @@ function SetPage() {
           </div>
         )}
       </div>
+
+      <section className="mx-5 md:mx-8 mb-10 rounded-2xl border border-destructive/25 bg-destructive/5 p-5 md:p-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <p className="eyebrow text-destructive">Danger zone</p>
+            <h2 className="font-display text-lg font-bold mt-1">Delete this study set</h2>
+            <p className="text-sm text-soft mt-1 max-w-2xl">Move this entire study set to Recently Deleted. You can restore it for 30 days, including its cards, notes, files, lectures and study history.</p>
+          </div>
+          <button type="button" onClick={() => setDeleteOpen(true)} className="shrink-0 inline-flex items-center justify-center gap-2 rounded-lg border border-destructive/40 text-destructive px-4 py-2.5 text-sm font-semibold hover:bg-destructive/10">
+            <Trash2 className="size-4" /> Delete study set
+          </button>
+        </div>
+      </section>
+
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader><AlertDialogTitle>Delete “{set.name}”?</AlertDialogTitle><AlertDialogDescription>This will move the entire study set to Recently Deleted for 30 days. You can restore it during that time.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel><AlertDialogAction disabled={deleting} onClick={deleteStudySet} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{deleting ? <Loader2 className="size-4 mr-2 animate-spin" /> : <Trash2 className="size-4 mr-2" />}Delete study set</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </main>
   );
 }
