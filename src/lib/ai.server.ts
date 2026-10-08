@@ -1,44 +1,27 @@
-import type { ModelMessage } from "ai";
+const GEMINI_MODEL = "gemini-3.8-flash";
 
-const MODEL = "openrouter/free";
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-
-class OpenRouterError extends Error {
+class GeminiError extends Error {
   statusCode?: number;
   constructor(message: string, statusCode?: number) {
     super(message);
-    this.name = "OpenRouterError";
+    this.name = "GeminiError";
     this.statusCode = statusCode;
   }
 }
 
-function providerErrorMessage(status: number, detail: string) {
-  const clean = detail.trim();
-  if (status === 401) return "OpenRouter rejected the API key. Check OPENROUTER_API_KEY in Vercel.";
-  if (status === 402)
-    return "OpenRouter needs credits for this request. Add credits or use an available free model.";
-  if (status === 403) return `OpenRouter denied the request${clean ? `: ${clean}` : "."}`;
-  if (status === 404)
-    return `OpenRouter could not find the requested model/router${clean ? `: ${clean}` : "."}`;
-  if (status === 429)
-    return `OpenRouter rate-limited the request${clean ? `: ${clean}` : ". Please try again in a minute."}`;
-  if (status >= 500)
-    return `OpenRouter returned a server error (${status})${clean ? `: ${clean}` : ". Please try again."}`;
-  return `OpenRouter rejected the request (${status})${clean ? `: ${clean}` : "."}`;
-}
-
-function extractErrorDetail(payload: unknown): string {
-  if (typeof payload === "string") return payload;
-  if (!payload || typeof payload !== "object") return "";
-  const p = payload as { error?: unknown; message?: unknown };
-  if (typeof p.message === "string") return p.message;
-  if (p.error && typeof p.error === "object") {
-    const e = p.error as { message?: unknown; code?: unknown };
-    if (typeof e.message === "string") {
-      return typeof e.code === "string" ? `${e.message} (code ${e.code})` : e.message;
-    }
+function geminiErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "Unknown Gemini error");
+  const message = raw.trim();
+  if (/api key|api_key|authentication|unauthenticated|401/i.test(message)) {
+    return "Gemini rejected the API key. Check GEMINI_API_KEY in your Vercel environment variables and redeploy.";
   }
-  return "";
+  if (/quota|rate.?limit|429|resource exhausted/i.test(message)) {
+    return "Gemini rate limit or quota reached. Please wait and try again.";
+  }
+  if (/permission|403|forbidden/i.test(message)) {
+    return `Gemini denied the request${message ? `: ${message}` : "."}`;
+  }
+  return `Gemini request failed${message ? `: ${message}` : ". Please try again."}`;
 }
 
 /** Appended to every AI system prompt: the student's materials are the primary source. */
@@ -64,94 +47,41 @@ QUALITY RULES:
 - Focus on important testable ideas rather than trivia.
 `;
 
-async function callGemini(system: string, messages: ModelMessage[]): Promise<string | null> {
+async function callGemini(system: string, messages: ModelMessage[]): Promise<string> {
   const geminiKey = process.env["GEMINI_API_KEY"]?.trim();
-  if (!geminiKey) return null;
+  if (!geminiKey) {
+    throw new GeminiError(
+      "Gemini is not configured on the server. Set GEMINI_API_KEY in the Vercel environment variables, then redeploy.",
+    );
+  }
+
   try {
     const { GoogleGenAI } = await import("@google/genai");
-    const ai = new GoogleGenAI({
-      apiKey: geminiKey,
-      httpOptions: {
-        headers: { "User-Agent": "aistudio-build" },
-      },
-    });
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
     const userPrompt = messages.map((m) => `${m.content}`).join("\n\n");
     const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
+      model: GEMINI_MODEL,
       contents: userPrompt,
       config: {
         systemInstruction: system,
       },
     });
     const text = response.text?.trim();
-    return text || null;
+    if (!text) throw new GeminiError("Gemini returned an empty response.");
+    return text;
   } catch (err) {
-    console.warn("Gemini API call returned error, checking OpenRouter:", err);
-    return null;
+    if (err instanceof GeminiError) throw err;
+    console.error("Gemini request failed", err);
+    throw new GeminiError(geminiErrorMessage(err));
   }
 }
 
 async function aiTextOnce(system: string, messages: ModelMessage[]): Promise<string> {
-  const geminiRes = await callGemini(system, messages);
-  if (geminiRes) return geminiRes;
-
-  const apiKey = process.env["OPENROUTER_API_KEY"]?.trim();
-
-  if (!apiKey) {
-    throw new Error(
-      "AI is not configured on the server. Please set GEMINI_API_KEY or OPENROUTER_API_KEY.",
-    );
-  }
-
-  const response = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://momentum.vercel.app",
-      "X-Title": "Momentum",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [{ role: "system", content: system }, ...messages],
-    }),
-  });
-
-  const raw = await response.text();
-  let payload: unknown = null;
-  try {
-    payload = raw ? JSON.parse(raw) : null;
-  } catch {
-    payload = raw;
-  }
-
-  if (!response.ok) {
-    const detail = extractErrorDetail(payload);
-    console.error("OpenRouter request failed", { status: response.status, detail });
-    throw new OpenRouterError(providerErrorMessage(response.status, detail), response.status);
-  }
-
-  const choice = (
-    payload as {
-      choices?: Array<{ message?: { content?: unknown }; finish_reason?: string | null }>;
-    }
-  )?.choices?.[0];
-  const content = choice?.message?.content;
-
-  if (typeof content !== "string" || !content.trim()) {
-    console.error("OpenRouter returned no text", payload);
-    throw new Error("OpenRouter returned an empty response. Please try again.");
-  }
-
-  if (choice?.finish_reason === "length") {
-    throw new Error("The AI response was cut off before it finished. Please try again.");
-  }
-
-  return content;
+  return callGemini(system, messages);
 }
 
 function retryable(err: unknown) {
-  const status = err instanceof OpenRouterError ? err.statusCode : undefined;
+  const status = err instanceof GeminiError ? err.statusCode : undefined;
   return status === 429 || (typeof status === "number" && status >= 500);
 }
 
