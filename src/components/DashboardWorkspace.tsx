@@ -22,8 +22,12 @@ import { SessionRecap } from "@/components/SessionRecap";
 import { StreakCard } from "@/components/StreakCard";
 import { AIStudyPlan } from "@/components/AIStudyPlan";
 import { ConceptConnections } from "@/components/ConceptConnections";
+import { StudyFolderManager } from "@/components/StudyFolderManager";
 
 export function DashboardWorkspace({ sets }: { sets: SetWithCards[] }) {
+  const [folderId, setFolderId] = useState<string | null>("__all__");
+  const filteredSets = folderId === "__all__" ? sets : sets.filter((s) => (s.folder_id ?? null) === folderId);
+
   return (
     <section className="px-5 md:px-8 pt-6">
       <Tabs defaultValue="today" className="w-full">
@@ -32,6 +36,7 @@ export function DashboardWorkspace({ sets }: { sets: SetWithCards[] }) {
           <TabsTrigger value="plan" className="gap-2"><CalendarDays className="size-4" />Plan</TabsTrigger>
           <TabsTrigger value="understand" className="gap-2"><Brain className="size-4" />Understand</TabsTrigger>
           <TabsTrigger value="progress" className="gap-2"><Gauge className="size-4" />Progress</TabsTrigger>
+          <TabsTrigger value="study-sets" className="gap-2"><LibraryBig className="size-4" />Study Sets</TabsTrigger>
           <TabsTrigger value="practice" className="gap-2"><Sparkles className="size-4" />Practice</TabsTrigger>
         </TabsList>
 
@@ -55,6 +60,14 @@ export function DashboardWorkspace({ sets }: { sets: SetWithCards[] }) {
           <SessionRecap />
           <MilestoneRewards />
           <StreakCard />
+        </TabsContent>
+
+        <TabsContent value="study-sets" className="space-y-6 mt-6">
+          <StudyFolderManager selectedId={folderId} onSelect={setFolderId} />
+          <div className="rounded-2xl border border-line bg-panel p-5 md:p-6">
+            <div className="flex items-center gap-3"><LibraryBig className="size-5 text-cool2" /><div><p className="eyebrow text-cool2">Study Sets</p><h2 className="font-display text-xl font-bold">Your study sets</h2><p className="text-sm text-soft mt-1">Organize sets into folders and open any set to study.</p></div></div>
+            <StudySetCards sets={filteredSets} />
+          </div>
         </TabsContent>
 
         <TabsContent value="practice" className="space-y-6 mt-6">
