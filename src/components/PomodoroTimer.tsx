@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
 import { toast } from "sonner";
 import { recordStudySessionCompletion } from "./DailyStreak";
+import { addSessionRecord } from "./SessionHistory";
 import { logActivity } from "@/lib/log-activity";
 
 function playTone(kind: "tick" | "chime") {
@@ -59,9 +60,11 @@ export function PomodoroTimer({ setId = null, topicName = "Pomodoro Focus", clas
       const duration = Math.max(1, Math.round((Date.now() - (sessionStarted.current ?? Date.now())) / 60000));
       const mins = Math.max(1, Math.min(focusMinutes, duration));
       recordStudySessionCompletion(mins, topicName);
+      addSessionRecord({ timestamp: new Date().toISOString(), duration: `${mins}m`, topic: topicName, type: "Pomodoro Focus", notes: `Completed a ${focusMinutes}-minute focus block.` });
       void logActivity("session", setId, 1, undefined, { duration_seconds: mins * 60, meta: { source: "pomodoro", focusMinutes } });
       if (sound) playTone("chime");
-      toast.success(`Focus session complete — ${mins} minute${mins === 1 ? "" : "s"} added to your progress!`);
+      const recapScore = Math.min(100, Math.round(55 + (mins / Math.max(1, focusMinutes)) * 35 + (mins >= focusMinutes ? 10 : 0)));
+      toast.success(`Session complete · ${mins} min focused · Focus score ${recapScore}/100`, { description: `${topicName} · Progress, streak, and session history updated.` });
       setMode("break");
       setRemaining(breakMinutes * 60);
     } else {

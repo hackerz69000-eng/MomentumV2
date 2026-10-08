@@ -8,16 +8,9 @@ import { supabase } from "@/integrations/supabase/client";
 import { fetchSets, type SetWithCards } from "@/lib/queries";
 import { computeProgress } from "@/lib/progress";
 import { ProgressBar } from "@/components/ProgressBar";
-import { StreakCard } from "@/components/StreakCard";
-import { CommandCenter } from "@/components/CommandCenter";
+import { DashboardWorkspace } from "@/components/DashboardWorkspace";
 import { Levels } from "@/components/Levels";
 import { DailyStreak } from "@/components/DailyStreak";
-import { DailyStudyGoals } from "@/components/DailyStudyGoals";
-import { SessionHistory } from "@/components/SessionHistory";
-import { PomodoroTimer } from "@/components/PomodoroTimer";
-import { StudyAnalytics } from "@/components/StudyAnalytics";
-import { MilestoneRewards } from "@/components/MilestoneRewards";
-import { ProgressionHub } from "@/components/ProgressionHub";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -77,10 +70,7 @@ function Dashboard() {
   const quizAvg = totals.quizN ? Math.round(totals.quizSum / totals.quizN) : null;
   const cumulativePct = quizAvg == null ? cardPct : Math.round((cardPct + quizAvg) / 2);
 
-  const latest = all.find((s) => s.status === "ready");
-  const latestP = latest
-    ? computeProgress(latest.flashcards, latest.quiz_score, latest.quiz_total)
-    : null;
+
 
   return (
     <main className="flex-1">
@@ -103,22 +93,7 @@ function Dashboard() {
         </div>
       </header>
 
-      {/* Daily Study Goals and Focus Session History */}
-      <section className="px-5 md:px-8 pt-6 grid lg:grid-cols-2 gap-6">
-        <DailyStudyGoals />
-        <SessionHistory />
-      </section>
-
-      <section className="px-5 md:px-8 pt-6 grid lg:grid-cols-2 gap-6">
-        <PomodoroTimer />
-        <StudyAnalytics />
-      </section>
-
-      <section className="px-5 md:px-8 pt-6">
-        <MilestoneRewards />
-      </section>
-
-      <ProgressionHub />
+      {!isLoading && !error && all.length > 0 && <DashboardWorkspace sets={all} />}
 
       {isLoading ? (
         <div className="grid place-items-center py-24">
@@ -131,82 +106,7 @@ function Dashboard() {
         </div>
       ) : all.length === 0 ? (
         <EmptyState />
-      ) : (
-        <>
-          <CommandCenter sets={all} />
-          <StreakCard />
-          {latest && latestP && (
-            <section className="relative overflow-hidden px-5 md:px-8 py-8">
-              <div className="absolute inset-0 bg-panel border-y border-line pointer-events-none" />
-              <div className="relative grid md:grid-cols-[1.6fr_1fr] gap-8 items-center">
-                <div className="max-w-lg">
-                  <span className="eyebrow text-cool2">Continue studying</span>
-                  <h2 className="font-display text-4xl md:text-5xl font-bold leading-tight mt-3">
-                    {latest.name}
-                  </h2>
-                  <p className="text-soft mt-4 text-sm leading-relaxed">
-                    {latest.description ||
-                      `${latestP.total} flashcards, notes and a quiz are ready for ${latest.subject || "this set"}.`}
-                  </p>
-                  <div className="flex flex-wrap gap-3 mt-6">
-                    <Link
-                      to="/sets/$id"
-                      params={{ id: latest.id }}
-                      search={{ tab: "flashcards" }}
-                      className="font-semibold text-sm bg-primary text-primary-foreground px-5 py-2.5 rounded-lg hover:bg-cool2"
-                    >
-                      Resume studying
-                    </Link>
-                    <Link
-                      to="/sets/$id"
-                      params={{ id: latest.id }}
-                      search={{ tab: "tutor" }}
-                      className="font-semibold text-sm bg-accent border border-line px-5 py-2.5 rounded-lg hover:border-cool/50"
-                    >
-                      Ask the tutor
-                    </Link>
-                  </div>
-                </div>
-                <div className="md:justify-self-end w-full md:w-72 rounded-xl p-5 bg-accent border border-line shadow-xl">
-                  <p className="eyebrow text-cool2 mb-3">Set progress</p>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-soft">Overall</span>
-                    <span className="font-display text-mint text-xl">{latestP.overall}%</span>
-                  </div>
-                  <ProgressBar value={latestP.overall} className="h-2 mt-2" />
-                  <div className="mt-4 grid grid-cols-2 gap-2 text-center">
-                    <div className="rounded-lg bg-foreground/5 py-2">
-                      <p className="font-display text-lg text-cool2">
-                        {latestP.mastered}/{latestP.total}
-                      </p>
-                      <p className="text-[10px] uppercase tracking-wider text-soft">mastered</p>
-                    </div>
-                    <div className="rounded-lg bg-foreground/5 py-2">
-                      <p className="font-display text-lg text-mint">
-                        {latestP.quizPct != null ? `${latestP.quizPct}%` : "—"}
-                      </p>
-                      <p className="text-[10px] uppercase tracking-wider text-soft">quiz</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-          )}
-          <section className="px-5 md:px-8 py-8">
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="font-display text-2xl font-bold">Study sets</h3>
-              <span className="text-xs uppercase tracking-[0.2em] text-soft">
-                {all.length} total
-              </span>
-            </div>
-            <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-5">
-              {all.map((s) => (
-                <SetCard key={s.id} set={s} />
-              ))}
-            </div>
-          </section>
-        </>
-      )}
+      ) : null}
     </main>
   );
 }

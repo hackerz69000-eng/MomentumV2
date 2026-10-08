@@ -772,6 +772,43 @@ Use the app's tools in tasks: "Notes", "Study Guide", "Mistake Bank", "Flashcard
     return { plan };
   });
 
+
+
+export const generateConceptConnections = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z.object({ setId: z.string().min(1).max(200), focus: z.string().max(120).optional() }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId);
+    const text = await aiText(
+      `Build a compact concept-connection map for this study set. Return ONLY JSON: {"concepts":[{"name":"","summary":"","importance":"high|medium|low","connections":[{"to":"exact concept name","relationship":"causes|depends on|contrasts with|explains|part of|related to"}]}]}.
+Create 5-10 concepts that are actually supported by the student's material. Use exact repeated terminology from the material. Connections must point only to another concept in the returned list. Prefer meaningful relationships a student could use to understand or remember the material; do not create generic filler. Keep each summary under 35 words. If a focus is provided, prioritize it. ${data.focus ? `FOCUS: ${data.focus}` : ""}${ci(set)}
+MATERIAL:
+${clip(set.material_text, 42000)}`,
+      [{ role: "user", content: `Create the concept map for: ${set.name}` }],
+    );
+    const parsed = parseJson<{ concepts?: Array<{ name?: string; summary?: string; importance?: string; connections?: Array<{ to?: string; relationship?: string }> }> }>(text);
+    const raw = Array.isArray(parsed.concepts) ? parsed.concepts : [];
+    const names = new Set(raw.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+    const concepts = raw
+      .map((c) => ({
+        name: String(c.name ?? "").trim().slice(0, 100),
+        summary: String(c.summary ?? "").trim().slice(0, 300),
+        importance: ["high", "medium", "low"].includes(String(c.importance)) ? String(c.importance) : "medium",
+        connections: Array.isArray(c.connections)
+          ? c.connections
+              .map((x) => ({ to: String(x.to ?? "").trim(), relationship: String(x.relationship ?? "related to").trim().slice(0, 60) }))
+              .filter((x) => names.has(x.to) && x.to !== String(c.name ?? "").trim())
+              .slice(0, 5)
+          : [],
+      }))
+      .filter((c) => c.name && c.summary)
+      .slice(0, 10);
+    if (concepts.length < 3) throw new Error("Momentum couldn't find enough supported concept connections. Try again after your study set finishes processing.");
+    return { concepts };
+  });
+
 export const ocrFile = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) =>
