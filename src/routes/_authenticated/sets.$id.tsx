@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { z } from "zod";
 import { toast } from "sonner";
-import { ArrowLeft, Loader2, RefreshCw, Send, AlertCircle } from "lucide-react";
+import { ArrowLeft, Loader2, RefreshCw, Send, AlertCircle, MoreHorizontal } from "lucide-react";
 import { fetchCards, fetchSet, type StudySet } from "@/lib/queries";
 import { supabase } from "@/integrations/supabase/client";
 import { askTutor, processSet } from "@/lib/study.functions";
@@ -31,41 +31,29 @@ import { Levels } from "@/components/Levels";
 import { DailyStreak } from "@/components/DailyStreak";
 
 const TABS = [
-  "overview",
-  "everything",
-  "audio",
-  "search",
-  "ask",
-  "mistakes",
-  "lectures",
-  "notes",
-  "guide",
-  "flashcards",
-  "recall",
-  "quiz",
-  "exam",
-  "tutor",
-  "plan",
-  "materials",
+  "overview", "everything", "audio", "search", "ask", "mistakes", "lectures",
+  "notes", "guide", "flashcards", "recall", "quiz", "exam", "tutor", "plan", "materials",
 ] as const satisfies readonly Tab[];
+
 const LABELS: Record<Tab, string> = {
-  overview: "Overview",
-  everything: "Study Everything",
-  audio: "Audio Study",
-  search: "Search",
-  ask: "Ask Your Materials",
-  mistakes: "Mistake Bank",
-  lectures: "Lectures",
-  notes: "Notes",
-  guide: "Study Guide",
-  recall: "Active Recall",
-  flashcards: "Flashcards",
-  quiz: "Quiz",
-  exam: "Practice Exam",
-  tutor: "AI Tutor",
-  plan: "Study Plan",
-  materials: "Materials",
+  overview: "Overview", everything: "Study Everything", audio: "Audio Study", search: "Search",
+  ask: "Ask Your Materials", mistakes: "Mistake Bank", lectures: "Lectures", notes: "Notes",
+  guide: "Study Guide", recall: "Active Recall", flashcards: "Flashcards", quiz: "Quiz",
+  exam: "Practice Exam", tutor: "AI Tutor", plan: "Study Plan", materials: "Materials",
 };
+
+const MAIN_NAV: { tab: Tab; label: string }[] = [
+  { tab: "overview", label: "Overview" },
+  { tab: "everything", label: "Study" },
+  { tab: "flashcards", label: "Practice" },
+  { tab: "mistakes", label: "Review" },
+  { tab: "plan", label: "Plan" },
+  { tab: "materials", label: "Materials" },
+];
+
+const MORE_NAV: Tab[] = [
+  "audio", "notes", "guide", "recall", "quiz", "exam", "tutor", "ask", "search", "lectures",
+];
 
 export const Route = createFileRoute("/_authenticated/sets/$id")({
   ssr: false,
@@ -95,6 +83,7 @@ function SetPage() {
   const { id } = Route.useParams();
   const { tab = "overview" } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
+  const [moreOpen, setMoreOpen] = useState(false);
   const setQ = useQuery({ queryKey: ["set", id], queryFn: () => fetchSet(id), retry: 1 });
   const cardsQ = useQuery({ queryKey: ["cards", id], queryFn: () => fetchCards(id) });
   const attemptsQ = useQuery({
@@ -158,22 +147,29 @@ function SetPage() {
             <span className="eyebrow text-cool2 hidden sm:inline-block">{set.subject || "General"}</span>
           </div>
         </div>
-        <nav className="flex gap-1 mt-4 pb-3 overflow-x-auto">
-          {TABS.map((t) => (
-            <button
-              key={t}
-              onClick={() => navigate({ search: { tab: t }, replace: true })}
-              className={cn(
-                "px-4 py-2 text-sm font-semibold rounded-lg whitespace-nowrap border transition-colors",
-                tab === t
-                  ? "bg-cool/20 text-foreground border-cool/30"
-                  : "text-soft border-transparent hover:text-foreground",
-                t === "tutor" && tab !== t && "text-mint",
-              )}
-            >
-              {LABELS[t]}
-            </button>
+        <nav className="flex items-center gap-1 mt-4 pb-3 overflow-x-auto" aria-label="Study set navigation">
+          {MAIN_NAV.map((item) => (
+            <button key={item.tab} onClick={() => { setMoreOpen(false); navigate({ search: { tab: item.tab }, replace: true }); }} className={cn(
+              "px-3.5 py-2 text-sm font-semibold rounded-lg whitespace-nowrap border transition-colors",
+              tab === item.tab ? "bg-cool/20 text-foreground border-cool/30" : "text-soft border-transparent hover:text-foreground hover:bg-foreground/5",
+            )}>{item.label}</button>
           ))}
+          <div className="relative shrink-0">
+            <button type="button" aria-expanded={moreOpen} onClick={() => setMoreOpen((v) => !v)} className={cn(
+              "px-3.5 py-2 text-sm font-semibold rounded-lg whitespace-nowrap border inline-flex items-center gap-2 transition-colors",
+              MORE_NAV.includes(tab) ? "bg-cool/20 text-foreground border-cool/30" : "text-soft border-transparent hover:text-foreground hover:bg-foreground/5",
+            )}><MoreHorizontal className="size-4" /> More</button>
+            {moreOpen && <div className="absolute right-0 top-full mt-2 z-50 w-60 rounded-xl border border-line bg-panel p-2 shadow-2xl">
+              <p className="px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-soft">More study tools</p>
+              <div className="grid grid-cols-2 gap-1">
+                {MORE_NAV.map((t) => <button key={t} onClick={() => { setMoreOpen(false); navigate({ search: { tab: t }, replace: true }); }} className={cn(
+                  "rounded-lg px-3 py-2 text-left text-sm font-semibold hover:bg-foreground/5",
+                  tab === t ? "bg-cool/15 text-cool2" : "text-soft hover:text-foreground",
+                  t === "tutor" && "text-mint",
+                )}>{LABELS[t]}</button>)}
+              </div>
+            </div>}
+          </div>
         </nav>
       </header>
       <div className="p-5 md:p-8">

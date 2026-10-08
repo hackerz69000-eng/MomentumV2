@@ -37,9 +37,13 @@ Set these environment variables in Vercel for the environments you deploy to:
 - `VITE_SUPABASE_PROJECT_ID` (if used by the client)
 - `NVIDIA_API_KEY` for NVIDIA NIM AI study generation
 - `NIM_MODEL` (optional; defaults to `openai/gpt-oss-20b`)
-- `LOVABLE_API_KEY` for audio/transcription features that use the Lovable AI gateway
+- `DEEPGRAM_API_KEY` for lecture transcription and Audio Study voice generation
 
 The `VITE_` Supabase values are intentionally public client configuration; never put service-role or other private secrets in a `VITE_` variable.
+
+## Deployment checklist
+
+Configure these server variables in Vercel: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `NVIDIA_API_KEY`, and `DEEPGRAM_API_KEY`. Configure the matching `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` values for the browser. Redeploy after changing production variables.
 
 ## Architecture
 

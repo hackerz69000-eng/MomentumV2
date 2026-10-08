@@ -47,8 +47,7 @@ export function Overview({
   const quick: { t: Tab; l: string; icon: typeof Zap; primary?: boolean }[] = [
     { t: "everything", l: "Study Everything", icon: Sparkles, primary: true },
     { t: "audio", l: "Audio Study", icon: Headphones, primary: true },
-    { t: "flashcards", l: "Study Me", icon: Zap },
-    { t: "flashcards", l: "Flashcards", icon: Layers },
+    { t: "flashcards", l: "Spaced Review", icon: Layers },
     { t: "recall", l: "Active Recall", icon: ListChecks },
     { t: "quiz", l: "Adaptive Quiz", icon: Brain },
     { t: "guide", l: "Study Guide", icon: ScrollText },

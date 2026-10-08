@@ -15,18 +15,25 @@ export interface StreakData {
   totalStudyMinutes: number;
 }
 
+function localDateKey(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 export function getStreakData(): StreakData {
   if (typeof window === "undefined") {
-    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
+    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
   }
   try {
     const raw = localStorage.getItem(STREAK_KEY);
     if (!raw) {
       const initial: StreakData = {
-        currentStreak: 1,
-        longestStreak: 1,
-        lastStudyDate: new Date().toISOString().split("T")[0]!,
-        totalSessionsCompleted: 1,
+        currentStreak: 0,
+        longestStreak: 0,
+        lastStudyDate: null,
+        totalSessionsCompleted: 0,
         totalStudyMinutes: 0,
       };
       localStorage.setItem(STREAK_KEY, JSON.stringify(initial));
@@ -34,24 +41,24 @@ export function getStreakData(): StreakData {
     }
     const parsed = JSON.parse(raw) as Partial<StreakData>;
     return {
-      currentStreak: parsed.currentStreak ?? 1,
-      longestStreak: parsed.longestStreak ?? 1,
+      currentStreak: parsed.currentStreak ?? 0,
+      longestStreak: parsed.longestStreak ?? 0,
       lastStudyDate: parsed.lastStudyDate ?? null,
       totalSessionsCompleted: parsed.totalSessionsCompleted ?? 0,
       totalStudyMinutes: parsed.totalStudyMinutes ?? 0,
     };
   } catch {
-    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
+    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
   }
 }
 
 export function recordStudySessionCompletion(durationMinutes = 15, topicName = "Study Session"): StreakData {
   if (typeof window === "undefined") {
-    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 1, totalStudyMinutes: 0 };
+    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
   }
 
   const prev = getStreakData();
-  const today = new Date().toISOString().split("T")[0]!;
+  const today = localDateKey();
 
   let nextStreak = prev.currentStreak;
   let isNewDay = false;
@@ -121,8 +128,8 @@ interface DailyStreakProps {
 
 export function DailyStreak({ className = "" }: DailyStreakProps) {
   const [data, setData] = useState<StreakData>(() => ({
-    currentStreak: 1,
-    longestStreak: 1,
+    currentStreak: 0,
+    longestStreak: 0,
     lastStudyDate: null,
     totalSessionsCompleted: 0,
   }));
@@ -141,7 +148,7 @@ export function DailyStreak({ className = "" }: DailyStreakProps) {
     return () => window.removeEventListener(STREAK_EVENT, handleUpdate);
   }, []);
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = localDateKey();
   const studiedToday = mounted && data.lastStudyDate === today;
 
   const handleManualComplete = () => {
