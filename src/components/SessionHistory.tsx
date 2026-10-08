@@ -13,7 +13,7 @@ export interface StudySessionRecord {
 }
 
 const HISTORY_KEY = "momentum_session_history";
-const HISTORY_EVENT = "momentum_session_history_updated";
+export const HISTORY_EVENT = "momentum_session_history_updated";
 
 const DEFAULT_SESSIONS: StudySessionRecord[] = [
   {

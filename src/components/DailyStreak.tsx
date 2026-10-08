@@ -11,11 +11,12 @@ export interface StreakData {
   longestStreak: number;
   lastStudyDate: string | null; // YYYY-MM-DD
   totalSessionsCompleted: number;
+  totalStudyMinutes: number;
 }
 
 export function getStreakData(): StreakData {
   if (typeof window === "undefined") {
-    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 0 };
+    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
   }
   try {
     const raw = localStorage.getItem(STREAK_KEY);
@@ -25,19 +26,27 @@ export function getStreakData(): StreakData {
         longestStreak: 1,
         lastStudyDate: new Date().toISOString().split("T")[0]!,
         totalSessionsCompleted: 1,
+        totalStudyMinutes: 0,
       };
       localStorage.setItem(STREAK_KEY, JSON.stringify(initial));
       return initial;
     }
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw) as Partial<StreakData>;
+    return {
+      currentStreak: parsed.currentStreak ?? 1,
+      longestStreak: parsed.longestStreak ?? 1,
+      lastStudyDate: parsed.lastStudyDate ?? null,
+      totalSessionsCompleted: parsed.totalSessionsCompleted ?? 0,
+      totalStudyMinutes: parsed.totalStudyMinutes ?? 0,
+    };
   } catch {
-    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 0 };
+    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
   }
 }
 
 export function recordStudySessionCompletion(durationMinutes = 15, topicName = "Study Session"): StreakData {
   if (typeof window === "undefined") {
-    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 1 };
+    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 1, totalStudyMinutes: 0 };
   }
 
   const prev = getStreakData();
@@ -73,6 +82,7 @@ export function recordStudySessionCompletion(durationMinutes = 15, topicName = "
     longestStreak: Math.max(nextStreak, prev.longestStreak),
     lastStudyDate: today,
     totalSessionsCompleted: prev.totalSessionsCompleted + 1,
+    totalStudyMinutes: (prev.totalStudyMinutes ?? 0) + Math.max(0, durationMinutes),
   };
 
   localStorage.setItem(STREAK_KEY, JSON.stringify(updated));

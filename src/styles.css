@@ -78,6 +78,27 @@
   --gradient-progress: linear-gradient(90deg, var(--cool), var(--cool2));
 }
 
+
+/* Optional cosmetic themes unlocked by Milestone Rewards. */
+:root[data-momentum-theme="aurora"] {
+  --cool: oklch(0.68 0.18 190);
+  --cool2: oklch(0.76 0.15 165);
+  --mint: oklch(0.78 0.16 155);
+  --violet: oklch(0.67 0.18 220);
+}
+:root[data-momentum-theme="sunset"] {
+  --cool: oklch(0.68 0.19 25);
+  --cool2: oklch(0.76 0.17 55);
+  --mint: oklch(0.76 0.16 75);
+  --violet: oklch(0.67 0.18 340);
+}
+:root[data-momentum-theme="forest"] {
+  --cool: oklch(0.60 0.16 155);
+  --cool2: oklch(0.72 0.16 145);
+  --mint: oklch(0.76 0.15 150);
+  --violet: oklch(0.62 0.15 185);
+}
+
 @layer base {
   * {
     border-color: var(--color-border);

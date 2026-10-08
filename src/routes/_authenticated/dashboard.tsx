@@ -14,6 +14,9 @@ import { Levels } from "@/components/Levels";
 import { DailyStreak } from "@/components/DailyStreak";
 import { DailyStudyGoals } from "@/components/DailyStudyGoals";
 import { SessionHistory } from "@/components/SessionHistory";
+import { PomodoroTimer } from "@/components/PomodoroTimer";
+import { StudyAnalytics } from "@/components/StudyAnalytics";
+import { MilestoneRewards } from "@/components/MilestoneRewards";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -103,6 +106,15 @@ function Dashboard() {
       <section className="px-5 md:px-8 pt-6 grid lg:grid-cols-2 gap-6">
         <DailyStudyGoals />
         <SessionHistory />
+      </section>
+
+      <section className="px-5 md:px-8 pt-6 grid lg:grid-cols-2 gap-6">
+        <PomodoroTimer />
+        <StudyAnalytics />
+      </section>
+
+      <section className="px-5 md:px-8 pt-6">
+        <MilestoneRewards />
       </section>
 
       {isLoading ? (
