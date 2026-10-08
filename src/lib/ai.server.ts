@@ -1,29 +1,40 @@
-const MISTRAL_MODEL = "mistral-small-latest";
+const NIM_MODEL = process.env["NIM_MODEL"]?.trim() || "openai/gpt-oss-20b";
+const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 
 type ModelMessage = { role: "user" | "assistant"; content: string };
-const MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions";
 
-class MistralError extends Error {
+class NimError extends Error {
   statusCode?: number;
   constructor(message: string, statusCode?: number) {
     super(message);
-    this.name = "MistralError";
+    this.name = "NimError";
     this.statusCode = statusCode;
   }
 }
 
-function mistralErrorMessage(status: number, body: string): string {
-  const message = body.trim();
+function nimErrorMessage(status: number, body: string): string {
+  let detail = body.trim();
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: string } | string };
+    if (typeof parsed.error === "string") detail = parsed.error;
+    else if (parsed.error?.message) detail = parsed.error.message;
+  } catch {
+    // Keep the raw response when NVIDIA does not return JSON.
+  }
+
   if (status === 401) {
-    return "Mistral rejected the API key. Check MISTRAL_API_KEY in your Vercel environment variables and redeploy.";
+    return "NVIDIA NIM rejected the API key. Check NVIDIA_API_KEY in your Vercel environment variables and redeploy.";
   }
   if (status === 402) {
-    return "Mistral requires billing for this request. Check your Mistral Studio plan and usage limits.";
+    return "NVIDIA NIM requires billing or the selected model is not available to this API key. Check your NVIDIA API Catalog account and model access.";
+  }
+  if (status === 403) {
+    return `NVIDIA NIM denied the request${detail ? `: ${detail.slice(0, 1000)}` : "."}`;
   }
   if (status === 429) {
-    return "Mistral rate limit reached. Please wait a moment and try again.";
+    return "NVIDIA NIM rate limit reached. Please wait a moment and try again.";
   }
-  return `Mistral request failed${message ? `: ${message.slice(0, 1000)}` : ` (HTTP ${status}).`}`;
+  return `NVIDIA NIM request failed${detail ? `: ${detail.slice(0, 1000)}` : ` (HTTP ${status}).`}`;
 }
 
 /** Appended to every AI system prompt: the student's materials are the primary source. */
@@ -49,23 +60,25 @@ QUALITY RULES:
 - Focus on important testable ideas rather than trivia.
 `;
 
-async function callMistral(system: string, messages: ModelMessage[]): Promise<string> {
-  const mistralKey = process.env["MISTRAL_API_KEY"]?.trim();
-  if (!mistralKey) {
-    throw new MistralError(
-      "Mistral is not configured on the server. Set MISTRAL_API_KEY in the Vercel environment variables, then redeploy.",
+async function callNim(system: string, messages: ModelMessage[]): Promise<string> {
+  const apiKey = process.env["NVIDIA_API_KEY"]?.trim();
+  if (!apiKey) {
+    throw new NimError(
+      "NVIDIA NIM is not configured on the server. Set NVIDIA_API_KEY in the Vercel environment variables, then redeploy.",
     );
   }
 
-  const response = await fetch(MISTRAL_URL, {
+  const response = await fetch(NIM_URL, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${mistralKey}`,
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
+      Accept: "application/json",
     },
     body: JSON.stringify({
-      model: MISTRAL_MODEL,
+      model: NIM_MODEL,
       temperature: 0.2,
+      stream: false,
       messages: [
         { role: "system", content: system },
         ...messages.map((message) => ({ role: message.role, content: message.content })),
@@ -73,21 +86,25 @@ async function callMistral(system: string, messages: ModelMessage[]): Promise<st
     }),
   });
 
+  const body = await response.text();
   if (!response.ok) {
-    const body = await response.text();
-    throw new MistralError(mistralErrorMessage(response.status, body), response.status);
+    throw new NimError(nimErrorMessage(response.status, body), response.status);
   }
 
-  const payload = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string | null } }>;
-  };
+  let payload: { choices?: Array<{ message?: { content?: string | null } }> };
+  try {
+    payload = JSON.parse(body) as { choices?: Array<{ message?: { content?: string | null } }> };
+  } catch {
+    throw new NimError("NVIDIA NIM returned an invalid response.");
+  }
+
   const text = payload.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new MistralError("Mistral returned an empty response.");
+  if (!text) throw new NimError("NVIDIA NIM returned an empty response.");
   return text;
 }
 
 function retryable(err: unknown) {
-  const status = err instanceof MistralError ? err.statusCode : undefined;
+  const status = err instanceof NimError ? err.statusCode : undefined;
   return status === 429 || (typeof status === "number" && status >= 500);
 }
 
@@ -98,14 +115,12 @@ export async function aiText(
 ): Promise<string> {
   if (opts.grounded !== false) system += GROUNDING;
 
-  // Mistral Free mode can temporarily rate-limit or return a transient 5xx.
-  // Retry a few times instead of failing an entire study-set generation.
   const delays = [1000, 2000, 4000];
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
     try {
-      return await callMistral(system, messages);
+      return await callNim(system, messages);
     } catch (error) {
       lastError = error;
       if (!retryable(error) || attempt === delays.length) break;
@@ -113,7 +128,7 @@ export async function aiText(
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error("Mistral request failed. Please try again.");
+  throw lastError instanceof Error ? lastError : new Error("NVIDIA NIM request failed. Please try again.");
 }
 
 export function parseJson<T>(text: string): T {
