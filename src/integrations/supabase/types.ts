@@ -591,6 +591,30 @@ export type Database = {
           },
         ];
       };
+      study_folders: {
+        Row: {
+          created_at: string;
+          id: string;
+          name: string;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          id?: string;
+          name: string;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          id?: string;
+          name?: string;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [];
+      };
       study_sets: {
         Row: {
           created_at: string;
@@ -598,6 +622,7 @@ export type Database = {
           description: string;
           error: string | null;
           exam_date: string | null;
+            folder_id: string | null;
           id: string;
           material_filename: string | null;
           material_source: string;
@@ -622,6 +647,7 @@ export type Database = {
           error?: string | null;
           exam_date?: string | null;
           id?: string;
+          folder_id?: string | null;
           material_filename?: string | null;
           material_source?: string;
           material_text?: string;
@@ -645,6 +671,7 @@ export type Database = {
           error?: string | null;
           exam_date?: string | null;
           id?: string;
+          folder_id?: string | null;
           material_filename?: string | null;
           material_source?: string;
           material_text?: string;
@@ -661,7 +688,15 @@ export type Database = {
           updated_at?: string;
           user_id?: string;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKey: ["folder_id"],
+            columns: ["folder_id"],
+            isOneToOne: false,
+            referencedRelation: "study_folders",
+            referencedColumns: ["id"],
+          },
+        ];
       };
       trash: {
         Row: {

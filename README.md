@@ -52,3 +52,9 @@ Configure these server variables in Vercel: `SUPABASE_URL`, `SUPABASE_PUBLISHABL
 - AI operations run on the server so provider keys are never exposed to the browser.
 - The `_authenticated` route is gated client-side because Supabase sessions live in browser storage.
 - Database migrations live under `drizzle/migrations`.
+
+## Supabase hardening migration
+
+Run `drizzle/migrations/0009_study_folders_hardening.sql` against the production Supabase database before deploying this build. It adds study folders, safe AI generation locks, Storage UPDATE policy, explicit ownership foreign keys, and the scheduled-trash cleanup prerequisites.
+
+For automatic Recently Deleted cleanup, set the server-only Vercel variables `SUPABASE_SERVICE_ROLE_KEY` and `CRON_SECRET`. The service-role key must never be exposed through a `VITE_` variable.

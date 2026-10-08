@@ -55,6 +55,7 @@ async function migrateLocalSet(localId: string, local: StudySet): Promise<StudyS
       material_text: local.material_text ?? "",
       material_source: local.material_source ?? "text",
       material_filename: local.material_filename ?? null,
+      folder_id: local.folder_id ?? null,
       notes: local.notes ?? null,
       status: local.status ?? "ready",
       error: local.error ?? null,

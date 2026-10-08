@@ -20,6 +20,7 @@ import { StreakCard } from "@/components/StreakCard";
 import { AIStudyPlan } from "@/components/AIStudyPlan";
 import { ConceptConnections } from "@/components/ConceptConnections";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { StudyFolderManager } from "@/components/StudyFolderManager";
 
 export function DashboardWorkspace({ sets }: { sets: SetWithCards[] }) {
   const qc = useQueryClient();
@@ -28,6 +29,7 @@ export function DashboardWorkspace({ sets }: { sets: SetWithCards[] }) {
     return localStorage.getItem("momentum_active_study_set") || sets[0]?.id || "";
   });
   const [confirmDelete, setConfirmDelete] = useState<SetWithCards | null>(null);
+  const [folderFilter, setFolderFilter] = useState<string | null>("__all__");
   const active = useMemo(() => sets.find((s) => s.id === activeId) ?? sets[0] ?? null, [sets, activeId]);
   const activeSets = active ? [active] : [];
 
@@ -121,7 +123,7 @@ export function DashboardWorkspace({ sets }: { sets: SetWithCards[] }) {
             <p className="text-sm text-soft mt-1">Every practice tool below is scoped to your current study set.</p>
             <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3 mt-5">
               {[['everything','Study Everything'],['flashcards','Flashcards'],['quiz','Adaptive Quiz'],['exam','Practice Exam']].map(([tab,label]) => (
-                <Link key={tab} to="/sets/$id" params={{ id: active.id }} search={{ tab: tab as never }} className="rounded-xl border border-line bg-accent p-4 hover:border-cool/50 transition-colors">
+                <Link key={tab} to="/sets/$id" params={{ id: active.id }} search={{ tab: tab as "everything" | "flashcards" | "quiz" | "exam" }} className="rounded-xl border border-line bg-accent p-4 hover:border-cool/50 transition-colors">
                   <p className="font-semibold">{label}</p><p className="text-xs text-cool2 mt-3">Open →</p>
                 </Link>
               ))}
@@ -130,13 +132,14 @@ export function DashboardWorkspace({ sets }: { sets: SetWithCards[] }) {
         </TabsContent>
 
         <TabsContent value="sets" className="space-y-6 mt-6">
+          <StudyFolderManager selectedId={folderFilter} onSelect={setFolderFilter} />
           <div className="rounded-2xl border border-line bg-panel p-5 md:p-6">
             <div className="flex items-start justify-between gap-4">
               <div><p className="eyebrow text-cool2">Study Sets</p><h2 className="font-display text-xl font-bold mt-1">All your study sets</h2><p className="text-sm text-soft mt-1">Choose the set you want Momentum to focus on. Your last choice is remembered.</p></div>
-              <span className="text-xs text-soft shrink-0">{sets.length} total</span>
+              <span className="text-xs text-soft shrink-0">{sets.filter((s) => folderFilter === "__all__" ? true : folderFilter ? s.folder_id === folderFilter : s.folder_id == null).length} shown</span>
             </div>
             <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3 mt-5">
-              {sets.map((s) => {
+              {sets.filter((s) => folderFilter === "__all__" ? true : folderFilter ? s.folder_id === folderFilter : s.folder_id == null).map((s) => {
                 const selected = s.id === active.id;
                 return <div key={s.id} className={`rounded-xl border p-4 transition-colors ${selected ? 'border-cool2/60 bg-cool/10' : 'border-line bg-accent hover:border-cool/40'}`}>
                   <div className="flex items-start justify-between gap-2">

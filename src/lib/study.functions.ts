@@ -6,6 +6,7 @@ import { setStats, type Attempt, type AttemptResult, type Flashcard } from "./st
 import { activityStats } from "./activity";
 import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server";
 import { generateNotesFromMaterial } from "./study-generator";
+import { withGenerationLock } from "./generation-lock.server";
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -126,39 +127,32 @@ export const processSet = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const supabase = context.supabase;
     const set = await loadSet(supabase, data.setId);
-    await supabase
-      .from("study_sets")
-      .update({ status: "processing", error: null })
-      .eq("id", set.id);
-    try {
-      // Notes come first: flashcards are deliberately generated from the
-      // finished notes so the deck is coherent with what the student will review.
-      const notes = await makeNotes(set);
-      const cards = await makeCards({ ...set, notes });
-      await supabase.from("flashcards").delete().eq("set_id", set.id);
-      const { error: insErr } = await supabase
-        .from("flashcards")
-        .insert(
-          cards.map((c, i) => ({
-            set_id: set.id,
-            user_id: context.userId,
-            question: c.q,
-            answer: c.a,
-            topic: (c.t ?? "").slice(0, 60),
-            position: i,
-          })),
-        );
-      if (insErr) throw new Error(insErr.message);
-      await supabase
-        .from("study_sets")
-        .update({ notes, status: "ready", error: null, updated_at: new Date().toISOString() })
-        .eq("id", set.id);
-      return { ok: true };
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Processing failed";
-      await supabase.from("study_sets").update({ status: "error", error: msg }).eq("id", set.id);
-      throw new Error(msg);
-    }
+    return withGenerationLock(supabase, context.userId, set.id, "process_set", async () => {
+      await supabase.from("study_sets").update({ status: "processing", error: null }).eq("id", set.id);
+      try {
+        const notes = await makeNotes(set);
+        const cards = await makeCards({ ...set, notes });
+        // Snapshot the current deck before replacing it. If the new insert fails, the
+        // student can restore the exact previous deck from Recently Deleted.
+        const { data: oldCards } = await supabase.from("flashcards").select("*").eq("set_id", set.id);
+        if (oldCards?.length) {
+          await supabase.from("trash").insert({
+            user_id: context.userId, kind: "flashcards", label: `${oldCards.length} replaced flashcards — ${set.name}`, set_id: set.id, data: { rows: oldCards },
+          });
+        }
+        await supabase.from("flashcards").delete().eq("set_id", set.id);
+        const { error: insErr } = await supabase.from("flashcards").insert(cards.map((c, i) => ({
+          set_id: set.id, user_id: context.userId, question: c.q, answer: c.a, topic: (c.t ?? "").slice(0, 60), position: i,
+        })));
+        if (insErr) throw new Error(insErr.message);
+        await supabase.from("study_sets").update({ notes, status: "ready", error: null, updated_at: new Date().toISOString() }).eq("id", set.id);
+        return { ok: true };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Processing failed";
+        await supabase.from("study_sets").update({ status: "error", error: msg }).eq("id", set.id);
+        throw new Error(msg);
+      }
+    });
   });
 
 export const regenerateNotes = createServerFn({ method: "POST" })
@@ -166,6 +160,7 @@ export const regenerateNotes = createServerFn({ method: "POST" })
   .inputValidator(idInput)
   .handler(async ({ data, context }) => {
     const set = await loadSet(context.supabase, data.setId);
+    return withGenerationLock(context.supabase, context.userId, set.id, "regenerate_notes", async () => {
     const notes = await makeNotes(set);
     // Keep the previous notes recoverable in Recently Deleted.
     if (set.notes?.trim())
@@ -183,6 +178,7 @@ export const regenerateNotes = createServerFn({ method: "POST" })
       .update({ notes, updated_at: new Date().toISOString() })
       .eq("id", set.id);
     return { notes };
+    });
   });
 
 export const regenerateCards = createServerFn({ method: "POST" })
@@ -191,6 +187,7 @@ export const regenerateCards = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const sb = context.supabase;
     const set = await loadSet(sb, data.setId);
+    return withGenerationLock(sb, context.userId, set.id, "regenerate_cards", async () => {
     const cards = await makeCards({ ...set, notes: set.notes ?? "" });
     const { data: old } = await sb.from("flashcards").select("*").eq("set_id", set.id);
     if (old?.length)
@@ -221,6 +218,7 @@ export const regenerateCards = createServerFn({ method: "POST" })
         "New flashcards couldn't be saved. Your previous cards are in Recently Deleted.",
       );
     return { ok: true };
+    });
   });
 
 export type QuizQuestion = {

@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { trashSet } from "@/lib/trash";
 import { ArrowLeft, Loader2, RefreshCw, Send, AlertCircle, MoreHorizontal, Trash2 } from "lucide-react";
 import { fetchCards, fetchSet, type StudySet } from "@/lib/queries";
+import { fetchStudyFolders, type StudyFolder } from "@/lib/folders";
 import { supabase } from "@/integrations/supabase/client";
 import { askTutor, processSet } from "@/lib/study.functions";
 import { setStats, type Attempt } from "@/lib/stats";
@@ -88,6 +89,8 @@ function SetPage() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [folders, setFolders] = useState<StudyFolder[]>([]);
+  const [folderSaving, setFolderSaving] = useState(false);
   const setQ = useQuery({ queryKey: ["set", id], queryFn: () => fetchSet(id), retry: 1 });
   const cardsQ = useQuery({ queryKey: ["cards", id], queryFn: () => fetchCards(id) });
   const attemptsQ = useQuery({
@@ -108,6 +111,7 @@ function SetPage() {
   });
 
   const mistakesQ = useQuery({ queryKey: ["mistakes", id], queryFn: () => fetchMistakes(id) });
+  useEffect(() => { fetchStudyFolders().then(setFolders).catch(() => undefined); }, []);
 
   const deleteStudySet = async () => {
     setDeleting(true);
@@ -171,6 +175,23 @@ function SetPage() {
             <Levels percentage={stats.readiness} />
             <DailyStreak />
             <span className="eyebrow text-cool2 hidden sm:inline-block">{set.subject || "General"}</span>
+            <select
+              value={set.folder_id ?? ""}
+              disabled={folderSaving}
+              onChange={async (e) => {
+                const next = e.target.value || null;
+                setFolderSaving(true);
+                const { error } = await supabase.from("study_sets").update({ folder_id: next, updated_at: new Date().toISOString() }).eq("id", set.id);
+                if (error) toast.error("Couldn't move this study set");
+                else { setQ.refetch(); toast.success(next ? "Study set moved" : "Study set moved to Unfiled"); }
+                setFolderSaving(false);
+              }}
+              className="max-w-[180px] bg-foreground/5 border border-line rounded-lg px-2.5 py-1.5 text-xs outline-none"
+              aria-label="Study set folder"
+            >
+              <option value="">Unfiled</option>
+              {folders.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
           </div>
         </div>
         <nav className="flex items-center gap-1 mt-4 pb-3 overflow-x-auto" aria-label="Study set navigation">
