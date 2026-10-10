@@ -59,3 +59,8 @@ The `VITE_` Supabase values are intentionally public client configuration; never
 - AI operations run on the server so provider keys are never exposed to the browser.
 - The `_authenticated` route is gated client-side because Supabase sessions live in browser storage.
 - Database migrations live under `drizzle/migrations`.
+
+
+## Reading-first support for lecture-based Study Sets
+
+Run both `drizzle/migrations/0011_reading_companion_sources.sql` and `drizzle/migrations/0012_reading_documents.sql` in the Supabase SQL Editor before deploying this version. The Study Set's original uploaded course material remains the primary source; optional readings are stored separately in `study_set_readings` and can be added from the Reading & Lecture Companion. The Companion's study brief is lecture-first and uses readings to clarify concepts, identify extra detail, and flag source differences without inventing page references.

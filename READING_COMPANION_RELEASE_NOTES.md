@@ -2,7 +2,9 @@
 
 ## Included
 
-- Study Set-integrated Reading & Lecture Companion.
+- Study Set-integrated, lecture-first Reading & Lecture Companion.
+- Separate optional reading uploads (PDF, DOCX, PPTX, TXT, Markdown, and supported images) that do not overwrite or merge into the original lecture/course material.
+- Lecture-focused study guide prompts that use readings to clarify lecture concepts and identify additional or conflicting information.
 - Source picker for a single reading/lecture or all connected sources.
 - Cross-Study-Set links for extracted set material and existing lectures.
 - Source-grounded study briefs and Q&A with source/page/slide marker instructions.
@@ -13,7 +15,7 @@
 
 ## One-time database setup
 
-Run `drizzle/migrations/0011_reading_companion_sources.sql` in the Supabase SQL Editor for the deployed Supabase project. The migration adds the `study_set_source_links` relationship table and policies; it does not rewrite existing study data. Keep a database backup before applying any production migration.
+Run both `drizzle/migrations/0011_reading_companion_sources.sql` and `drizzle/migrations/0012_reading_documents.sql` in the Supabase SQL Editor for the deployed Supabase project. Migration 0011 adds source links; migration 0012 adds a separate table for optional reading text. They do not rewrite existing study data. Keep a database backup before applying any production migration.
 
 ## Verification status
 

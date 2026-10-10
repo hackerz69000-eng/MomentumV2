@@ -5,6 +5,7 @@ import { aiText, parseJson, clip } from "./ai.server";
 import { loadSet, ci } from "./set-helpers.server";
 
 const setIdInput = (data: unknown) => z.object({ setId: z.string().uuid() }).parse(data);
+const addReadingInput = (data: unknown) => z.object({ setId: z.string().uuid(), filename: z.string().trim().min(1).max(300), contentText: z.string().trim().min(20).max(500000) }).parse(data);
 const scopedInput = (data: unknown) => z.object({ setId: z.string().uuid(), sourceKey: z.string().max(200).optional() }).parse(data);
 const askInput = (data: unknown) => z.object({ setId: z.string().uuid(), question: z.string().trim().min(2).max(2000), sourceKey: z.string().max(200).optional() }).parse(data);
 const linkInput = (data: unknown) => z.object({ targetSetId: z.string().uuid(), sourceSetId: z.string().uuid(), sourceKind: z.enum(["set_material", "lecture"]), sourceLectureId: z.string().uuid().nullable().optional() }).parse(data);
@@ -16,10 +17,15 @@ type CompanionSource = { key: string; title: string; kind: "reading" | "lecture"
 async function collectSources(sb: any, set: any): Promise<CompanionSource[]> {
   const sources: CompanionSource[] = [];
   if (set.material_text?.trim()) {
-    sources.push({ key: "current-reading", title: `Reading · ${set.material_filename || set.name}`, kind: "reading", text: set.material_text, linked: false });
+    sources.push({ key: "current-lecture-material", title: `Primary course material · ${set.material_filename || set.name}`, kind: "lecture", text: set.material_text, linked: false });
   }
   if (set.notes?.trim()) {
     sources.push({ key: "current-notes", title: `Study notes · ${set.name}`, kind: "reading", text: set.notes, linked: false });
+  }
+  const { data: readingDocs, error: readingDocsError } = await sb.from("study_set_readings").select("id,filename,content_text,created_at").eq("set_id", set.id).order("created_at", { ascending: true }).limit(30);
+  if (readingDocsError && readingDocsError.code !== "42P01") throw new Error("Couldn't load reading documents.");
+  for (const doc of readingDocs ?? []) {
+    if (doc.content_text?.trim()) sources.push({ key: `reading-doc:${doc.id}`, title: `Reading · ${doc.filename}`, kind: "reading", text: doc.content_text, linked: false });
   }
   const { data: localLectures } = await sb.from("lectures").select("id,title,transcript,notes").eq("set_id", set.id).order("created_at", { ascending: true }).limit(20);
   for (const l of localLectures ?? []) {
@@ -109,13 +115,34 @@ export const readingUnlinkSource = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+export const readingAddDocument = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth]).inputValidator(addReadingInput)
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId);
+    if (data.contentText.trim().length < 20) throw new Error("Not enough readable text was found in this file.");
+    const { data: row, error } = await (context.supabase as any).from("study_set_readings").insert({
+      set_id: set.id, user_id: context.userId, filename: data.filename, content_text: data.contentText.trim(),
+    }).select("id").single();
+    if (error || !row) throw new Error(error?.message ?? "Couldn't save the reading.");
+    return { id: row.id };
+  });
+
+export const readingDeleteDocument = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth]).inputValidator((d: unknown) => z.object({ setId: z.string().uuid(), readingId: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId);
+    const { error } = await (context.supabase as any).from("study_set_readings").delete().eq("id", data.readingId).eq("set_id", set.id).eq("user_id", context.userId);
+    if (error) throw new Error("Couldn't remove that reading.");
+    return { ok: true };
+  });
+
 export const readingSummary = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth]).inputValidator(scopedInput)
   .handler(async ({ data, context }) => {
     const set = await loadSet(context.supabase, data.setId);
     const sources = selectedSources(await collectSources(context.supabase, set), data.sourceKey);
     const sourceText = sources.map((s, i) => `SOURCE ${i + 1}: ${s.title}\n${clip(s.text, 28000)}`).join("\n\n---\n\n");
-    const summary = await aiText(`You are Momentum's Reading & Lecture Companion. Create a useful structured study brief in Markdown using only the supplied course sources. Start with a title, then sections: Overview, Key Concepts, Important Terms, How Ideas Connect, Questions to Check Understanding, and Source References. Cite source names and any explicit page/slide/section markers in the provided text. Never invent page numbers. If no page marker exists, cite the source name and a short identifying heading or say the extracted text has no page-level markers. Do not invent facts. Explicitly mark when sources do not provide enough information. Distinguish reading content from lecture content. ${ci(set)}`,
+    const summary = await aiText(`You are Momentum's lecture-first Reading Companion. The Study Set's lecture/course material is the primary learning target; readings are supporting context that should make the lecture easier to understand, not replace it. Create a useful structured study brief in Markdown using only the supplied course sources. When both lecture and reading sources exist, explain the lecture concepts first, then use the reading to clarify them, identify reading concepts not addressed in the lecture, and flag any genuine discrepancies without assuming either source is automatically correct. Start with a title, then sections: Lecture concepts explained, How the reading clarifies them, Important terms, What the lecture adds, Questions to check understanding, and Source references. Cite source names and any explicit page/slide/section markers in the provided text. Never invent page numbers. If no page marker exists, cite the source name and a short identifying heading or say the extracted text has no page-level markers. Do not invent facts. Explicitly mark when sources do not provide enough information. Distinguish reading content from lecture content. ${ci(set)}`,
       [{ role: "user", content: `STUDY SET: ${set.name} (${set.subject || "General"})\n\nSOURCES:\n${sourceText}` }]);
     return { summary };
   });
@@ -126,7 +153,7 @@ export const readingAsk = createServerFn({ method: "POST" })
     const set = await loadSet(context.supabase, data.setId);
     const sources = selectedSources(await collectSources(context.supabase, set), data.sourceKey);
     const sourceText = sources.map((s, i) => `SOURCE ${i + 1}: ${s.title}\n${clip(s.text, 26000)}`).join("\n\n---\n\n");
-    const answer = await aiText(`You are a careful course tutor. Answer using only the supplied Study Set reading and lecture content. Ground claims in sources, cite source names and explicit page/slide/section labels when available, and clearly say if the sources do not contain the answer. Never invent page numbers or pretend external knowledge came from the sources. You may explain in your own words, but distinguish explanation from source facts. ${ci(set)}`,
+    const answer = await aiText(`You are a careful course tutor. Treat the Study Set's uploaded lecture/course material as the primary source and use optional readings to clarify it. Answer using only the supplied Study Set reading and lecture content. Ground claims in sources, cite source names and explicit page/slide/section labels when available, and clearly say if the sources do not contain the answer. Never invent page numbers or pretend external knowledge came from the sources. You may explain in your own words, but distinguish explanation from source facts. ${ci(set)}`,
       [{ role: "user", content: `QUESTION: ${data.question}\n\nCOURSE SOURCES:\n${sourceText}` }]);
     return { answer };
   });
@@ -137,7 +164,7 @@ export const readingGenerateCards = createServerFn({ method: "POST" })
     const set = await loadSet(context.supabase, data.setId);
     const sources = await collectSources(context.supabase, set);
     if (!sources.length) throw new Error("Add reading material or connect a lecture first.");
-    const text = await aiText(`Create up to 15 high-value flashcards from the provided reading and lecture sources. Use only source-supported facts. Include source name and page/slide marker in topic when provided. Return ONLY JSON: {"cards":[{"q":"question","a":"answer","t":"topic"}]}. Avoid duplicates and vague prompts. ${ci(set)}`,
+    const text = await aiText(`Create up to 15 high-value flashcards for this lecture-first Study Set. Prioritize the primary lecture/course material, using optional readings to clarify confusing concepts and add useful context. Use only source-supported facts. Include source name and page/slide marker in topic when provided. Return ONLY JSON: {"cards":[{"q":"question","a":"answer","t":"topic"}]}. Avoid duplicates and vague prompts. ${ci(set)}`,
       [{ role: "user", content: `SET: ${set.name}\nSOURCES:\n${sources.map((s) => `${s.title}\n${clip(s.text, 16000)}`).join("\n\n---\n\n")}` }]);
     const cards = (parseJson<{ cards?: { q: string; a: string; t?: string }[] }>(text).cards ?? []).filter(c => c?.q?.trim() && c?.a?.trim()).slice(0, 15);
     if (!cards.length) throw new Error("No flashcards could be generated from these sources.");
