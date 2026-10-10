@@ -4,12 +4,9 @@ import {
   Brain,
   ClipboardCheck,
   Compass,
-  Headphones,
-  Layers,
-  ListChecks,
   MessageCircle,
-  ScrollText,
   Zap,
+  Library,
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import type { StudySet } from "@/lib/queries";
@@ -45,23 +42,46 @@ export function Overview({
   stats: ReturnType<typeof setStats>;
   onGo: (t: Tab) => void;
 }) {
-  const quick: { t: Tab; l: string; icon: typeof Zap; primary?: boolean }[] = [
-    { t: "everything", l: "Study Everything", icon: Sparkles, primary: true },
-    { t: "audio", l: "Audio Study", icon: Headphones, primary: true },
-    { t: "flashcards", l: "Study Me", icon: Zap },
-    { t: "flashcards", l: "Flashcards", icon: Layers },
-    { t: "recall", l: "Active Recall", icon: ListChecks },
-    { t: "quiz", l: "Adaptive Quiz", icon: Brain },
-    { t: "guide", l: "Study Guide", icon: ScrollText },
-    { t: "exam", l: "Practice Exam", icon: ClipboardCheck },
-    { t: "tutor", l: "AI Tutor", icon: MessageCircle },
-    { t: "ask", l: "Ask Your Materials", icon: BookOpen },
+  const pathways: {
+    title: string;
+    description: string;
+    t: Tab;
+    action: string;
+    icon: typeof Sparkles;
+    accent: string;
+  }[] = [
     {
-      t: "mistakes",
-      l: `Mistake Bank${stats.openMistakes ? ` (${stats.openMistakes})` : ""}`,
-      icon: ListChecks,
+      title: "Learn",
+      description: "Build understanding with your notes, study guide, lectures and audio.",
+      t: "everything",
+      action: "Start learning",
+      icon: BookOpen,
+      accent: "text-cool2",
     },
-    { t: "lectures", l: "Record Lecture", icon: Zap },
+    {
+      title: "Practice",
+      description: "Strengthen recall with flashcards, quizzes and practice exams.",
+      t: "flashcards",
+      action: "Start practicing",
+      icon: Brain,
+      accent: "text-mint",
+    },
+    {
+      title: "Readings",
+      description: "Add course readings and connect them to what your teacher covered.",
+      t: "reading",
+      action: "Open readings",
+      icon: Library,
+      accent: "text-violet",
+    },
+    {
+      title: "Ask & explore",
+      description: "Ask questions about your materials or get help from your AI tutor.",
+      t: "tutor",
+      action: "Ask a question",
+      icon: MessageCircle,
+      accent: "text-cool2",
+    },
   ];
   return (
     <div className="space-y-6">
@@ -78,19 +98,6 @@ export function Overview({
             not a prediction.
           </p>
           <div className="flex flex-wrap gap-2 mt-5">
-            {quick.map((q) => (
-              <button
-                key={q.l}
-                onClick={() => onGo(q.t)}
-                className={
-                  q.primary
-                    ? "font-semibold text-sm bg-brand text-ink px-4 py-2 rounded-lg inline-flex items-center gap-2"
-                    : "font-semibold text-sm border border-foreground/20 px-3.5 py-2 rounded-lg hover:bg-foreground/5 inline-flex items-center gap-2"
-                }
-              >
-                <q.icon className="size-4" /> {q.l}
-              </button>
-            ))}
             <Link
               to="/coach"
               search={{ set: set.id }}
@@ -112,6 +119,38 @@ export function Overview({
           <TopicList topics={stats.topics} />
         </div>
       </div>
+
+      <section className="space-y-3">
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <p className="eyebrow text-cool2">Your workspace</p>
+            <h2 className="font-display text-xl uppercase mt-1">What do you want to do?</h2>
+          </div>
+          <p className="text-xs text-soft hidden sm:block">All tools are organized in the tabs above.</p>
+        </div>
+        <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
+          {pathways.map((pathway) => (
+            <div
+              key={pathway.title}
+              className="rounded-2xl bg-panel border border-line/70 p-4 flex flex-col min-h-40 hover:border-cool/40 transition-colors"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="size-9 rounded-xl bg-foreground/5 grid place-items-center">
+                  <pathway.icon className={`size-4 ${pathway.accent}`} />
+                </div>
+                <h3 className="font-semibold">{pathway.title}</h3>
+              </div>
+              <p className="text-sm text-soft leading-relaxed mt-3 flex-1">{pathway.description}</p>
+              <button
+                onClick={() => onGo(pathway.t)}
+                className="mt-4 w-full rounded-lg border border-foreground/15 px-3 py-2 text-sm font-semibold hover:bg-foreground/5 inline-flex items-center justify-center gap-2"
+              >
+                {pathway.action} <Zap className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <Stat

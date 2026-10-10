@@ -5,7 +5,18 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { z } from "zod";
 import { toast } from "sonner";
-import { ArrowLeft, Loader2, RefreshCw, Send, AlertCircle } from "lucide-react";
+import {
+  ArrowLeft,
+  Loader2,
+  RefreshCw,
+  Send,
+  AlertCircle,
+  BookOpen,
+  Brain,
+  Library,
+  MessageCircle,
+  LayoutDashboard,
+} from "lucide-react";
 import { fetchCards, fetchSet, type StudySet } from "@/lib/queries";
 import { supabase } from "@/integrations/supabase/client";
 import { askTutor, processSet } from "@/lib/study.functions";
@@ -50,6 +61,50 @@ const TABS = [
   "materials",
   "reading",
 ] as const satisfies readonly Tab[];
+
+const TAB_GROUPS: {
+  id: string;
+  label: string;
+  tabs: readonly Tab[];
+  defaultTab: Tab;
+  icon: typeof LayoutDashboard;
+}[] = [
+  {
+    id: "overview",
+    label: "Overview",
+    tabs: ["overview"],
+    defaultTab: "overview",
+    icon: LayoutDashboard,
+  },
+  {
+    id: "learn",
+    label: "Learn",
+    tabs: ["everything", "notes", "guide", "audio", "lectures"],
+    defaultTab: "everything",
+    icon: BookOpen,
+  },
+  {
+    id: "practice",
+    label: "Practice",
+    tabs: ["flashcards", "recall", "quiz", "exam", "mistakes", "plan"],
+    defaultTab: "flashcards",
+    icon: Brain,
+  },
+  {
+    id: "readings",
+    label: "Readings",
+    tabs: ["reading", "materials"],
+    defaultTab: "reading",
+    icon: Library,
+  },
+  {
+    id: "tools",
+    label: "AI & Tools",
+    tabs: ["tutor", "ask", "search"],
+    defaultTab: "tutor",
+    icon: MessageCircle,
+  },
+];
 const LABELS: Record<Tab, string> = {
   overview: "Overview",
   everything: "Study Everything",
@@ -161,23 +216,51 @@ function SetPage() {
             <span className="eyebrow text-cool2 hidden sm:inline-block">{set.subject || "General"}</span>
           </div>
         </div>
-        <nav className="flex gap-1 mt-4 pb-3 overflow-x-auto">
-          {TABS.map((t) => (
-            <button
-              key={t}
-              onClick={() => navigate({ search: { tab: t }, replace: true })}
-              className={cn(
-                "px-4 py-2 text-sm font-semibold rounded-lg whitespace-nowrap border transition-colors",
-                tab === t
-                  ? "bg-cool/20 text-foreground border-cool/30"
-                  : "text-soft border-transparent hover:text-foreground",
-                t === "tutor" && tab !== t && "text-mint",
-              )}
-            >
-              {LABELS[t]}
-            </button>
-          ))}
+        <nav aria-label="Study set sections" className="flex gap-2 mt-4 pb-3 overflow-x-auto">
+          {TAB_GROUPS.map((group) => {
+            const active = group.tabs.includes(tab);
+            const Icon = group.icon;
+            return (
+              <button
+                key={group.id}
+                onClick={() => navigate({ search: { tab: group.defaultTab }, replace: true })}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "px-3.5 py-2 text-sm font-semibold rounded-xl whitespace-nowrap border transition-colors inline-flex items-center gap-2",
+                  active
+                    ? "bg-cool/20 text-foreground border-cool/30"
+                    : "text-soft border-transparent hover:text-foreground hover:bg-foreground/5",
+                )}
+              >
+                <Icon className="size-4" />
+                {group.label}
+              </button>
+            );
+          })}
         </nav>
+        {TAB_GROUPS.some((group) => group.id !== "overview" && group.tabs.includes(tab)) && (
+          <nav
+            aria-label={`${TAB_GROUPS.find((group) => group.tabs.includes(tab))?.label ?? "Study"} tools`}
+            className="flex gap-1.5 pb-3 overflow-x-auto"
+          >
+            {(TAB_GROUPS.find((group) => group.tabs.includes(tab))?.tabs ?? []).map((t) => (
+              <button
+                key={t}
+                onClick={() => navigate({ search: { tab: t }, replace: true })}
+                aria-current={tab === t ? "page" : undefined}
+                className={cn(
+                  "px-3 py-1.5 text-xs md:text-sm rounded-lg whitespace-nowrap transition-colors",
+                  tab === t
+                    ? "bg-foreground/10 text-foreground font-semibold"
+                    : "text-soft hover:text-foreground hover:bg-foreground/5",
+                  t === "tutor" && tab !== t && "text-mint",
+                )}
+              >
+                {LABELS[t]}
+              </button>
+            ))}
+          </nav>
+        )}
       </header>
       <div className="p-5 md:p-8">
         {set.status !== "ready" && tab !== "materials" && tab !== "lectures" ? (
