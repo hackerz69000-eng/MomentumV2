@@ -50,8 +50,10 @@ async function extractPdf(file: File): Promise<string> {
   try {
     const { extractText, getDocumentProxy } = await import("unpdf");
     const pdf = await getDocumentProxy(new Uint8Array(await file.arrayBuffer()));
-    const { text } = await extractText(pdf, { mergePages: true });
-    const result = Array.isArray(text) ? text.join("\n") : text;
+    const { text } = await extractText(pdf, { mergePages: false });
+    const result = Array.isArray(text)
+      ? text.map((page, i) => `## Page ${i + 1}\n${page}`).join("\n\n")
+      : text;
     if (result && result.trim().length > 10) return result.trim();
   } catch (err) {
     console.warn("unpdf extraction failed, attempting raw text stream recovery:", err);

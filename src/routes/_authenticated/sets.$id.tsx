@@ -22,6 +22,7 @@ import { StudyGuide } from "@/components/set/StudyGuide";
 import { StudyEverything } from "@/components/set/StudyEverything";
 import { Search } from "@/components/set/Search";
 import { Materials } from "@/components/set/Materials";
+import { ReadingCompanion } from "@/components/set/ReadingCompanion";
 import { Lecture } from "@/components/set/Lecture";
 import { MistakeBank } from "@/components/set/MistakeBank";
 import { AskMaterials } from "@/components/set/AskMaterials";
@@ -47,6 +48,7 @@ const TABS = [
   "tutor",
   "plan",
   "materials",
+  "reading",
 ] as const satisfies readonly Tab[];
 const LABELS: Record<Tab, string> = {
   overview: "Overview",
@@ -65,6 +67,7 @@ const LABELS: Record<Tab, string> = {
   tutor: "AI Tutor",
   plan: "Study Plan",
   materials: "Materials",
+  reading: "Reading Companion",
 };
 
 export const Route = createFileRoute("/_authenticated/sets/$id")({
@@ -213,6 +216,7 @@ function SetPage() {
             {tab === "plan" && <Plan set={set} weakTopics={stats.weak.map((t) => t.topic)} />}
             {tab === "tutor" && <Tutor set={set} />}
             {tab === "materials" && <Materials set={set} />}
+            {tab === "reading" && <ReadingCompanion set={set} />}
             {tab === "lectures" && <Lecture set={set} attempts={attempts} topics={stats.topics} />}
             {tab === "mistakes" && <MistakeBank setId={set.id} mistakes={mistakes} />}
             {tab === "ask" && <AskMaterials set={set} />}

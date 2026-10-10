@@ -33,7 +33,8 @@ export type Tab =
   | "materials"
   | "lectures"
   | "mistakes"
-  | "ask";
+  | "ask"
+  | "reading";
 
 export function Overview({
   set,

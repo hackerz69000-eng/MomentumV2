@@ -24,6 +24,17 @@ npm run lint      # ESLint + Prettier checks
 npm test          # test suite
 ```
 
+
+## Reading & Lecture Companion
+
+The Reading Companion is integrated into each existing Study Set. It can create study briefs, answer questions from selected or combined course sources, preview flashcards, and connect readings or lectures from another Study Set without copying the source set or replacing existing cards, quizzes, folders, or progress.
+
+### Apply the Reading Companion migration
+
+Before deploying this version, run `drizzle/migrations/0011_reading_companion_sources.sql` once in the Supabase SQL Editor for the project. This creates only the source-link table and its row-level security policies; it does not rewrite existing Study Sets or flashcards. The UI will show a migration notice if the table is missing. Existing source links are metadata only: unlinking a source does not delete the source reading, lecture, generated cards, or study history.
+
+PDF extraction now preserves page headings where the PDF parser returns individual pages. Page citations are only shown when a page marker exists in the extracted text; the AI is instructed not to invent page numbers.
+
 ## Vercel deployment
 
 This repository is configured for Vercel/TanStack Start. The Vercel project should use the repository root with the default framework/build detection.

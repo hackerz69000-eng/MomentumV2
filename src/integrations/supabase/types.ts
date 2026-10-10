@@ -615,6 +615,58 @@ export type Database = {
         };
         Relationships: [];
       };
+      study_set_source_links: {
+        Row: {
+          created_at: string;
+          id: string;
+          source_kind: string;
+          source_lecture_id: string | null;
+          source_set_id: string;
+          target_set_id: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          id?: string;
+          source_kind: string;
+          source_lecture_id?: string | null;
+          source_set_id: string;
+          target_set_id: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          id?: string;
+          source_kind?: string;
+          source_lecture_id?: string | null;
+          source_set_id?: string;
+          target_set_id?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "study_set_source_links_source_set_id_fkey";
+            columns: ["source_set_id"];
+            isOneToOne: false;
+            referencedRelation: "study_sets";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "study_set_source_links_target_set_id_fkey";
+            columns: ["target_set_id"];
+            isOneToOne: false;
+            referencedRelation: "study_sets";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "study_set_source_links_source_lecture_id_fkey";
+            columns: ["source_lecture_id"];
+            isOneToOne: false;
+            referencedRelation: "lectures";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       study_sets: {
         Row: {
           created_at: string;
