@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import { CalendarDays, CheckSquare, Headphones, Loader2, RefreshCw, ScrollText } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { generateGuide } from "@/lib/study.functions";
+import { formatStudyGuideMarkdown } from "@/lib/study-guide-format";
 import { fetchSets, type StudySet } from "@/lib/queries";
 import { btnGhost, btnPrimary, ErrorBox, inputCls } from "./ui";
 
@@ -101,8 +102,25 @@ export function StudyGuide({ set }: { set: StudySet }) {
           <p className="text-xs text-soft">Last generated {set.study_guide_at ? new Date(set.study_guide_at).toLocaleString() : ""}</p>
           <button onClick={() => navigate({ to: "/sets/$id", params: { id: set.id }, search: { tab: "audio" } })} className={btnGhost}><Headphones className="size-4" /> Audio Study</button>
         </div>
-        <article className="rounded-2xl bg-panel border border-line/70 p-6 md:p-8 prose prose-invert max-w-none prose-headings:font-display prose-headings:uppercase prose-h1:text-3xl prose-h2:text-cool2 prose-h2:border-b prose-h2:border-line/70 prose-h2:pb-2 prose-h3:text-soft prose-p:leading-7 prose-li:leading-7 prose-table:block prose-table:overflow-x-auto">
-          <ReactMarkdown>{set.study_guide}</ReactMarkdown>
+        <article className="study-guide-content rounded-2xl bg-panel border border-line/70 p-5 sm:p-7 md:p-9 max-w-none">
+          <ReactMarkdown
+            components={{
+              h1: ({ children }) => <h1 className="font-display text-3xl md:text-4xl leading-tight tracking-wide mb-4 pb-4 border-b border-line/70">{children}</h1>,
+              h2: ({ children }) => <h2 className="font-display text-xl md:text-2xl tracking-wide mt-10 mb-4 pb-3 border-b border-line/70 text-cool2 first:mt-0">{children}</h2>,
+              h3: ({ children }) => <h3 className="font-semibold text-base md:text-lg mt-6 mb-3 text-foreground">{children}</h3>,
+              h4: ({ children }) => <h4 className="font-semibold mt-5 mb-2">{children}</h4>,
+              p: ({ children }) => <p className="text-sm md:text-[0.95rem] leading-7 text-soft my-3">{children}</p>,
+              ul: ({ children }) => <ul className="my-4 space-y-2 pl-5 list-disc marker:text-cool2">{children}</ul>,
+              ol: ({ children }) => <ol className="my-4 space-y-3 pl-6 list-decimal marker:font-semibold marker:text-cool2">{children}</ol>,
+              li: ({ children }) => <li className="pl-1 text-sm md:text-[0.95rem] leading-7 text-soft">{children}</li>,
+              strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
+              blockquote: ({ children }) => <blockquote className="my-5 rounded-r-xl border-l-4 border-cool2 bg-cool/10 px-4 py-3">{children}</blockquote>,
+              hr: () => <hr className="my-8 border-line/70" />,
+              a: ({ children, href }) => <a className="text-cool2 underline underline-offset-4" href={href} target="_blank" rel="noreferrer">{children}</a>,
+            }}
+          >
+            {formatStudyGuideMarkdown(set.study_guide)}
+          </ReactMarkdown>
         </article>
       </>}
     </div>
