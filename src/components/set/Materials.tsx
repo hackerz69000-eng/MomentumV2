@@ -63,8 +63,13 @@ export function Materials({ set }: { set: StudySet }) {
 
   const pick = async (list: File[]) => {
     const files = list.filter((f) => fileKind(f) && f.size <= MAX_BYTES);
-    if (files.length < list.length)
-      toast.error("Some files were skipped (unsupported type or over 20MB).");
+    const skipped = list.filter((f) => !fileKind(f) || f.size > MAX_BYTES);
+    if (skipped.length) {
+      const details = skipped.map((f) => !fileKind(f)
+        ? `${f.name}: unsupported file type`
+        : `${f.name}: ${(f.size / (1024 * 1024)).toFixed(1)} MiB (limit 20 MiB)`).join("\n");
+      toast.error(`Some files couldn't be added:\n${details}`, { duration: 8000 });
+    }
     if (!files.length) return;
     const parts: string[] = [];
     const meta: { file: File; chars: number }[] = [];

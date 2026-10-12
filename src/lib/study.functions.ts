@@ -549,10 +549,27 @@ MATERIAL:\n${clip(set.material_text, 40000)}`,
 
 export const generateGuide = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator(idInput)
+  .inputValidator((d: unknown) => z.object({
+    setId: z.string().min(1).max(200),
+    includedSetIds: z.array(z.string().min(1).max(200)).max(10).optional().default([]),
+    testDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  }).parse(d))
   .handler(async ({ data, context }) => {
     const sb = context.supabase;
     const set = await loadSet(sb, data.setId);
+    const includedIds = [...new Set(data.includedSetIds)].filter((id) => id !== set.id);
+    let includedSets: { id: string; name: string; subject: string | null; notes: string | null; material_text: string | null; custom_instructions?: string | null }[] = [];
+    if (includedIds.length) {
+      const { data: rows, error } = await sb.from("study_sets")
+        .select("id,name,subject,notes,material_text,custom_instructions")
+        .eq("user_id", context.userId)
+        .in("id", includedIds);
+      if (error) throw new Error("Couldn't load the selected study sets. Please try again.");
+      includedSets = rows ?? [];
+      if (includedSets.length !== includedIds.length) {
+        throw new Error("One or more selected study sets couldn't be found or aren't accessible to your account. Refresh the page and try again.");
+      }
+    }
     const [{ data: cards }, { data: attempts }, { data: full }, mistakes] = await Promise.all([
       sb.from("flashcards").select("*").eq("set_id", set.id),
       sb.from("quiz_attempts").select("*").eq("set_id", set.id),
@@ -561,11 +578,9 @@ export const generateGuide = createServerFn({ method: "POST" })
     ]);
     const stats = setStats((cards ?? []) as Flashcard[], (attempts ?? []) as Attempt[], mistakes);
     const missed = ((attempts ?? []) as Attempt[])
-      .flatMap((a) =>
-        ((a.results as AttemptResult[] | null) ?? [])
-          .filter((r) => !r.correct && r.q)
-          .map((r) => `${r.topic}: ${r.q}`),
-      )
+      .flatMap((a) => ((a.results as AttemptResult[] | null) ?? [])
+        .filter((r) => !r.correct && r.q)
+        .map((r) => `${r.topic}: ${r.q}`))
       .slice(-25);
     const lapsed = ((cards ?? []) as Flashcard[])
       .filter((c) => c.lapses > 0)
@@ -579,29 +594,21 @@ export const generateGuide = createServerFn({ method: "POST" })
       `Flashcards the student forgot: ${lapsed.join(" | ") || "none"}`,
       `Mistake Bank (unresolved, most repeated first): ${mistakeLines(mistakes).join(" | ") || "empty"}`,
     ].join("\n");
+    const sourceSets = [{ name: set.name, subject: set.subject, notes: full?.notes ?? set.notes ?? "", material_text: set.material_text, custom_instructions: set.custom_instructions }, ...includedSets];
+    const sourceContext = sourceSets.map((source, index) =>
+      `SOURCE ${index + 1}: ${source.name} (${source.subject || "General subject"})\nGENERATED NOTES:\n${clip(source.notes ?? "", index === 0 ? 12000 : 4000)}\n\nORIGINAL MATERIAL:\n${clip(source.material_text ?? "", index === 0 ? 22000 : 7000)}`
+    ).join("\n\n==============================\n\n");
+    const testDateContext = data.testDate
+      ? `The student's test date is ${data.testDate}. Include a realistic study timeline counting back from that date: split work into manageable sessions, prioritize harder/high-yield topics first, schedule practice and active recall, and reserve the day before for mixed review. Do not claim there is time for more sessions than the date reasonably allows.`
+      : "No test date was provided. Include a flexible study sequence rather than dated schedule.";
     const guide = await aiText(
-      `You write a personalized, structured study guide in Markdown from the student's material and performance. Use exactly these "## " sections in order:
-## Main Topics
-## Key Concepts
-## Definitions
-## Key Facts
-## Examples
-## Common Mistakes
-## Weak Areas
-## Quick Review
-Start with "# Study Guide: <set name>". Base everything on the material. If you add explanation not found in the material, label it "(Additional explanation)". "Common Mistakes" should draw on the Mistake Bank, missed questions and forgotten cards when available. "Weak Areas" must be personalized from the performance data (if none, say so and suggest how to find them). "Quick Review" is a short last-minute bullet list. No preamble.${ci(set)}`,
-      [
-        {
-          role: "user",
-          content: `SET: ${set.name}\n\nPERFORMANCE:\n${perf}\n\nGENERATED NOTES:\n${clip(full?.notes ?? "", 15000)}\n\nMATERIAL:\n${clip(set.material_text, 45000)}`,
-        },
-      ],
+      `You are an expert teacher and learning designer creating a polished, easy-to-follow study guide for a student preparing for a test. The student selected ${sourceSets.length} study set(s), which may cover multiple topics. Synthesize all selected sources into ONE coherent guide, keeping clear topic boundaries and explaining how related ideas connect.\n\nFORMAT AND READABILITY RULES:
+- Output clean Markdown only, with a useful title and a short one-paragraph overview. No AI preamble.\n- Use a clear hierarchy: one # title, then ## sections and ### topic headings. Keep paragraphs short (2-4 sentences). Use bullets and numbered steps instead of walls of text.\n- Use **bold** for key terms and exam-critical ideas, and use Markdown tables only for useful comparisons.\n- For each major topic, explain the idea in plain language, why it matters, the key details, and a concrete example when supported by the material. Define technical vocabulary before using it heavily.\n- Clearly distinguish source facts from additional explanation. If clarifying beyond the sources, label it “Additional explanation” and do not invent facts. If sources conflict, point out the difference instead of silently choosing one.\n- Include exactly these main sections in this order after the overview: ## Topic Map, ## Core Concepts Explained, ## Key Terms and Definitions, ## Processes, Formulas, and Important Details, ## Compare and Connect the Topics, ## Worked or Concrete Examples, ## Common Confusions and Mistakes, ## Practice Questions, ## Answer Key, ## Final Quick Review${data.testDate ? ", ## Study Plan Before the Test" : ""}.\n- Topic Map should show the topics and which study set/source they came from.\n- Practice Questions should contain 8-12 varied questions spanning ALL selected sets (mix recall, explain, apply, and compare); do not put answers beside the questions. Answer Key must answer them clearly and number-match.\n- Common Confusions should include actual misconceptions supported by source/performance data. Personalize it with the current set's performance data when available, but do not pretend to have quiz data for other sets.\n- Final Quick Review should be a compact high-yield checklist, not another long summary.\n- ${testDateContext}\n- Use only material supported by the provided sources, apart from clearly labeled additional explanation. Do not omit important source topics just to make the guide shorter. Keep it readable and genuinely useful rather than dumping raw notes.\n\nCURRENT STUDY SET PERFORMANCE DATA:\n${perf}${ci(set)}`,
+      [{ role: "user", content: `STUDY GUIDE TITLE SET: ${set.name}\nTEST DATE: ${data.testDate ?? "Not provided"}\nSELECTED STUDY SETS: ${sourceSets.map((s) => `${s.name} (${s.subject || "General subject"})`).join("; ")}\n\n${sourceContext}` }],
     );
     const at = new Date().toISOString();
     await sb.from("study_sets").update({ study_guide: guide, study_guide_at: at }).eq("id", set.id);
-    await sb
-      .from("study_activity")
-      .insert({ user_id: context.userId, set_id: set.id, kind: "guide", count: 1 });
+    await sb.from("study_activity").insert({ user_id: context.userId, set_id: set.id, kind: "guide", count: 1 });
     return { guide, at };
   });
 

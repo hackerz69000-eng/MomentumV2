@@ -22,3 +22,11 @@ Run both `drizzle/migrations/0011_reading_companion_sources.sql` and `drizzle/mi
 - TypeScript syntax/transpilation check passed for the changed TS/TSX files.
 - Full `tsc` and production build could not be completed in this environment because project dependencies are not installed (`vite/client` and `vitest/globals` type definitions are unavailable).
 - After extracting, run `npm install`, `npm run build`, and `npm test` locally before deploying.
+
+## Study guide and reading upload improvements
+
+- Reading and study-set upload validation now recognizes supported files by extension as well as browser MIME type, which helps when school portals provide PDFs with missing or incorrect MIME metadata. Markdown and common image extensions are explicitly accepted.
+- Skipped upload notices now identify the exact file and whether it has an unsupported type or exceeds the 20 MiB limit.
+- Study Guide generation now lets students optionally set a test date and select multiple study sets. The generated guide combines selected lecture-based materials into one structured guide with topic mapping, plain-language explanations, definitions, comparisons, examples, practice questions with a separate answer key, quick review, and a test-date-aware study plan.
+- Additional study sets are validated server-side against the signed-in user's account before their content is included. The generated guide is saved to the current study set.
+

@@ -89,7 +89,13 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
     if (!files?.length) return;
     const picked = Array.from(files);
     const valid = picked.filter((file) => fileKind(file) && file.size <= MAX_BYTES);
-    if (valid.length !== picked.length) toast.error("Some files were skipped. Use PDF, DOCX, PPTX, TXT, Markdown, or supported images under 20 MB.");
+    const skipped = picked.filter((file) => !fileKind(file) || file.size > MAX_BYTES);
+    if (skipped.length) {
+      const details = skipped.map((file) => !fileKind(file)
+        ? `${file.name}: unsupported file type`
+        : `${file.name}: ${(file.size / (1024 * 1024)).toFixed(1)} MiB (limit 20 MiB)`).join("\n");
+      toast.error(`Some files couldn't be added:\n${details}`, { duration: 8000 });
+    }
     if (!valid.length) return;
     setUploadingReading(true);
     let added = 0;

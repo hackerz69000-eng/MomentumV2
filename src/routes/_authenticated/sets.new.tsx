@@ -311,8 +311,13 @@ function NewSet() {
                   onChange={(e) => {
                     const all = Array.from(e.target.files ?? []);
                     const picked = all.filter((f) => fileKind(f) && f.size <= MAX_BYTES);
-                    if (picked.length < all.length)
-                      toast.error("Some files were skipped (unsupported type or over 20MB).");
+                    const skipped = all.filter((f) => !fileKind(f) || f.size > MAX_BYTES);
+                    if (skipped.length) {
+                      const details = skipped.map((f) => !fileKind(f)
+                        ? `${f.name}: unsupported file type`
+                        : `${f.name}: ${(f.size / (1024 * 1024)).toFixed(1)} MiB (limit 20 MiB)`).join("\n");
+                      toast.error(`Some files couldn't be added:\n${details}`, { duration: 8000 });
+                    }
                     setFiles((fs) => [...fs, ...picked].slice(0, 20));
                     e.target.value = "";
                   }}

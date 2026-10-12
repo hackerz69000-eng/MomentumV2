@@ -5,25 +5,23 @@ export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 export const ACCEPT = [
-  "application/pdf",
-  DOCX,
-  PPTX,
-  "text/plain",
-  ".txt",
-  ".md",
-  ".docx",
-  ".pptx",
-  ...IMAGE_TYPES,
+  "application/pdf", ".pdf",
+  DOCX, ".docx",
+  PPTX, ".pptx",
+  "text/plain", ".txt", ".md", ".markdown",
+  ...IMAGE_TYPES, ".png", ".jpg", ".jpeg", ".webp",
 ].join(",");
 export const MAX_BYTES = 20 * 1024 * 1024;
 
 export function fileKind(f: File): "pdf" | "docx" | "pptx" | "txt" | "image" | null {
-  const n = f.name.toLowerCase();
-  if (f.type === "application/pdf" || n.endsWith(".pdf")) return "pdf";
-  if (f.type === DOCX || n.endsWith(".docx")) return "docx";
-  if (f.type === PPTX || n.endsWith(".pptx")) return "pptx";
-  if (f.type.startsWith("text/") || n.endsWith(".txt") || n.endsWith(".md")) return "txt";
-  if (IMAGE_TYPES.includes(f.type)) return "image";
+  // Prefer the filename extension as browser MIME types are sometimes blank or incorrect,
+  // especially for PDFs downloaded from school portals and Markdown files.
+  const n = f.name.trim().toLowerCase();
+  if (n.endsWith(".pdf") || f.type.toLowerCase() === "application/pdf") return "pdf";
+  if (n.endsWith(".docx") || f.type.toLowerCase() === DOCX) return "docx";
+  if (n.endsWith(".pptx") || f.type.toLowerCase() === PPTX) return "pptx";
+  if ([".txt", ".md", ".markdown"].some((ext) => n.endsWith(ext)) || f.type.toLowerCase().startsWith("text/")) return "txt";
+  if ([".png", ".jpg", ".jpeg", ".webp"].some((ext) => n.endsWith(ext)) || IMAGE_TYPES.includes(f.type.toLowerCase())) return "image";
   return null;
 }
 
