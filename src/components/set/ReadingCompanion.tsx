@@ -93,7 +93,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
     if (skipped.length) {
       const details = skipped.map((file) => !fileKind(file)
         ? `${file.name}: unsupported file type`
-        : `${file.name}: ${(file.size / (1024 * 1024)).toFixed(1)} MiB (limit 20 MiB)`).join("\n");
+        : `${file.name}: ${(file.size / (1024 * 1024)).toFixed(1)} MiB (limit 100 MiB)`).join("\n");
       toast.error(`Some files couldn't be added:\n${details}`, { duration: 8000 });
     }
     if (!valid.length) return;

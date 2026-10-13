@@ -11,7 +11,8 @@ export const ACCEPT = [
   "text/plain", ".txt", ".md", ".markdown",
   ...IMAGE_TYPES, ".png", ".jpg", ".jpeg", ".webp",
 ].join(",");
-export const MAX_BYTES = 20 * 1024 * 1024;
+// Per-file client-side reading upload cap. Keep UI copy and validation aligned.
+export const MAX_BYTES = 100 * 1024 * 1024;
 
 export function fileKind(f: File): "pdf" | "docx" | "pptx" | "txt" | "image" | null {
   // Prefer the filename extension as browser MIME types are sometimes blank or incorrect,

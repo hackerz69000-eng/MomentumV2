@@ -300,7 +300,7 @@ function NewSet() {
                   {files.length ? "Add more files" : "Choose school files"}
                 </p>
                 <p className="text-xs text-soft mt-1">
-                  PDF, Word (DOCX), PowerPoint (PPTX), TXT, or photos of pages · up to 20MB each ·
+                  PDF, Word (DOCX), PowerPoint (PPTX), TXT, or photos of pages · up to 100MB each ·
                   scans are read with OCR
                 </p>
                 <input
@@ -315,7 +315,7 @@ function NewSet() {
                     if (skipped.length) {
                       const details = skipped.map((f) => !fileKind(f)
                         ? `${f.name}: unsupported file type`
-                        : `${f.name}: ${(f.size / (1024 * 1024)).toFixed(1)} MiB (limit 20 MiB)`).join("\n");
+                        : `${f.name}: ${(f.size / (1024 * 1024)).toFixed(1)} MiB (limit 100 MiB)`).join("\n");
                       toast.error(`Some files couldn't be added:\n${details}`, { duration: 8000 });
                     }
                     setFiles((fs) => [...fs, ...picked].slice(0, 20));

@@ -1,3 +1,8 @@
+## Upload size limit
+
+- Increased per-file reading/material upload validation from 20 MiB to 100 MiB across study sets, assignment materials, essay uploads, reading companion materials, and local similarity reference files.
+- Added a Supabase migration to raise the existing private `study-files` bucket limit to 100 MiB. Apply the migration/deploy it to the connected Supabase project for hosted storage to accept larger originals; provider/project-level limits can still apply.
+
 # Momentum Reading & Lecture Companion — Release Notes
 
 ## Included
@@ -26,7 +31,7 @@ Run both `drizzle/migrations/0011_reading_companion_sources.sql` and `drizzle/mi
 ## Study guide and reading upload improvements
 
 - Reading and study-set upload validation now recognizes supported files by extension as well as browser MIME type, which helps when school portals provide PDFs with missing or incorrect MIME metadata. Markdown and common image extensions are explicitly accepted.
-- Skipped upload notices now identify the exact file and whether it has an unsupported type or exceeds the 20 MiB limit.
+- Skipped upload notices now identify the exact file and whether it has an unsupported type or exceeds the 100 MiB limit.
 - Study Guide generation now lets students optionally set a test date and select multiple study sets. The generated guide combines selected lecture-based materials into one structured guide with topic mapping, plain-language explanations, definitions, comparisons, examples, practice questions with a separate answer key, quick review, and a test-date-aware study plan.
 - Additional study sets are validated server-side against the signed-in user's account before their content is included. The generated guide is saved to the current study set.
 

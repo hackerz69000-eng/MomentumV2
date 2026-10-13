@@ -212,7 +212,7 @@ function UploadText({ label, onText }: { label: string; onText: (t: string) => v
       return;
     }
     if (file.size > MAX_BYTES) {
-      setErr("That file is over 20MB.");
+      setErr("That file is over 100MB.");
       return;
     }
     try {

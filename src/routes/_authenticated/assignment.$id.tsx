@@ -162,7 +162,7 @@ function Editor({ row }: { row: Row }) {
     try {
       for (const file of selected) {
         if (!fileKind(file)) { fileErrors.push(`${file.name}: unsupported file type. Use PDF, DOCX, PPTX, TXT, Markdown, or PNG/JPG/WEBP images.`); continue; }
-        if (file.size > MAX_BYTES) { fileErrors.push(`${file.name}: this file is over 20 MB. Split it into smaller files and try again.`); continue; }
+        if (file.size > MAX_BYTES) { fileErrors.push(`${file.name}: this file is over 100 MB. Split it into smaller files and try again.`); continue; }
         try {
           const text = (await extractFile(file, ocr, (m) => setUploadMessage(m))).trim();
           if (!text) throw new Error("No readable text was found. If this is a scanned PDF, try a clearer scan or upload the permitted pages separately.");
@@ -271,7 +271,7 @@ function Editor({ row }: { row: Row }) {
               <div className="rounded-xl bg-cool/10 p-2"><FileUp className="size-5 text-cool2" /></div>
               <div className="min-w-0 flex-1">
                 <p className="font-semibold">Assignment materials</p>
-                <p className="text-xs text-soft mt-1">Upload multiple files at once for any category, including PDFs, DOCX, PPTX, TXT, Markdown, and PNG/JPG/WEBP images. Each file can be up to 20 MB. Choose the category first; you can repeat uploads to add more files later or mix different file types.</p>
+                <p className="text-xs text-soft mt-1">Upload multiple files at once for any category, including PDFs, DOCX, PPTX, TXT, Markdown, and PNG/JPG/WEBP images. Each file can be up to 100 MB. Choose the category first; you can repeat uploads to add more files later or mix different file types.</p>
               </div>
             </div>
             <label className="block text-xs font-medium text-soft">What are you uploading?</label>

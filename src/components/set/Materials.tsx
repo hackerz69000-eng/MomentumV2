@@ -67,7 +67,7 @@ export function Materials({ set }: { set: StudySet }) {
     if (skipped.length) {
       const details = skipped.map((f) => !fileKind(f)
         ? `${f.name}: unsupported file type`
-        : `${f.name}: ${(f.size / (1024 * 1024)).toFixed(1)} MiB (limit 20 MiB)`).join("\n");
+        : `${f.name}: ${(f.size / (1024 * 1024)).toFixed(1)} MiB (limit 100 MiB)`).join("\n");
       toast.error(`Some files couldn't be added:\n${details}`, { duration: 8000 });
     }
     if (!files.length) return;
