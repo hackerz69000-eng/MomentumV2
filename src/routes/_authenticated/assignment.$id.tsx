@@ -375,8 +375,8 @@ function Editor({ row }: { row: Row }) {
           <p className="text-xs text-soft -mt-2">You do not need to decide on your argument before starting. The outline can suggest a provisional direction based on your instructions and brainstorm; you can change it later.</p>
           <div className="rounded-2xl bg-panel border border-line/70 p-4 space-y-3">
             <p className="eyebrow text-cool2">4. Review and improve</p>
-            <h3 className="font-semibold">Draft feedback</h3>
-            <p className="text-sm text-soft">When you have a draft or even a partial section, ask for focused feedback. Momentum should point to specific places, prioritize the most important fixes, and give you actions to revise in your own words. You can upload or paste a draft in the materials panel; feedback is optional until you are ready.</p>
+            <h3 className="font-semibold">Ask for assignment help</h3>
+            <p className="text-sm text-soft">Ask Momentum anything about this assignment—even before you start writing. Get help understanding the prompt, explaining a concept, choosing an approach, planning, finding what evidence you need, citations, structure, or improving a draft. Your assignment instructions and uploaded materials help shape the answer.</p>
             {chat.map((m, i) => (
               <div
                 key={i}
@@ -392,13 +392,13 @@ function Editor({ row }: { row: Row }) {
               <input
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
-                placeholder="Ask about a specific section, argument, evidence, or requirement…"
+                placeholder="What do you need help with? Ask anything about this assignment…"
                 className={inputCls + " flex-1"}
               />
               <button
-                aria-label="Get draft feedback"
+                aria-label="Ask for assignment help"
                 onClick={() => run("feedback")}
-                disabled={!!busy || !f.draft.trim()}
+                disabled={!!busy || !question.trim()}
                 className={btnPrimary}
               >
                 {busy === "feedback" ? (

@@ -63,9 +63,34 @@ async function extractPdf(file: File): Promise<string> {
     const { extractText, getDocumentProxy } = await import("unpdf");
     const pdf = await getDocumentProxy(new Uint8Array(await file.arrayBuffer()));
     const { text } = await extractText(pdf, { mergePages: false });
-    const result = Array.isArray(text)
+    let result = Array.isArray(text)
       ? text.map((page, i) => `## Page ${i + 1}\n${page}`).join("\n\n")
       : text;
+
+    // Some selectable-text PDFs use unusual font encodings or text-item ordering.
+    // The convenience extractor can then return only running headers/page labels
+    // even though the PDF contains body text. Re-read each page directly before
+    // concluding that the file has no usable text.
+    if (!result || looksLikePdfHeadingsOnly(result)) {
+      const pages: string[] = [];
+      for (let pageNo = 1; pageNo <= pdf.numPages; pageNo += 1) {
+        const page = await pdf.getPage(pageNo);
+        const content = await page.getTextContent();
+        const items = content.items as Array<{ str?: string; hasEOL?: boolean }>;
+        let pageText = "";
+        for (const item of items) {
+          const value = item.str ?? "";
+          if (!value) continue;
+          pageText += value;
+          pageText += item.hasEOL ? "\n" : " ";
+        }
+        pages.push(`## Page ${pageNo}\n${pageText.trim()}`);
+      }
+      const directResult = pages.join("\n\n").trim();
+      if (directResult && (!result || meaningfulWordCount(directResult) > meaningfulWordCount(result))) {
+        result = directResult;
+      }
+    }
     if (result && result.trim().length > 10) return result.trim();
   } catch (err) {
     console.warn("unpdf extraction failed, attempting raw text stream recovery:", err);
@@ -152,7 +177,12 @@ export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void)
           data: { data: await readDataUrl(f), mediaType: "application/pdf", filename: f.name },
         });
         const ocrText = ocrResult?.text?.trim() ?? "";
-        if (meaningfulWordCount(ocrText) > meaningfulWordCount(text)) text = ocrText;
+        // A short but complete OCR result is better than a larger extraction made
+        // up of repeated headers. Never replace usable text with a heading-only OCR result.
+        if (ocrText && !looksLikePdfHeadingsOnly(ocrText) &&
+            (looksLikePdfHeadingsOnly(text) || meaningfulWordCount(ocrText) > meaningfulWordCount(text))) {
+          text = ocrText;
+        }
       } catch (err) {
         console.warn("OCR fallback was unavailable for scanned or image-based PDF.", err);
       }

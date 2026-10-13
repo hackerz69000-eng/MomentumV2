@@ -16,3 +16,15 @@
 - Manually exercised the Markdown formatter against both the existing study-guide table case and the reported Assignment Helper-style flattened table; both rendered as readable lists with no raw pipe-table syntax or `<br>` tag.
 - TypeScript/TSX syntax transpilation checks are run for the changed source files.
 - A full application build and Vitest suite require installing the project's dependencies first; they are not claimed as passing unless run in an environment with dependencies installed.
+
+## Open-ended assignment help
+
+- The Assignment Helper conversation now accepts questions before a student has written a draft; an empty draft no longer blocks the chat.
+- Students can ask about the prompt, course concepts, planning, possible arguments, structure, evidence, citation questions, research strategy, teacher feedback, or draft revision.
+- Responses use the current assignment instructions, rubric, permitted source bundle and limits, notes, chosen argument, generated guides, draft (if present), and recent conversation history where relevant.
+- The helper is instructed to answer the actual question rather than forcing every response into a draft-review template. It should identify missing context, avoid invented requirements/citations/source claims, respect source restrictions, and coach rather than write the whole assignment.
+- Updated the UI label, explanatory text, placeholder, accessible button label, and send-button guard so students can ask without a draft.
+
+## Verification for open-ended assignment help
+
+- Reviewed the modified server and UI code paths. A full TypeScript build and automated test suite have not been run in this environment because project dependencies are not installed.

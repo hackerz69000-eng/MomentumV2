@@ -45,3 +45,9 @@ Run both `drizzle/migrations/0011_reading_companion_sources.sql` and `drizzle/mi
 - AI prompts request concise, specific, scannable study material and direct answers rather than long unstructured paragraphs.
 
 Validation note: source-level changes were reviewed and the ZIP integrity will be checked. A full application build and live OCR/provider test were not run in this environment.
+
+## Selectable-PDF body-text extraction fix
+
+- When the normal PDF text helper returns sparse output (such as page headings only), Momentum now reads each PDF page's text items directly and uses that result when it contains more body text.
+- OCR output is only allowed to replace the existing extraction when it looks like readable body text, so a heading-only result is not preferred just because it is returned by OCR.
+- Verification: ZIP integrity checked after packaging. A full application build and live test with the user's specific PDF have not been run; please verify by uploading the same PDF and checking the extracted-text preview/material character count.
