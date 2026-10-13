@@ -75,7 +75,7 @@ function AssignmentList() {
         {q.isLoading && <Loader2 className="size-6 animate-spin text-cool2" />}
         {q.data?.length === 0 && (
           <p className="text-sm text-soft">
-            No assignments yet. Start one and paste the instructions.
+            No assignments yet. Start one and upload or paste the instructions. You can add sources, notes, and a draft later.
           </p>
         )}
         {q.data?.map((a) => (

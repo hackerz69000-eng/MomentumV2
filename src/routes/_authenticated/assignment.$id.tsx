@@ -3,7 +3,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ArrowLeft, Loader2, Send } from "lucide-react";
+import { ArrowLeft, BookOpen, FileText, FileUp, Loader2, Send, ShieldCheck, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import { ocrFile } from "@/lib/study.functions";
+import { ACCEPT, MAX_BYTES, extractFile, fileKind } from "@/lib/extract";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 import { assignmentStep, type AssignmentStep } from "@/lib/writing.functions";
@@ -69,9 +72,36 @@ const STEPS: {
   { k: "outline", l: "3. Outline", field: "outline" },
 ];
 
+type AssignmentAttachment = {
+  id: string;
+  filename: string;
+  category: "allowed-source" | "supporting-material";
+  usageLimit: string;
+  text: string;
+  chars: number;
+};
+type AssignmentSourceBundle = { __momentumAssignmentSources: 1; notes: string; attachments: AssignmentAttachment[] };
+const emptySourceBundle = (): AssignmentSourceBundle => ({ __momentumAssignmentSources: 1, notes: "", attachments: [] });
+function parseSourceBundle(raw: string): AssignmentSourceBundle {
+  try {
+    const value = JSON.parse(raw);
+    if (value?.__momentumAssignmentSources === 1 && Array.isArray(value.attachments)) {
+      return { __momentumAssignmentSources: 1, notes: String(value.notes ?? ""), attachments: value.attachments.filter((x: any) => x && typeof x.filename === "string" && typeof x.text === "string") };
+    }
+  } catch { /* Older assignments store source notes as plain text. */ }
+  return { ...emptySourceBundle(), notes: raw || "" };
+}
+function encodeSourceBundle(bundle: AssignmentSourceBundle) { return JSON.stringify(bundle); }
+
 function Editor({ row }: { row: Row }) {
   const qc = useQueryClient();
   const stepFn = useServerFn(assignmentStep);
+  const ocr = useServerFn(ocrFile);
+  const [uploadCategory, setUploadCategory] = useState<"instructions" | "allowed-source" | "supporting-material" | "draft">("instructions");
+  const [usageLimit, setUsageLimit] = useState("");
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState("");
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [f, setF] = useState({
     title: row.title,
     set_id: row.set_id,
@@ -95,6 +125,50 @@ function Editor({ row }: { row: Row }) {
   const [error, setError] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((p) => ({ ...p, [k]: v }));
+  const sourceBundle = parseSourceBundle(f.sources);
+  const updateSourceBundle = (bundle: AssignmentSourceBundle) => set("sources", encodeSourceBundle(bundle));
+  const uploadFiles = async (files: FileList | null) => {
+    if (!files?.length || uploadBusy) return;
+    const selected = Array.from(files);
+    const categoryForBatch = uploadCategory;
+    const scopeForBatch = usageLimit.trim();
+    setUploadBusy(true); setUploadError(null);
+    let added = 0;
+    const fileErrors: string[] = [];
+    try {
+      for (const file of selected) {
+        if (!fileKind(file)) { fileErrors.push(`${file.name}: unsupported file type. Use PDF, DOCX, PPTX, TXT, Markdown, or PNG/JPG/WEBP images.`); continue; }
+        if (file.size > MAX_BYTES) { fileErrors.push(`${file.name}: this file is over 20 MB. Split it into smaller files and try again.`); continue; }
+        try {
+          const text = (await extractFile(file, ocr, (m) => setUploadMessage(m))).trim();
+          if (!text) throw new Error("No readable text was found. If this is a scanned PDF, try a clearer scan or upload the permitted pages separately.");
+          if (categoryForBatch === "instructions") {
+            setF((prev) => ({ ...prev, instructions: `${prev.instructions.trim()}${prev.instructions.trim() ? "\n\n" : ""}--- Uploaded assignment file: ${file.name} ---\n${text}` }));
+          } else if (categoryForBatch === "draft") {
+            setF((prev) => ({ ...prev, draft: `${prev.draft.trim()}${prev.draft.trim() ? "\n\n" : ""}--- Uploaded draft: ${file.name} ---\n${text}` }));
+          } else {
+            setF((prev) => {
+              const bundle = parseSourceBundle(prev.sources);
+              const attachment: AssignmentAttachment = {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+                filename: file.name,
+                category: categoryForBatch,
+                usageLimit: categoryForBatch === "allowed-source" ? scopeForBatch : "",
+                text,
+                chars: text.length,
+              };
+              return { ...prev, sources: encodeSourceBundle({ ...bundle, attachments: [...bundle.attachments, attachment] }) };
+            });
+          }
+          added++;
+        } catch (e) {
+          fileErrors.push(`${file.name}: ${e instanceof Error ? e.message : "couldn't read this file."}`);
+        }
+      }
+      if (added) toast.success(`Added ${added} file${added === 1 ? "" : "s"} to the assignment.`);
+      if (fileErrors.length) setUploadError(fileErrors.join("\n"));
+    } finally { setUploadBusy(false); setUploadMessage(""); }
+  };
 
   const saveState = useAutosave(f, async (v) => {
     const { error } = await supabase
@@ -167,29 +241,49 @@ function Editor({ row }: { row: Row }) {
             />
           </label>
           <SetPicker value={f.set_id} onChange={(v) => set("set_id", v)} />
-          <Field
-            label="Assignment instructions"
-            value={f.instructions}
-            onChange={(v) => set("instructions", v)}
-            rows={6}
-            placeholder="Paste the prompt or question exactly as given."
-          />
-          <Field
-            label="Rubric / teacher requirements"
-            value={f.rubric}
-            onChange={(v) => set("rubric", v)}
-          />
-          <Field
-            label="Sources you must use (paste text)"
-            value={f.sources}
-            onChange={(v) => set("sources", v)}
-          />
-          <Field
-            label="Your own ideas so far"
-            value={f.ideas}
-            onChange={(v) => set("ideas", v)}
-            rows={3}
-          />
+          <div className="rounded-2xl border border-line/70 bg-panel p-4 space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-cool/10 p-2"><FileUp className="size-5 text-cool2" /></div>
+              <div className="min-w-0 flex-1">
+                <p className="font-semibold">Assignment materials</p>
+                <p className="text-xs text-soft mt-1">Upload several files at once. PDF, DOCX, PPTX, TXT, Markdown and PNG/JPG/WEBP images are supported, up to 20 MB per file. You can also paste text below.</p>
+              </div>
+            </div>
+            <label className="block text-xs font-medium text-soft">What are you uploading?</label>
+            <select value={uploadCategory} onChange={(e) => setUploadCategory(e.target.value as typeof uploadCategory)} className={inputCls + " w-full"}>
+              <option value="instructions">Assignment instructions / teacher guidelines</option>
+              <option value="allowed-source">A source I am allowed or required to use</option>
+              <option value="supporting-material">Class notes, slides, feedback or other helpful material</option>
+              <option value="draft">My draft or partial work</option>
+            </select>
+            {uploadCategory === "allowed-source" && <div className="space-y-1.5">
+              <label className="text-xs font-medium text-soft">Are there limits on what part of this source you may use? (optional)</label>
+              <input value={usageLimit} onChange={(e) => setUsageLimit(e.target.value)} className={inputCls + " w-full"} placeholder="e.g. Chapter 4 only, PDF pages 82–96, or section 'Causes'" />
+              <p className="text-xs text-soft">For books or long sources, specify the exact chapter, pages, section, or excerpt permitted by your teacher. The limit applies to every file in this upload batch; upload different ranges separately. For page ranges, specify PDF pages (for example, PDF pages 82–96). If you mean printed book page numbers that differ from the PDF, upload the permitted pages separately so Momentum can isolate them safely.</p>
+            </div>}
+            <label className={btnPrimary + " cursor-pointer inline-flex items-center gap-2 " + (uploadBusy ? "opacity-60 pointer-events-none" : "")}>
+              {uploadBusy ? <Loader2 className="size-4 animate-spin" /> : <FileUp className="size-4" />}
+              {uploadBusy ? (uploadMessage || "Reading files…") : "Choose files"}
+              <input type="file" multiple accept={ACCEPT} className="sr-only" disabled={uploadBusy} onChange={(e) => { void uploadFiles(e.currentTarget.files); e.currentTarget.value = ""; }} />
+            </label>
+            {uploadBusy && <p className="text-xs text-soft" aria-live="polite">Extracting text from your selected files. Large or scanned files may take longer.</p>}
+            {uploadError && <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive whitespace-pre-line">{uploadError}</div>}
+          </div>
+          <Field label="Assignment instructions / teacher guidelines" value={f.instructions} onChange={(v) => set("instructions", v)} rows={7} placeholder="Paste the prompt exactly as given, or upload it above." />
+          <div className="rounded-2xl border border-line/70 p-4 space-y-3">
+            <div className="flex items-center gap-2"><BookOpen className="size-4 text-cool2" /><p className="font-semibold">Sources and supporting materials <span className="text-xs font-normal text-soft">· optional</span></p></div>
+            <p className="text-xs text-soft">Add allowed/required sources and helpful class materials. If the teacher restricts a source to certain pages or chapters, add that limit when uploading it. Uploaded source text is kept separate by filename and type.</p>
+            <Field label="Other source notes, links or citation details (optional)" value={sourceBundle.notes} onChange={(v) => updateSourceBundle({ ...sourceBundle, notes: v })} rows={3} placeholder="Paste source URLs, citation details, or notes about which sources are permitted." />
+            {sourceBundle.attachments.length > 0 ? <div className="space-y-2">
+              {sourceBundle.attachments.map((a) => <div key={a.id} className="rounded-xl border border-line/60 p-3 space-y-1.5">
+                <div className="flex items-start gap-2"><FileText className="size-4 mt-0.5 text-cool2 shrink-0" /><div className="min-w-0 flex-1"><p className="text-sm font-medium break-words">{a.filename}</p><p className="text-xs text-soft">{a.category === "allowed-source" ? "Allowed / required source" : "Supporting material"} · {a.chars.toLocaleString()} characters extracted</p></div><button type="button" aria-label={`Remove ${a.filename}`} className="rounded-md p-1 text-soft hover:text-destructive" onClick={() => updateSourceBundle({ ...sourceBundle, attachments: sourceBundle.attachments.filter((x) => x.id !== a.id) })}><Trash2 className="size-4" /></button></div>
+                {a.usageLimit && <p className="text-xs"><span className="font-medium">Permitted portion:</span> {a.usageLimit}</p>}
+              </div>)}
+            </div> : <p className="text-xs text-soft">No source files added yet. This is optional if your assignment has no source restrictions or you haven't collected sources yet.</p>}
+          </div>
+          <Field label="Your own ideas so far (optional)" value={f.ideas} onChange={(v) => set("ideas", v)} rows={3} placeholder="Your thoughts, possible arguments, questions or a rough plan." />
+          <Field label="Your draft or partial work (optional)" value={f.draft} onChange={(v) => set("draft", v)} rows={5} placeholder="Paste your draft here or upload it above. You can add this later." />
+          <div className="rounded-xl bg-cool/5 border border-cool/15 p-3 text-xs text-soft flex gap-2"><ShieldCheck className="size-4 shrink-0 text-cool2" /><p>Only assignment instructions are needed to begin. Sources, your ideas and your draft are optional and can be added later. If your instructions contain a rubric, Momentum should identify it automatically; you don't need a separate rubric field.</p></div>
         </section>
         <section className="space-y-4">
           <div className="flex flex-wrap gap-2">
@@ -237,13 +331,6 @@ function Editor({ row }: { row: Row }) {
             value={f.chosen}
             onChange={(v) => set("chosen", v)}
             rows={2}
-          />
-          <Field
-            label="Your draft"
-            value={f.draft}
-            onChange={(v) => set("draft", v)}
-            rows={8}
-            placeholder="Write or paste your own draft for feedback."
           />
           <div className="rounded-2xl bg-panel border border-line/70 p-4 space-y-3">
             <p className="eyebrow text-cool2">Draft feedback</p>
