@@ -64,3 +64,13 @@ The `VITE_` Supabase values are intentionally public client configuration; never
 ## Reading-first support for lecture-based Study Sets
 
 Run both `drizzle/migrations/0011_reading_companion_sources.sql` and `drizzle/migrations/0012_reading_documents.sql` in the Supabase SQL Editor before deploying this version. The Study Set's original uploaded course material remains the primary source; optional readings are stored separately in `study_set_readings` and can be added from the Reading & Lecture Companion. The Companion's study brief is lecture-first and uses readings to clarify concepts, identify extra detail, and flag source differences without inventing page references.
+
+
+## Turnitin Submission preparation
+
+Momentum includes a **Turnitin Submission** preparation screen at `/turnitin`. Students can enter course and assignment details, select a final paper file (PDF, DOC/DOCX, RTF, ODT, or TXT) or paste text, complete a pre-submission checklist, and optionally open their institution's official course portal. The screen does **not** submit to Turnitin, generate an official Turnitin Similarity Report, or issue an official receipt. It can run a separate, clearly labelled local similarity pre-check; public-source discovery requires explicit consent and server-side configuration. Actual submission must take place through the institution's licensed Turnitin/LMS flow.
+
+
+## Similarity pre-check source discovery
+
+The Turnitin practice page can compare against documents the student adds locally. It also offers an explicit-consent source-discovery pass that searches accessible public-web pages through Brave Search (when `BRAVE_SEARCH_API_KEY` is configured) and scholarly metadata/abstracts through Crossref. Add `BRAVE_SEARCH_API_KEY` as a **server-side** Vercel environment variable and redeploy; do not use a `VITE_` prefix. See `TURNITIN_SIMILARITY_PRECHECK_NOTES.md` for the implementation, privacy notice, and limitations. The result is a local similarity pre-check, never an official or predicted Turnitin score.

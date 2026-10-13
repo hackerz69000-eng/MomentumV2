@@ -10,6 +10,7 @@ import {
   Search,
   PenLine,
   FileCheck,
+  FileUp,
   Trash2,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -66,6 +67,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           <Link to="/essay" className={navCls} activeProps={{ className: activeCls }}>
             <FileCheck className="size-4" /> Essay Grader
           </Link>
+          <Link to="/turnitin" className={navCls} activeProps={{ className: activeCls }}>
+            <FileUp className="size-4" /> Turnitin Submission
+          </Link>
           <Link to="/trash" className={navCls} activeProps={{ className: activeCls }}>
             <Trash2 className="size-4" /> Recently Deleted
           </Link>
@@ -97,6 +101,13 @@ export function AppShell({ children }: { children: ReactNode }) {
               aria-label="Momentum Coach"
             >
               <Compass className="size-4" />
+            </Link>
+            <Link
+              to="/turnitin"
+              className="p-2 rounded-lg border border-line/70"
+              aria-label="Turnitin Submission"
+            >
+              <FileUp className="size-4" />
             </Link>
             <Link to="/sets/new" className="p-2 rounded-lg bg-brand text-ink" aria-label="New set">
               <Plus className="size-4" />

@@ -18,7 +18,9 @@ import { Route as AuthenticatedExamRouteImport } from './routes/_authenticated/e
 import { Route as AuthenticatedHistoryRouteImport } from './routes/_authenticated/history'
 import { Route as AuthenticatedSearchRouteImport } from './routes/_authenticated/search'
 import { Route as AuthenticatedTrashRouteImport } from './routes/_authenticated/trash'
+import { Route as AuthenticatedTurnitinRouteImport } from './routes/_authenticated/turnitin'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
+import { Route as ApiSimilarityDiscoveryRouteImport } from './routes/api/similarity-discovery'
 import { Route as AuthenticatedAssignmentIndexRouteImport } from './routes/_authenticated/assignment.index'
 import { Route as AuthenticatedAssignmentIdRouteImport } from './routes/_authenticated/assignment.$id'
 import { Route as AuthenticatedEssayIndexRouteImport } from './routes/_authenticated/essay.index'
@@ -70,9 +72,19 @@ const AuthenticatedTrashRoute = AuthenticatedTrashRouteImport.update({
   path: '/trash',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedTurnitinRoute = AuthenticatedTurnitinRouteImport.update({
+  id: '/turnitin',
+  path: '/turnitin',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const ApiTranscribeRoute = ApiTranscribeRouteImport.update({
   id: '/api/transcribe',
   path: '/api/transcribe',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiSimilarityDiscoveryRoute = ApiSimilarityDiscoveryRouteImport.update({
+  id: '/api/similarity-discovery',
+  path: '/api/similarity-discovery',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedAssignmentIndexRoute =
@@ -117,7 +129,9 @@ export interface FileRoutesByFullPath {
   '/history': typeof AuthenticatedHistoryRoute
   '/search': typeof AuthenticatedSearchRoute
   '/trash': typeof AuthenticatedTrashRoute
+  '/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
   '/assignment/$id': typeof AuthenticatedAssignmentIdRoute
   '/essay/$id': typeof AuthenticatedEssayIdRoute
   '/sets/$id': typeof AuthenticatedSetsIdRoute
@@ -134,7 +148,9 @@ export interface FileRoutesByTo {
   '/history': typeof AuthenticatedHistoryRoute
   '/search': typeof AuthenticatedSearchRoute
   '/trash': typeof AuthenticatedTrashRoute
+  '/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
   '/assignment/$id': typeof AuthenticatedAssignmentIdRoute
   '/essay/$id': typeof AuthenticatedEssayIdRoute
   '/sets/$id': typeof AuthenticatedSetsIdRoute
@@ -153,7 +169,9 @@ export interface FileRoutesById {
   '/_authenticated/history': typeof AuthenticatedHistoryRoute
   '/_authenticated/search': typeof AuthenticatedSearchRoute
   '/_authenticated/trash': typeof AuthenticatedTrashRoute
+  '/_authenticated/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
   '/_authenticated/assignment/$id': typeof AuthenticatedAssignmentIdRoute
   '/_authenticated/essay/$id': typeof AuthenticatedEssayIdRoute
   '/_authenticated/sets/$id': typeof AuthenticatedSetsIdRoute
@@ -172,7 +190,9 @@ export interface FileRouteTypes {
     | '/history'
     | '/search'
     | '/trash'
+    | '/turnitin'
     | '/api/transcribe'
+    | '/api/similarity-discovery'
     | '/assignment/$id'
     | '/essay/$id'
     | '/sets/$id'
@@ -189,7 +209,9 @@ export interface FileRouteTypes {
     | '/history'
     | '/search'
     | '/trash'
+    | '/turnitin'
     | '/api/transcribe'
+    | '/api/similarity-discovery'
     | '/assignment/$id'
     | '/essay/$id'
     | '/sets/$id'
@@ -207,7 +229,9 @@ export interface FileRouteTypes {
     | '/_authenticated/history'
     | '/_authenticated/search'
     | '/_authenticated/trash'
+    | '/_authenticated/turnitin'
     | '/api/transcribe'
+    | '/api/similarity-discovery'
     | '/_authenticated/assignment/$id'
     | '/_authenticated/essay/$id'
     | '/_authenticated/sets/$id'
@@ -221,6 +245,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
   ApiTranscribeRoute: typeof ApiTranscribeRoute
+  ApiSimilarityDiscoveryRoute: typeof ApiSimilarityDiscoveryRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -288,11 +313,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedTrashRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/turnitin': {
+      id: '/_authenticated/turnitin'
+      path: '/turnitin'
+      fullPath: '/turnitin'
+      preLoaderRoute: typeof AuthenticatedTurnitinRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/api/transcribe': {
       id: '/api/transcribe'
       path: '/api/transcribe'
       fullPath: '/api/transcribe'
       preLoaderRoute: typeof ApiTranscribeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/similarity-discovery': {
+      id: '/api/similarity-discovery'
+      path: '/api/similarity-discovery'
+      fullPath: '/api/similarity-discovery'
+      preLoaderRoute: typeof ApiSimilarityDiscoveryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated/assignment/': {
@@ -347,6 +386,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedHistoryRoute: typeof AuthenticatedHistoryRoute
   AuthenticatedSearchRoute: typeof AuthenticatedSearchRoute
   AuthenticatedTrashRoute: typeof AuthenticatedTrashRoute
+  AuthenticatedTurnitinRoute: typeof AuthenticatedTurnitinRoute
   AuthenticatedAssignmentIdRoute: typeof AuthenticatedAssignmentIdRoute
   AuthenticatedEssayIdRoute: typeof AuthenticatedEssayIdRoute
   AuthenticatedSetsIdRoute: typeof AuthenticatedSetsIdRoute
@@ -362,6 +402,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedHistoryRoute: AuthenticatedHistoryRoute,
   AuthenticatedSearchRoute: AuthenticatedSearchRoute,
   AuthenticatedTrashRoute: AuthenticatedTrashRoute,
+  AuthenticatedTurnitinRoute: AuthenticatedTurnitinRoute,
   AuthenticatedAssignmentIdRoute: AuthenticatedAssignmentIdRoute,
   AuthenticatedEssayIdRoute: AuthenticatedEssayIdRoute,
   AuthenticatedSetsIdRoute: AuthenticatedSetsIdRoute,
@@ -378,6 +419,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
   ApiTranscribeRoute: ApiTranscribeRoute,
+  ApiSimilarityDiscoveryRoute: ApiSimilarityDiscoveryRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -25,3 +25,13 @@ This pass focused on concrete correctness, readability, and data-integrity probl
 - Markdown formatter and source-scope functions were exercised directly with Node against the flattened table and restricted-page examples.
 - Added Vitest coverage for flattened table formatting, fenced code preservation, assignment source limits, and local fallback account ownership.
 - `npm install` could not complete in this environment and no dependencies are available locally. Therefore `npm test`, `npm run build`, full TypeScript type checking, linting, and browser end-to-end tests remain unverified and must be run in the user's project environment before deployment.
+
+
+## Turnitin submission-prep feature (Oct 2026)
+
+- Added authenticated `/turnitin` page and desktop/mobile navigation entry.
+- Supports local selection of PDF, DOC/DOCX, RTF, ODT, and TXT files up to 40 MB, or pasted essay text with live word/character count and TXT export.
+- Collects paper title, course, assignment, instructor, due date, and optional validated official portal URL.
+- Requires final-version and citations/requirements confirmations; shows readiness checklist and clearly labels prepared status.
+- Does not pretend to submit to Turnitin: official submission, similarity report, and receipt require the institution's licensed integration. Files/text remain client-side in this feature and are not uploaded by this page.
+- Full build/tests were not run because dependency installation timed out in this workspace.
