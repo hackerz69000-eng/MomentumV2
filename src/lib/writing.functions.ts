@@ -137,15 +137,14 @@ Help the student brainstorm WITHOUT forcing one answer. "## " sections: Possible
       return { text: out };
     }
     if (data.step === "outline") {
-      if (!a.chosen.trim())
-        throw new Error("Write the argument or thesis you want to go with first.");
+      const chosenArgument = a.chosen.trim();
       const out = await aiText(
         `${TEACH}
-Create an organized outline built on the student's CHOSEN argument (keep their wording of the thesis; you may suggest a sharper version separately, labelled "Possible refinement"). For essays use "## " sections: Introduction (hook idea, context, thesis), Body Paragraph 1..N (topic sentence idea, evidence to use, analysis questions to answer — what does it show and why does it matter), Counterargument & Rebuttal (when appropriate), Conclusion. Outline bullets only — no written paragraphs. Fit the required format/length. For every outline section, say what the student should write, which permitted source/evidence may support it, and a question they should answer themselves. End with "## Checklist Against the Requirements" and "## Next 3 Actions". Do not cite or use any source material outside its stated permitted portion.${mat.instr}`,
+Create an organized, student-friendly outline. The student's chosen argument / thesis is OPTIONAL. ${chosenArgument ? `If they supplied one, preserve their wording and build the outline around it; any improvement must be separately labelled "Possible refinement".` : `If they have not chosen an argument, do NOT block or demand one. Use the assignment instructions and brainstorm to propose 2–3 possible directions briefly under "## Choose a Direction (Optional)" and select one as a clearly labelled PROVISIONAL direction solely to demonstrate an outline. Explain that the student can choose, edit, or replace it. Do not pretend the student has endorsed it.`} For essays use "## " sections: Introduction (hook idea, context, thesis), Body Paragraph 1..N (topic sentence idea, evidence to use, analysis questions to answer — what does it show and why does it matter), Counterargument & Rebuttal (when appropriate), Conclusion. Outline bullets only — no written paragraphs. Fit the required format/length. For every outline section, say what the student should write, which permitted source/evidence may support it, and a question they should answer themselves. If no brainstorm exists, use instructions and uploaded materials to help them get started without inventing facts. End with "## Checklist Against the Requirements" and "## Next 3 Actions". Do not cite or use any source material outside its stated permitted portion.${mat.instr}`,
         [
           {
             role: "user",
-            content: `${brief}\n\nSTUDENT'S CHOSEN ARGUMENT / THESIS:\n${a.chosen}\n\nBRAINSTORM:\n${clip(a.brainstorm ?? "", 5000)}`,
+            content: `${brief}\n\nSTUDENT'S CHOSEN ARGUMENT / THESIS (OPTIONAL):\n${chosenArgument || "(not chosen yet — help the student explore suitable directions and label any proposed direction provisional)"}\n\nBRAINSTORM:\n${clip(a.brainstorm ?? "", 5000)}`,
           },
         ],
       );

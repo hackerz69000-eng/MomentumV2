@@ -246,7 +246,7 @@ function Editor({ row }: { row: Row }) {
               <div className="rounded-xl bg-cool/10 p-2"><FileUp className="size-5 text-cool2" /></div>
               <div className="min-w-0 flex-1">
                 <p className="font-semibold">Assignment materials</p>
-                <p className="text-xs text-soft mt-1">Upload several files at once. PDF, DOCX, PPTX, TXT, Markdown and PNG/JPG/WEBP images are supported, up to 20 MB per file. You can also paste text below.</p>
+                <p className="text-xs text-soft mt-1">Upload multiple files at once for any category, including PDFs, DOCX, PPTX, TXT, Markdown, and PNG/JPG/WEBP images. Each file can be up to 20 MB. Choose the category first; you can repeat uploads to add more files later or mix different file types.</p>
               </div>
             </div>
             <label className="block text-xs font-medium text-soft">What are you uploading?</label>
@@ -272,7 +272,7 @@ function Editor({ row }: { row: Row }) {
           <Field label="Assignment instructions / teacher guidelines" value={f.instructions} onChange={(v) => set("instructions", v)} rows={7} placeholder="Paste the prompt exactly as given, or upload it above." />
           <div className="rounded-2xl border border-line/70 p-4 space-y-3">
             <div className="flex items-center gap-2"><BookOpen className="size-4 text-cool2" /><p className="font-semibold">Sources and supporting materials <span className="text-xs font-normal text-soft">· optional</span></p></div>
-            <p className="text-xs text-soft">Add allowed/required sources and helpful class materials. If the teacher restricts a source to certain pages or chapters, add that limit when uploading it. Uploaded source text is kept separate by filename and type.</p>
+            <p className="text-xs text-soft">Upload as many allowed/required source files and supporting materials as you need, including PDFs, textbook excerpts, slides, notes, or teacher feedback. Use the upload category above to choose whether a batch is an allowed source or supporting material. Each file is kept separate by filename and type. This section is optional and can be completed later.</p>
             <Field label="Other source notes, links or citation details (optional)" value={sourceBundle.notes} onChange={(v) => updateSourceBundle({ ...sourceBundle, notes: v })} rows={3} placeholder="Paste source URLs, citation details, or notes about which sources are permitted." />
             {sourceBundle.attachments.length > 0 ? <div className="space-y-2">
               {sourceBundle.attachments.map((a) => <div key={a.id} className="rounded-xl border border-line/60 p-3 space-y-1.5">
@@ -292,7 +292,7 @@ function Editor({ row }: { row: Row }) {
                 key={s.k}
                 onClick={() => run(s.k)}
                 disabled={
-                  !!busy || !f.instructions.trim() || (s.k === "outline" && !f.chosen.trim())
+                  !!busy || !f.instructions.trim()
                 }
                 className={btnGhost}
               >
@@ -327,11 +327,13 @@ function Editor({ row }: { row: Row }) {
             )}
           </div>
           <Field
-            label="Your chosen argument / thesis (needed for the outline)"
+            label="Your chosen argument / thesis (optional)"
             value={f.chosen}
             onChange={(v) => set("chosen", v)}
             rows={2}
+            placeholder="Already have an argument? Add it here. If not, leave this blank and Momentum will help you explore a suitable direction in the outline."
           />
+          <p className="text-xs text-soft -mt-2">You do not need to decide on your argument before starting. The outline can suggest a provisional direction based on your instructions and brainstorm; you can change it later.</p>
           <div className="rounded-2xl bg-panel border border-line/70 p-4 space-y-3">
             <p className="eyebrow text-cool2">Draft feedback</p>
             {chat.map((m, i) => (
