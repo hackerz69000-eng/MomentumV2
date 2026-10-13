@@ -143,8 +143,8 @@ export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void)
     // A PDF can contain page labels/headings but no body text. Treat that as a
     // failed extraction and try OCR instead of saving misleadingly empty context.
     if (text.length < 30 || looksLikePdfHeadingsOnly(text)) {
-      if (f.size > 10 * 1024 * 1024) {
-        throw new Error(`${f.name} has little readable text and is larger than the current OCR limit (10 MiB). Try a text-searchable PDF or split it into smaller parts before uploading.`);
+      if (f.size > MAX_BYTES) {
+        throw new Error(`${f.name} is too large for OCR processing. Try a text-searchable PDF or split it into smaller parts before uploading.`);
       }
       try {
         onMsg(`Text extraction was sparse. Trying text recognition for ${f.name}…`);

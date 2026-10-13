@@ -835,7 +835,8 @@ export const ocrFile = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) =>
     z
       .object({
-        data: z.string().max(14_000_000),
+        // Base64 expands binary files by about one third. Allow the configured 100 MiB file cap.
+        data: z.string().max(140_000_000),
         mediaType: z.enum(["application/pdf", "image/png", "image/jpeg", "image/webp"]),
         filename: z.string().max(200),
       })
