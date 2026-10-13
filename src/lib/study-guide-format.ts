@@ -7,6 +7,8 @@
 export function formatStudyGuideMarkdown(markdown: string): string {
   const expandedLines = markdown
     .replace(/\r\n?/g, "\n")
+    .replace(/\\?<br\s*\/?\s*>/gi, " ")
+    .replace(/\\[ \t]*\n/g, "\n")
     .split("\n")
     .flatMap((originalLine) => {
       let line = originalLine;
@@ -49,7 +51,8 @@ export function formatStudyGuideMarkdown(markdown: string): string {
     for (const row of rows) {
       const primary = row[0]?.trim();
       if (!primary) continue;
-      output.push(`- **${primary}**`);
+      const primaryLabel = primary.replace(/^\*\*(.*?)\*\*$/, "$1");
+      output.push(`- **${primaryLabel}**`);
       for (let cellIndex = 1; cellIndex < headers.length; cellIndex += 1) {
         const value = row[cellIndex]?.trim();
         if (!value) continue;

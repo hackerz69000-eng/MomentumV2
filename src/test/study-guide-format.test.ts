@@ -16,6 +16,19 @@ describe("formatStudyGuideMarkdown", () => {
     expect(result).not.toContain("|-------|");
   });
 
+  it("cleans escaped line breaks and converts the Assignment Helper's flattened tables", () => {
+    const input = String.raw`## Requirements
+
+\| Deliverable \| What it means \| \|-------------\|----------------\| \| **Clear position** \| State your view\<br>and explain it \|`;
+    const result = formatStudyGuideMarkdown(input);
+
+    expect(result).toContain("- **Clear position**");
+    expect(result).toContain("**What it means:** State your view");
+    expect(result).toContain("and explain it");
+    expect(result).not.toContain("|-------------|");
+    expect(result).not.toContain("<br>");
+  });
+
   it("leaves ordinary prose and lists intact", () => {
     const input = "# Guide\n\nA short overview.\n\n- **Term** — definition\n- Second item";
     expect(formatStudyGuideMarkdown(input)).toBe(input);

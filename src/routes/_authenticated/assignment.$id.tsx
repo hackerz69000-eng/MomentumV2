@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { formatStudyGuideMarkdown } from "@/lib/study-guide-format";
 import { ArrowLeft, BookOpen, CheckCircle2, Clock3, FileText, FileUp, Loader2, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { ocrFile } from "@/lib/study.functions";
@@ -67,12 +68,11 @@ const STEPS: {
   l: string;
   field: "understanding" | "brainstorm" | "outline";
   desc: string;
-  time: string;
   result: string;
 }[] = [
-  { k: "understand", l: "1. Understand it", field: "understanding", desc: "Translate the teacher's instructions into plain language, identify requirements, and spot source restrictions.", time: "About 5–10 min to review", result: "A clear assignment brief and a roadmap" },
-  { k: "brainstorm", l: "2. Brainstorm", field: "brainstorm", desc: "Explore several possible directions, compare their strengths, and find evidence to investigate—without forcing a thesis too early.", time: "About 10–20 min to explore", result: "Options, questions, and evidence leads" },
-  { k: "outline", l: "3. Outline", field: "outline", desc: "Turn your chosen direction—or a provisional example—into an ordered, section-by-section plan you can write from.", time: "About 10–20 min to review", result: "A practical outline and drafting checklist" },
+  { k: "understand", l: "1. Understand it", field: "understanding", desc: "Translate the teacher's instructions into plain language, identify requirements, and spot source restrictions.", result: "A clear assignment brief and a roadmap" },
+  { k: "brainstorm", l: "2. Brainstorm", field: "brainstorm", desc: "Explore several possible directions, compare their strengths, and find evidence to investigate—without forcing a thesis too early.", result: "Options, questions, and evidence leads" },
+  { k: "outline", l: "3. Outline", field: "outline", desc: "Turn your chosen direction—or a provisional example—into an ordered, section-by-section plan you can write from.", result: "A practical outline and drafting checklist" },
 ];
 
 type AssignmentAttachment = {
@@ -95,6 +95,25 @@ function parseSourceBundle(raw: string): AssignmentSourceBundle {
   return { ...emptySourceBundle(), notes: raw || "" };
 }
 function encodeSourceBundle(bundle: AssignmentSourceBundle) { return JSON.stringify(bundle); }
+
+type StepTimeSuggestions = Record<"understand" | "brainstorm" | "outline", string>;
+
+/** Lightweight, explainable estimate based on visible assignment complexity. These are optional planning hints, never timers or requirements. */
+function getAssignmentTimeSuggestions(instructions: string): StepTimeSuggestions {
+  const text = instructions.trim();
+  const wordCountText = (text.match(/\b(\d[\d,]{2,5})\s*(?:-|–|—|to)\s*(\d[\d,]{2,5})\s*words?\b/i) || [])[1] || "0";
+  const wordCount = Number(wordCountText.replace(/,/g, ""));
+  const checklistItems = (text.match(/^\s*(?:\d+[.)]|[-*])\s+/gm) || []).length;
+  const complexity =
+    (text.length > 2200 ? 2 : text.length > 800 ? 1 : 0) +
+    (wordCount >= 1500 ? 2 : wordCount >= 700 ? 1 : 0) +
+    (checklistItems >= 8 ? 1 : checklistItems >= 4 ? 0.5 : 0) +
+    (/rubric|assessment criteria|multiple sources|citation|counterargument|research|presentation|deliverables/i.test(text) ? 1 : 0);
+  if (!text) return { understand: "a few minutes", brainstorm: "as needed", outline: "as needed" };
+  if (complexity >= 4) return { understand: "8–15 min", brainstorm: "15–25 min", outline: "15–30 min" };
+  if (complexity >= 2) return { understand: "5–10 min", brainstorm: "10–15 min", outline: "10–20 min" };
+  return { understand: "3–5 min", brainstorm: "5–10 min", outline: "5–10 min" };
+}
 
 function Editor({ row }: { row: Row }) {
   const qc = useQueryClient();
@@ -129,6 +148,7 @@ function Editor({ row }: { row: Row }) {
   const [question, setQuestion] = useState("");
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((p) => ({ ...p, [k]: v }));
   const sourceBundle = parseSourceBundle(f.sources);
+  const timeSuggestions = getAssignmentTimeSuggestions(f.instructions);
   const updateSourceBundle = (bundle: AssignmentSourceBundle) => set("sources", encodeSourceBundle(bundle));
   const uploadFiles = async (files: FileList | null) => {
     if (!files?.length || uploadBusy) return;
@@ -292,7 +312,7 @@ function Editor({ row }: { row: Row }) {
           <div className="rounded-2xl border border-line/70 bg-panel p-4 space-y-1">
             <p className="eyebrow text-cool2">Your assignment journey</p>
             <h2 className="font-display text-xl font-bold">One step at a time</h2>
-            <p className="text-sm text-soft">Start with understanding, then explore ideas, then build an outline. You can revisit any step whenever you need to. Each step saves its result so you can keep working later.</p>
+            <p className="text-sm text-soft">Start with understanding, then explore ideas, then build an outline. Time suggestions adapt to the instructions and are only a guide—not a timer or requirement. Skip ahead or revisit any step whenever you need to. Each step saves its result so you can keep working later.</p>
           </div>
           <div className="grid gap-3">
             {STEPS.map((s, index) => (
@@ -305,7 +325,7 @@ function Editor({ row }: { row: Row }) {
                     <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{s.l.slice(3)}</h3>{out[s.field] && <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-400">Generated</span>}</div>
                     <p className="text-sm text-soft">{s.desc}</p>
                     <p className="text-xs text-soft">{s.result}</p>
-                    <p className="inline-flex items-center gap-1 text-xs text-soft"><Clock3 className="size-3.5" /> {s.time}</p>
+                    <p className="inline-flex items-center gap-1 text-xs text-soft"><Clock3 className="size-3.5" /> Suggested time: {timeSuggestions[s.k]} <span className="text-soft/80">(optional)</span></p>
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -333,7 +353,7 @@ function Editor({ row }: { row: Row }) {
             </div>
             <div className="md text-sm p-5 md:p-6 min-h-48 overflow-x-auto">
               {out[tab] ? (
-                <ReactMarkdown>{out[tab]!}</ReactMarkdown>
+                <ReactMarkdown>{formatStudyGuideMarkdown(out[tab]!)}</ReactMarkdown>
               ) : (
                 <div className="max-w-prose space-y-2 text-soft">
                   <p className="font-medium text-foreground">{!f.instructions.trim() ? "Add the assignment instructions to begin." : `Your ${STEPS.find((s) => s.field === tab)?.l.slice(3).toLowerCase()} guide will appear here.`}</p>
@@ -363,7 +383,7 @@ function Editor({ row }: { row: Row }) {
                   (m.role === "user" ? "bg-cool/10" : "bg-foreground/5")
                 }
               >
-                <ReactMarkdown>{m.content}</ReactMarkdown>
+                <ReactMarkdown>{formatStudyGuideMarkdown(m.content)}</ReactMarkdown>
               </div>
             ))}
             <div className="flex gap-2">

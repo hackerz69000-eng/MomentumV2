@@ -1,19 +1,18 @@
-# Assignment Helper Guided Workspace Improvements
+# Momentum Assignment Helper — readability and workflow update
 
-## Student experience
-- Reworked the Assignment Helper stage cards for Understand, Brainstorm, and Outline. Each stage explains its purpose, what the student will receive, and a realistic review-time estimate.
-- Each stage has a dedicated Generate/Regenerate action and saved-state indicator. Results can be revisited from the workspace tabs without losing earlier generated work.
-- Added a more useful empty state that explains what the selected stage will do.
-- Renamed the feedback area to "Review and improve" and explained that feedback is available for drafts or partial sections, with prioritized actions rather than a rewrite.
-- Improved Markdown styles for nested lists, heading hierarchy, links, code blocks, and checklists.
+## What changed
 
-## AI guidance
-- Understand it: generates a plain-language explanation of the assignment, concrete deliverables, explicit format and length, actual rubric criteria (or a clearly labeled inferred self-check), key questions, source restrictions, common traps, time-estimated steps with move-on conditions, missing information, and first actions.
-- Brainstorm: explores multiple distinct possible directions, reflects student ideas first, separates verified evidence from material to investigate, explains possible counterarguments, and gives a quick brainstorming exercise. It does not force a thesis or present an unchosen thesis as the student's own.
-- Outline: adapts to the actual deliverable, provides a section-by-section plan with purpose, points to include, permitted evidence, reasoning questions, and next actions. If the student has not chosen an argument, it provides clearly provisional options instead of blocking.
-- Draft feedback: prioritizes specific fixes, identifies strengths, checks requirements when known, flags claims/citations to verify, and provides the student's next three revision actions without rewriting the whole draft.
-- All prompts request concise, scannable Markdown, prohibit raw HTML and Markdown tables, distinguish teacher requirements from Momentum suggestions, and preserve source restrictions.
+- Understand It, Brainstorm, and Outline prompts now prioritize concise, scannable guidance, short paragraphs, real Markdown lists, and whitespace between sections.
+- The prompts explicitly prohibit table layouts, escaped pipe characters, raw HTML, and literal `<br>` tags. They require a clear distinction between teacher-stated requirements and Momentum's suggestions.
+- Understand It now avoids repeating deadlines, word counts, and formatting details in multiple sections. Rubric point values must come from supplied instructions; inferred self-checks must not be presented as official rubrics.
+- Brainstorm options use a consistent compact structure and preserve the student's right to choose or reject a direction.
+- Outline guidance remains adaptable to the assignment type, distinguishes a provisional direction from the student's own thesis, and treats time/length estimates as optional suggestions.
+- Existing Assignment Helper results and feedback chat are normalized before rendering. Flattened/escaped Markdown tables are converted into readable nested lists, and literal `<br>` tags are removed rather than shown to students.
+- Step time suggestions now adapt to assignment-instruction length, word-count targets, checklist density, and complexity cues. They are labelled optional, with explanatory UI text that they are not timers or requirements.
+- Added a regression test for the flattened table/`<br>` case reported by the user.
 
-## Validation
-- TypeScript transpilation syntax checks passed for the modified TSX and server-function files.
-- Full application build and integration tests were not run because project dependencies are not installed in this environment. Run `npm install` and `npm run build` before deployment.
+## Verification
+
+- Manually exercised the Markdown formatter against both the existing study-guide table case and the reported Assignment Helper-style flattened table; both rendered as readable lists with no raw pipe-table syntax or `<br>` tag.
+- TypeScript/TSX syntax transpilation checks are run for the changed source files.
+- A full application build and Vitest suite require installing the project's dependencies first; they are not claimed as passing unless run in an environment with dependencies installed.
