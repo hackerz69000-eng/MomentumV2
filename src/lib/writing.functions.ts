@@ -67,9 +67,9 @@ export const assignmentStep = createServerFn({ method: "POST" })
     const sb = context.supabase;
     const { data: a, error } = await sb.from("assignments").select("*").eq("id", data.id).single();
     if (error || !a) throw new Error("Assignment not found");
-    if (!a.instructions.trim()) throw new Error("Add the assignment instructions first.");
+    if (data.step !== "feedback" && !a.instructions.trim()) throw new Error("Add the assignment instructions first.");
     const mat = await setContext(sb, a.set_id);
-    const brief = `ASSIGNMENT INSTRUCTIONS:\n${clip(a.instructions, 12000)}\n\nEXISTING SEPARATE RUBRIC FIELD (optional legacy field; also inspect the assignment instructions for rubric criteria):\n${clip(a.rubric || "(no separate rubric field; inspect the instructions for assessment criteria)", 8000)}\n\nSOURCE MATERIAL AND SCOPE LIMITS:\n${formatAssignmentSources(a.sources || "", 36000)}\n\nSTUDENT'S OWN IDEAS / NOTES:\n${clip(a.ideas || "(none yet)", 6000)}${mat.text}`;
+    const brief = `ASSIGNMENT INSTRUCTIONS:\n${clip(a.instructions || "(not provided yet; help with the context the student shares and ask for the prompt only when it is necessary)", 12000)}\n\nEXISTING SEPARATE RUBRIC FIELD (optional legacy field; also inspect the assignment instructions for rubric criteria):\n${clip(a.rubric || "(no separate rubric field; inspect the instructions for assessment criteria)", 8000)}\n\nSOURCE MATERIAL AND SCOPE LIMITS:\n${formatAssignmentSources(a.sources || "", 36000)}\n\nSTUDENT'S OWN IDEAS / NOTES:\n${clip(a.ideas || "(none yet)", 6000)}${mat.text}`;
     const now = new Date().toISOString();
 
     if (data.step === "understand") {
@@ -180,15 +180,14 @@ If the brainstorm is empty, still help using the prompt and supplied material. R
     }
     // Open-ended assignment help: students can ask questions before or after drafting.
     const q = (data.question ?? "").trim() || "Can you help me figure out the best next step for this assignment?";
-    const chat = (Array.isArray(a.chat) ? a.chat : []) as {
-      role: "user" | "assistant";
-      content: string;
-    }[];
+    const chat = (Array.isArray(a.chat) ? a.chat : [])
+      .filter((message: any) => message && (message.role === "user" || message.role === "assistant") && typeof message.content === "string")
+      .slice(-8) as { role: "user" | "assistant"; content: string }[];
     const out = await aiText(
       `${TEACH}
 You are also the student's open-ended assignment tutor. Answer the student's actual question directly, even if they have not started a draft. They may ask about the prompt, concepts, terminology, planning, brainstorming, thesis ideas, structure, evidence, citations, research strategy, interpreting feedback, time management, or any other issue related to completing this assignment. Do not force every answer into draft feedback or a fixed template.
 
-Use the supplied assignment instructions, rubric, permitted sources, student notes, chosen argument, outline, brainstorm, and draft when relevant. If a question can be answered from the provided context, answer it clearly and practically. If it depends on missing information, say what is missing and still provide the help that is supported. Clearly distinguish facts from supplied materials, general knowledge, and suggestions. Never invent citations, page numbers, quotes, source claims, teacher requirements, or grading outcomes. Respect source restrictions. Explain difficult ideas in plain language, use examples when useful, and break complicated tasks into manageable steps. When asked to improve the student's own work, give specific guidance and brief illustrative phrases rather than silently replacing their voice or writing the whole assignment. If the student asks a broad question, offer a useful starting answer and one focused follow-up only if needed. Use readable Markdown with headings and lists where helpful; no tables, raw HTML, pipe-delimited layouts, or <br> tags. Keep the response proportional to the question.
+Use the supplied assignment instructions, rubric, permitted sources, student notes, chosen argument, outline, brainstorm, and draft when relevant. If a question can be answered from the provided context, answer it clearly and practically. If assignment instructions are not provided, do not refuse to help: answer using the student's question and general knowledge, make clear that you have not seen the prompt, and ask them to share it only if needed for a precise answer. If it depends on missing information, say what is missing and still provide the help that is supported. Clearly distinguish facts from supplied materials, general knowledge, and suggestions. Never invent citations, page numbers, quotes, source claims, teacher requirements, or grading outcomes. Respect source restrictions. Explain difficult ideas in plain language, use examples when useful, and break complicated tasks into manageable steps. When asked to improve the student's own work, give specific guidance and brief illustrative phrases rather than silently replacing their voice or writing the whole assignment. If the student asks a broad question, offer a useful starting answer and one focused follow-up only if needed. Use readable Markdown with headings and lists where helpful; no tables, raw HTML, pipe-delimited layouts, or <br> tags. Keep the response proportional to the question.
 
 ASSIGNMENT CONTEXT:
 ${brief}

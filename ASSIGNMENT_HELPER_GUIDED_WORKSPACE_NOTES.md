@@ -28,3 +28,12 @@
 ## Verification for open-ended assignment help
 
 - Reviewed the modified server and UI code paths. A full TypeScript build and automated test suite have not been run in this environment because project dependencies are not installed.
+
+## Final usability and accessibility pass
+
+- The Ask for help tab now includes starter-question chips, speaker labels, a visible response-loading state, and automatic scrolling to the newest conversation content.
+- The question composer is a multiline textarea with a 3,000-character limit, a live character count, Enter-to-send, and Shift+Enter for a new line.
+- Added tab/tabpanel relationships and selected-tab keyboard focus semantics for clearer assistive-technology navigation.
+- The tutor can now answer a question even when assignment instructions have not been entered yet. It is instructed to be transparent that it has not seen the prompt and still help from the student's question rather than refusing outright.
+- Persisted chat history is filtered to valid user/assistant messages before it is passed back to the model.
+- Validation: TypeScript transpilation/syntax checks passed for all 161 `.ts`/`.tsx` source files. A full typecheck, production build, lint, automated test suite, and live model round-trip remain unverified because dependencies could not be installed in this environment.
