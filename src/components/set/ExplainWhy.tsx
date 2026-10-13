@@ -1,6 +1,6 @@
 import { useServerFn } from "@tanstack/react-start";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { HelpCircle, Loader2 } from "lucide-react";
 import { explainWhy } from "@/lib/explain.functions";
 
@@ -45,7 +45,7 @@ export function ExplainWhy(props: {
   if (text)
     return (
       <div className="md text-sm rounded-lg border border-cool/30 bg-cool/5 p-3 mt-3">
-        <ReactMarkdown>{text}</ReactMarkdown>
+        <MarkdownContent>{text}</MarkdownContent>
       </div>
     );
   return (

@@ -128,7 +128,7 @@ export function ActiveRecall({
     if (!user || !q) return;
     const score = GRADE[g].score;
     setTally((t) => ({ done: t.done + 1, good: t.good + (score >= 3 ? 1 : 0) }));
-    await supabase.from("quiz_attempts").insert({
+    const { error: attemptError } = await supabase.from("quiz_attempts").insert({
       set_id: setId,
       user_id: user.id,
       kind: "recall",
@@ -137,6 +137,7 @@ export function ActiveRecall({
       total: 4,
       results: [{ topic: q.topic, correct: score >= 3, grade: g, q: q.question.slice(0, 200) }],
     });
+    if (attemptError) toast.error("Your answer was checked, but this result couldn't be saved to progress.");
     void recordResults(
       user.id,
       [

@@ -1,13 +1,19 @@
 import { useServerFn } from "@tanstack/react-start";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { CalendarDays, CheckSquare, Headphones, Loader2, RefreshCw, ScrollText } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { generateGuide } from "@/lib/study.functions";
-import { formatStudyGuideMarkdown } from "@/lib/study-guide-format";
 import { fetchSets, type StudySet } from "@/lib/queries";
 import { btnGhost, btnPrimary, ErrorBox, inputCls } from "./ui";
+
+function localDateInputValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 export function StudyGuide({ set }: { set: StudySet }) {
   const navigate = useNavigate();
@@ -64,7 +70,7 @@ export function StudyGuide({ set }: { set: StudySet }) {
         <div className="grid md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-5">
           <div className="space-y-2">
             <label htmlFor="study-guide-test-date" className="text-sm font-semibold flex items-center gap-2"><CalendarDays className="size-4 text-cool2"/> Test date <span className="text-soft font-normal">(optional)</span></label>
-            <input id="study-guide-test-date" type="date" min={new Date().toISOString().slice(0, 10)} value={testDate} onChange={(e) => setTestDate(e.target.value)} className={inputCls + " w-full"} />
+            <input id="study-guide-test-date" type="date" min={localDateInputValue()} value={testDate} onChange={(e) => setTestDate(e.target.value)} className={inputCls + " w-full"} />
             <p className="text-xs text-soft">If you add a date, the guide will include a time-aware review plan.</p>
           </div>
           <div className="space-y-2 min-w-0">
@@ -103,7 +109,7 @@ export function StudyGuide({ set }: { set: StudySet }) {
           <button onClick={() => navigate({ to: "/sets/$id", params: { id: set.id }, search: { tab: "audio" } })} className={btnGhost}><Headphones className="size-4" /> Audio Study</button>
         </div>
         <article className="study-guide-content rounded-2xl bg-panel border border-line/70 p-5 sm:p-7 md:p-9 max-w-none">
-          <ReactMarkdown
+          <MarkdownContent
             components={{
               h1: ({ children }) => <h1 className="font-display text-3xl md:text-4xl leading-tight tracking-wide mb-4 pb-4 border-b border-line/70">{children}</h1>,
               h2: ({ children }) => <h2 className="font-display text-xl md:text-2xl tracking-wide mt-10 mb-4 pb-3 border-b border-line/70 text-cool2 first:mt-0">{children}</h2>,
@@ -119,8 +125,8 @@ export function StudyGuide({ set }: { set: StudySet }) {
               a: ({ children, href }) => <a className="text-cool2 underline underline-offset-4" href={href} target="_blank" rel="noreferrer">{children}</a>,
             }}
           >
-            {formatStudyGuideMarkdown(set.study_guide)}
-          </ReactMarkdown>
+            {set.study_guide}
+          </MarkdownContent>
         </article>
       </>}
     </div>

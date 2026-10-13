@@ -5,12 +5,18 @@
  * accessible, labeled lists instead of being shown as raw pipe-delimited text.
  */
 export function formatStudyGuideMarkdown(markdown: string): string {
+  let insideFence = false;
   const expandedLines = markdown
     .replace(/\r\n?/g, "\n")
     .replace(/\\?<br\s*\/?\s*>/gi, " ")
     .replace(/\\[ \t]*\n/g, "\n")
     .split("\n")
     .flatMap((originalLine) => {
+      if (/^\s*(`{3,}|~{3,})/.test(originalLine)) {
+        insideFence = !insideFence;
+        return [originalLine];
+      }
+      if (insideFence) return [originalLine];
       let line = originalLine;
       const escapedPipeCount = (line.match(/\\\|/g) ?? []).length;
       const looksLikeTable = escapedPipeCount >= 3 || ((line.trim().startsWith("|") || line.trim().startsWith("\\|")) && line.includes("---"));
@@ -27,9 +33,21 @@ export function formatStudyGuideMarkdown(markdown: string): string {
 
   const output: string[] = [];
   let index = 0;
+  let outputInsideFence = false;
 
   while (index < expandedLines.length) {
     const line = expandedLines[index] ?? "";
+    if (/^\s*(`{3,}|~{3,})/.test(line)) {
+      output.push(line);
+      outputInsideFence = !outputInsideFence;
+      index += 1;
+      continue;
+    }
+    if (outputInsideFence) {
+      output.push(line);
+      index += 1;
+      continue;
+    }
     const next = expandedLines[index + 1] ?? "";
     const isTableHeader = isPipeRow(line) && isTableSeparator(next);
 

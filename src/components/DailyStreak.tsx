@@ -5,6 +5,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { getFreezes, useFreeze } from "@/lib/gamification";
 
 const STREAK_KEY = "momentum_streak_data";
+
+function localDayKey(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export const STREAK_EVENT = "momentum_streak_updated";
 
 export interface StreakData {
@@ -17,16 +25,16 @@ export interface StreakData {
 
 export function getStreakData(): StreakData {
   if (typeof window === "undefined") {
-    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
+    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
   }
   try {
     const raw = localStorage.getItem(STREAK_KEY);
     if (!raw) {
       const initial: StreakData = {
-        currentStreak: 1,
-        longestStreak: 1,
-        lastStudyDate: new Date().toISOString().split("T")[0]!,
-        totalSessionsCompleted: 1,
+        currentStreak: 0,
+        longestStreak: 0,
+        lastStudyDate: null,
+        totalSessionsCompleted: 0,
         totalStudyMinutes: 0,
       };
       localStorage.setItem(STREAK_KEY, JSON.stringify(initial));
@@ -34,24 +42,24 @@ export function getStreakData(): StreakData {
     }
     const parsed = JSON.parse(raw) as Partial<StreakData>;
     return {
-      currentStreak: parsed.currentStreak ?? 1,
-      longestStreak: parsed.longestStreak ?? 1,
+      currentStreak: parsed.currentStreak ?? 0,
+      longestStreak: parsed.longestStreak ?? 0,
       lastStudyDate: parsed.lastStudyDate ?? null,
       totalSessionsCompleted: parsed.totalSessionsCompleted ?? 0,
       totalStudyMinutes: parsed.totalStudyMinutes ?? 0,
     };
   } catch {
-    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
+    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
   }
 }
 
 export function recordStudySessionCompletion(durationMinutes = 15, topicName = "Study Session"): StreakData {
   if (typeof window === "undefined") {
-    return { currentStreak: 1, longestStreak: 1, lastStudyDate: null, totalSessionsCompleted: 1, totalStudyMinutes: 0 };
+    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
   }
 
   const prev = getStreakData();
-  const today = new Date().toISOString().split("T")[0]!;
+  const today = localDayKey();
 
   let nextStreak = prev.currentStreak;
   let isNewDay = false;
@@ -66,8 +74,8 @@ export function recordStudySessionCompletion(durationMinutes = 15, topicName = "
     // Check difference in days
     const lastDate = new Date(prev.lastStudyDate);
     const currentDate = new Date(today);
-    const diffTime = Math.abs(currentDate.getTime() - lastDate.getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const diffTime = currentDate.getTime() - lastDate.getTime();
+    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
 
     if (diffDays === 1) {
       nextStreak = prev.currentStreak + 1;
@@ -121,10 +129,11 @@ interface DailyStreakProps {
 
 export function DailyStreak({ className = "" }: DailyStreakProps) {
   const [data, setData] = useState<StreakData>(() => ({
-    currentStreak: 1,
-    longestStreak: 1,
+    currentStreak: 0,
+    longestStreak: 0,
     lastStudyDate: null,
     totalSessionsCompleted: 0,
+    totalStudyMinutes: 0,
   }));
   const [mounted, setMounted] = useState(false);
   const [open, setOpen] = useState(false);
@@ -141,7 +150,7 @@ export function DailyStreak({ className = "" }: DailyStreakProps) {
     return () => window.removeEventListener(STREAK_EVENT, handleUpdate);
   }, []);
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = localDayKey();
   const studiedToday = mounted && data.lastStudyDate === today;
 
   const handleManualComplete = () => {

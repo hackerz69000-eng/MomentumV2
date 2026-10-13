@@ -126,33 +126,47 @@ export const processSet = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const supabase = context.supabase;
     const set = await loadSet(supabase, data.setId);
-    await supabase
-      .from("study_sets")
-      .update({ status: "processing", error: null })
-      .eq("id", set.id);
     try {
-      // Notes come first: flashcards are deliberately generated from the
-      // finished notes so the deck is coherent with what the student will review.
+      const { error: statusError } = await supabase
+        .from("study_sets")
+        .update({ status: "processing", error: null })
+        .eq("id", set.id);
+      if (statusError) throw new Error("Couldn't start processing this study set. Please try again.");
+
+      // Generate everything before replacing saved content, so an AI failure never
+      // destroys the student's existing notes or cards.
       const notes = await makeNotes(set);
       const cards = await makeCards({ ...set, notes });
-      await supabase.from("flashcards").delete().eq("set_id", set.id);
-      const { error: insErr } = await supabase
-        .from("flashcards")
-        .insert(
-          cards.map((c, i) => ({
-            set_id: set.id,
-            user_id: context.userId,
-            question: c.q,
-            answer: c.a,
-            topic: (c.t ?? "").slice(0, 60),
-            position: i,
-          })),
-        );
-      if (insErr) throw new Error(insErr.message);
-      await supabase
+      const { data: oldCards, error: readError } = await supabase.from("flashcards").select("*").eq("set_id", set.id);
+      if (readError) throw new Error("Couldn't safely replace the existing flashcards.");
+      if (oldCards?.length) {
+        const { error: archiveError } = await supabase.from("trash").insert({
+          user_id: context.userId,
+          kind: "flashcards",
+          label: `${oldCards.length} replaced flashcards — ${set.name}`,
+          set_id: set.id,
+          data: { rows: oldCards },
+        });
+        if (archiveError) throw new Error("Couldn't back up the existing flashcards, so they were left unchanged.");
+      }
+      const { error: deleteError } = await supabase.from("flashcards").delete().eq("set_id", set.id);
+      if (deleteError) throw new Error("Couldn't replace the old flashcards. Your existing cards were kept.");
+      const { error: insertError } = await supabase.from("flashcards").insert(
+        cards.map((c, i) => ({
+          set_id: set.id,
+          user_id: context.userId,
+          question: c.q,
+          answer: c.a,
+          topic: (c.t ?? "").slice(0, 60),
+          position: i,
+        })),
+      );
+      if (insertError) throw new Error("New flashcards couldn't be saved. Your previous cards are in Recently Deleted.");
+      const { error: saveSetError } = await supabase
         .from("study_sets")
         .update({ notes, status: "ready", error: null, updated_at: new Date().toISOString() })
         .eq("id", set.id);
+      if (saveSetError) throw new Error("The study materials were generated, but the set status couldn't be saved. Refresh and check the set before retrying.");
       return { ok: true };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Processing failed";
@@ -167,21 +181,22 @@ export const regenerateNotes = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const set = await loadSet(context.supabase, data.setId);
     const notes = await makeNotes(set);
-    // Keep the previous notes recoverable in Recently Deleted.
-    if (set.notes?.trim())
-      await context.supabase
-        .from("trash")
-        .insert({
-          user_id: context.userId,
-          kind: "notes",
-          label: `Previous notes — ${set.name}`,
-          set_id: set.id,
-          data: { notes: set.notes },
-        });
-    await context.supabase
+    // Preserve the previous notes before overwriting them.
+    if (set.notes?.trim()) {
+      const { error: archiveError } = await context.supabase.from("trash").insert({
+        user_id: context.userId,
+        kind: "notes",
+        label: `Previous notes — ${set.name}`,
+        set_id: set.id,
+        data: { notes: set.notes },
+      });
+      if (archiveError) throw new Error("Couldn't back up your previous notes, so they were left unchanged.");
+    }
+    const { error: saveError } = await context.supabase
       .from("study_sets")
       .update({ notes, updated_at: new Date().toISOString() })
       .eq("id", set.id);
+    if (saveError) throw new Error("New notes were generated but couldn't be saved. Your previous notes are still available.");
     return { notes };
   });
 
@@ -192,34 +207,32 @@ export const regenerateCards = createServerFn({ method: "POST" })
     const sb = context.supabase;
     const set = await loadSet(sb, data.setId);
     const cards = await makeCards({ ...set, notes: set.notes ?? "" });
-    const { data: old } = await sb.from("flashcards").select("*").eq("set_id", set.id);
-    if (old?.length)
-      await sb
-        .from("trash")
-        .insert({
-          user_id: context.userId,
-          kind: "flashcards",
-          label: `${old.length} replaced flashcards — ${set.name}`,
-          set_id: set.id,
-          data: { rows: old },
-        });
-    await sb.from("flashcards").delete().eq("set_id", set.id);
-    const { error } = await sb
-      .from("flashcards")
-      .insert(
-        cards.map((c, i) => ({
-          set_id: set.id,
-          user_id: context.userId,
-          question: c.q,
-          answer: c.a,
-          topic: (c.t ?? "").slice(0, 60),
-          position: i,
-        })),
-      );
-    if (error)
-      throw new Error(
-        "New flashcards couldn't be saved. Your previous cards are in Recently Deleted.",
-      );
+    const { data: old, error: readError } = await sb.from("flashcards").select("*").eq("set_id", set.id);
+    if (readError) throw new Error("Couldn't safely replace the existing flashcards.");
+    if (old?.length) {
+      const { error: archiveError } = await sb.from("trash").insert({
+        user_id: context.userId,
+        kind: "flashcards",
+        label: `${old.length} replaced flashcards — ${set.name}`,
+        set_id: set.id,
+        data: { rows: old },
+      });
+      if (archiveError) throw new Error("Couldn't back up the existing flashcards, so they were left unchanged.");
+    }
+    const { error: deleteError } = await sb.from("flashcards").delete().eq("set_id", set.id);
+    if (deleteError) throw new Error("Couldn't replace the old flashcards. Your existing cards were kept.");
+    const { error: insertError } = await sb.from("flashcards").insert(
+      cards.map((c, i) => ({
+        set_id: set.id,
+        user_id: context.userId,
+        question: c.q,
+        answer: c.a,
+        topic: (c.t ?? "").slice(0, 60),
+        position: i,
+      })),
+    );
+    if (insertError)
+      throw new Error("New flashcards couldn't be saved. Your previous cards are in Recently Deleted.");
     return { ok: true };
   });
 
@@ -607,7 +620,8 @@ export const generateGuide = createServerFn({ method: "POST" })
       [{ role: "user", content: `STUDY GUIDE TITLE SET: ${set.name}\nTEST DATE: ${data.testDate ?? "Not provided"}\nSELECTED STUDY SETS: ${sourceSets.map((s) => `${s.name} (${s.subject || "General subject"})`).join("; ")}\n\n${sourceContext}` }],
     );
     const at = new Date().toISOString();
-    await sb.from("study_sets").update({ study_guide: guide, study_guide_at: at }).eq("id", set.id);
+    const { error: saveError } = await sb.from("study_sets").update({ study_guide: guide, study_guide_at: at }).eq("id", set.id);
+    if (saveError) throw new Error("The study guide was generated but couldn't be saved. Please try again.");
     await sb.from("study_activity").insert({ user_id: context.userId, set_id: set.id, kind: "guide", count: 1 });
     return { guide, at };
   });

@@ -1,7 +1,7 @@
 import { useServerFn } from "@tanstack/react-start";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 import { Headphones, Lightbulb, Loader2, RefreshCw, X } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
@@ -135,7 +135,7 @@ function Section({ setId, md }: { setId: string; md: string }) {
         </DropdownMenu>
       </div>
       <div className="md pr-24">
-        <ReactMarkdown>{md}</ReactMarkdown>
+        <MarkdownContent>{md}</MarkdownContent>
       </div>
       {result && (
         <div className="mt-5 rounded-xl dpanel p-5 animate-in fade-in slide-in-from-top-1">
@@ -150,7 +150,7 @@ function Section({ setId, md }: { setId: string; md: string }) {
             </button>
           </div>
           <div className="md text-sm">
-            <ReactMarkdown>{result.text}</ReactMarkdown>
+            <MarkdownContent>{result.text}</MarkdownContent>
           </div>
         </div>
       )}

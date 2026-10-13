@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { z } from "zod";
 import { Compass, Loader2, Send } from "lucide-react";
 import { askCoach } from "@/lib/study.functions";
@@ -114,7 +114,7 @@ function CoachPage() {
                   : "bg-panel border border-line/70 prose prose-invert prose-sm max-w-none",
               )}
             >
-              {m.role === "user" ? m.content : <ReactMarkdown>{m.content}</ReactMarkdown>}
+              {m.role === "user" ? m.content : <MarkdownContent>{m.content}</MarkdownContent>}
             </div>
           ))}
           {busy && (

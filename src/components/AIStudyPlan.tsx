@@ -9,6 +9,13 @@ import { toast } from "sonner";
 
 type Day = { date: string; title: string; tasks: string[] };
 
+const localDateInputValue = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
 export function AIStudyPlan({ sets }: { sets: SetWithCards[] }) {
   const ready = useMemo(() => sets.filter((s) => s.status === "ready"), [sets]);
   const [setId, setSetId] = useState(ready[0]?.id ?? sets[0]?.id ?? "");
@@ -18,7 +25,7 @@ export function AIStudyPlan({ sets }: { sets: SetWithCards[] }) {
   const [done, setDone] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const selected = sets.find((s) => s.id === setId);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateInputValue();
 
   const build = async () => {
     if (!selected || !examDate) {

@@ -34,6 +34,25 @@ describe("formatStudyGuideMarkdown", () => {
     expect(formatStudyGuideMarkdown(input)).toBe(input);
   });
 
+  it("formats the exact flattened assignment table shape into readable content", () => {
+    const input = String.raw`## What a Successful Submission Must Do
+
+\| Deliverable \| What it looks like in practice \| |-------------|---------------------------------| | **Clear position** | Intro paragraph states *“I disagree with Brennan because…”* | | **Issue definition** | One paragraph that explains the statement’s core claim and its assumptions. |`;
+    const result = formatStudyGuideMarkdown(input);
+
+    expect(result).toContain("## What a Successful Submission Must Do");
+    expect(result).toContain("- **Clear position**");
+    expect(result).toContain("**What it looks like in practice:**");
+    expect(result).toContain("- **Issue definition**");
+    expect(result).not.toContain("|-------------|");
+    expect(result).not.toContain("\\|");
+  });
+
+  it("does not rewrite pipe characters inside fenced code blocks", () => {
+    const input = "```text\n| A | B |\n|---|---|\n```";
+    expect(formatStudyGuideMarkdown(input)).toBe(input);
+  });
+
   it("does not convert a table unless a separator row is present", () => {
     const input = "This sentence has | a pipe | but is not a table.";
     expect(formatStudyGuideMarkdown(input)).toBe(input);

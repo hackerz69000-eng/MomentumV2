@@ -1,7 +1,7 @@
 import { useServerFn } from "@tanstack/react-start";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 import { Check, Lightbulb, Loader2, RotateCcw, Sparkles, Trash2, X } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -378,7 +378,7 @@ function MistakeCard({ m, setId, startOpen }: { m: Mistake; setId: string; start
             ))}
           {explain && (
             <div className="md rounded-lg bg-foreground/5 p-3">
-              <ReactMarkdown>{explain}</ReactMarkdown>
+              <MarkdownContent>{explain}</MarkdownContent>
             </div>
           )}
           <div className="flex flex-wrap gap-2">
@@ -590,7 +590,7 @@ function Patterns({ setId }: { setId: string }) {
       </div>
       {text && (
         <div className="md text-sm rounded-lg bg-foreground/5 p-3">
-          <ReactMarkdown>{text}</ReactMarkdown>
+          <MarkdownContent>{text}</MarkdownContent>
         </div>
       )}
     </div>

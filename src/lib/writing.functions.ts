@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { aiText, parseJson, clip } from "./ai.server";
 import { loadSet, ci } from "./set-helpers.server";
+import { restrictAssignmentSource } from "./assignment-source-scope";
 
 async function setContext(sb: any, setId: string | null, max = 25000) {
   if (!setId) return { text: "", instr: "" };
@@ -30,48 +31,6 @@ function parseAssignmentSourceBundle(raw: string): AssignmentSourceBundle {
   } catch { /* Existing assignments store plain text in this column. */ }
   return { __momentumAssignmentSources: 1, notes: raw || "", attachments: [] };
 }
-function restrictAssignmentSource(text: string, scope: string): { text: string; note?: string } {
-  const s = scope.trim();
-  if (!s) return { text };
-  const pageRange = s.match(/pages?\s*(\d+)\s*(?:-|–|—|to)\s*(\d+)/i);
-  if (pageRange && !/pdf\s+pages?/i.test(s)) {
-    return { text: "", note: `The requested ${s} may refer to printed book page numbers rather than PDF page indices. Do not use the full source; ask the student to upload the permitted excerpt or clarify that these are PDF page numbers.` };
-  }
-  if (pageRange && !/^## Page \d+/m.test(text)) {
-    return { text: "", note: `The requested ${s} cannot be safely isolated because this extraction has no reliable page labels. Ask the student to upload the permitted pages/excerpt; do not use the full source.` };
-  }
-  if (pageRange && /^## Page \d+/m.test(text)) {
-    const start = Number(pageRange[1]), end = Number(pageRange[2]);
-    const chunks = text.split(/(?=^## Page \d+\s*$)/m);
-    const chosen = chunks.filter((chunk) => { const m = chunk.match(/^## Page (\d+)/m); return m && Number(m[1]) >= Math.min(start, end) && Number(m[1]) <= Math.max(start, end); });
-    return chosen.length ? { text: chosen.join("\n\n") } : { text: "", note: `The requested ${s} could not be isolated from extracted page labels. Do not use this source until the student uploads the permitted pages or clarifies the range.` };
-  }
-  const chapterRange = s.match(/chapters?\s*(\d+)\s*(?:-|–|—|to)\s*(\d+)?/i);
-  if (chapterRange) {
-    const start = Number(chapterRange[1]), end = Number(chapterRange[2] || chapterRange[1]);
-    const chunks = text.split(/(?=^#{0,3}\s*Chapter\s+\d+\b)/im);
-    if (chunks.length > 1) {
-      const chosen = chunks.filter((chunk) => { const m = chunk.match(/^#{0,3}\s*Chapter\s+(\d+)\b/im); return m && Number(m[1]) >= Math.min(start, end) && Number(m[1]) <= Math.max(start, end); });
-      return chosen.length ? { text: chosen.join("\n\n") } : { text: "", note: `The requested ${s} could not be isolated. Ask the student to upload the permitted excerpt.` };
-    }
-    return { text: "", note: `The extracted text does not clearly mark chapter boundaries, so ${s} cannot be safely isolated. Do not use this source until the student uploads the permitted chapter/excerpt.` };
-  }
-  // For custom section limits, only include text when a matching heading can be identified.
-  const named = s.match(/(?:section|part|heading)\s*[“"']?([^”"']{3,80})[”"']?/i);
-  if (named) {
-    const target = named[1].trim().replace(/[.:;]+$/, "").toLowerCase();
-    const lines = text.split(/\r?\n/);
-    const start = lines.findIndex((line) => line.replace(/^#+\s*/, "").trim().toLowerCase() === target);
-    if (start >= 0) {
-      let end = lines.length;
-      for (let i = start + 1; i < lines.length; i++) if (/^#{1,3}\s+/.test(lines[i])) { end = i; break; }
-      return { text: lines.slice(start, end).join("\n") };
-    }
-    return { text: "", note: `The requested portion (${s}) could not be identified by its heading. Ask the student to upload that specific excerpt; do not use the rest of the source.` };
-  }
-  // Free-form restrictions remain explicit and are enforced by the model instructions.
-  return { text, note: `Student's permitted-use limit: ${s}. If the exact allowed portion cannot be distinguished, do not use other portions; ask for the excerpt.` };
-}
 function formatAssignmentSources(raw: string, max = 36000) {
   const bundle = parseAssignmentSourceBundle(raw);
   const sections: string[] = [];
@@ -79,7 +38,7 @@ function formatAssignmentSources(raw: string, max = 36000) {
   let remaining = max;
   for (const a of bundle.attachments) {
     if (remaining <= 0) { sections.push("[Additional uploaded materials omitted from this request because of context limits. Ask the student which file is most relevant.] "); break; }
-    const restricted = a.category === "allowed-source" ? restrictAssignmentSource(a.text, a.usageLimit || "") : { text: a.text };
+    const restricted = a.usageLimit?.trim() ? restrictAssignmentSource(a.text, a.usageLimit) : { text: a.text };
     const body = restricted.text ? clip(restricted.text, Math.min(10000, remaining)) : "[No source text supplied because the permitted portion could not be safely isolated.]";
     const section = `UPLOADED ${a.category === "allowed-source" ? "ALLOWED / REQUIRED SOURCE" : "SUPPORTING MATERIAL"}: ${a.filename}\nPERMITTED PORTION / LIMIT: ${a.usageLimit?.trim() || "No specific range stated"}\n${restricted.note ? `SCOPE NOTE: ${restricted.note}\n` : ""}EXTRACTED CONTENT:\n${body}`;
     sections.push(section);
@@ -141,7 +100,8 @@ Give three small, concrete actions the student can take now.
 Formatting rules: no tables, raw HTML, pipe characters used as table layout, or <br> tags. Use actual Markdown headings, bullet lists, and numbered lists. Put each list item on a separate line. Use short paragraphs (usually 1–3 sentences), whitespace between sections, and plain language. Do not create an official-looking rubric from inferred criteria. Never invent the assignment topic/options, citation details, source claims, page numbers, lecture dates, deadlines, or submission rules. If important prompt text or source files are missing, name what's missing and still help with what is supported.${mat.instr}`,
         [{ role: "user", content: brief }],
       );
-      await sb.from("assignments").update({ understanding: out, updated_at: now }).eq("id", a.id);
+      const { error: saveError } = await sb.from("assignments").update({ understanding: out, updated_at: now }).eq("id", a.id);
+      if (saveError) throw new Error("The guide was generated but could not be saved. Please try again.");
       return { text: out };
     }
     if (data.step === "brainstorm") {
@@ -179,7 +139,8 @@ ${clip(a.understanding ?? "", 7000)}`,
           },
         ],
       );
-      await sb.from("assignments").update({ brainstorm: out, updated_at: now }).eq("id", a.id);
+      const { error: saveError } = await sb.from("assignments").update({ brainstorm: out, updated_at: now }).eq("id", a.id);
+      if (saveError) throw new Error("Your brainstorm was generated but could not be saved. Please try again.");
       return { text: out };
     }
     if (data.step === "outline") {
@@ -213,7 +174,8 @@ If the brainstorm is empty, still help using the prompt and supplied material. R
           },
         ],
       );
-      await sb.from("assignments").update({ outline: out, updated_at: now }).eq("id", a.id);
+      const { error: saveError } = await sb.from("assignments").update({ outline: out, updated_at: now }).eq("id", a.id);
+      if (saveError) throw new Error("Your outline was generated but could not be saved. Please try again.");
       return { text: out };
     }
     // feedback on the student's draft
@@ -247,7 +209,8 @@ CURRENT DRAFT:\n${clip(a.draft, 25000)}`,
     const next = [...chat, { role: "user", content: q }, { role: "assistant", content: out }].slice(
       -30,
     );
-    await sb.from("assignments").update({ chat: next, updated_at: now }).eq("id", a.id);
+    const { error: saveError } = await sb.from("assignments").update({ chat: next, updated_at: now }).eq("id", a.id);
+    if (saveError) throw new Error("Feedback was generated but could not be saved. Please try again.");
     return { text: out };
   });
 

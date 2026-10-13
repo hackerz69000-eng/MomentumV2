@@ -95,13 +95,14 @@ function Editor({ row }: { row: Row }) {
     setBusy(true);
     setError(null);
     try {
-      await supabase.from("essay_grades").update(f).eq("id", row.id);
+      const { error: saveError } = await supabase.from("essay_grades").update({ ...f, title: f.title.trim() || "Untitled essay" }).eq("id", row.id);
+      if (saveError) throw new Error("Couldn't save your latest essay changes before grading. Check your connection and try again.");
       const r = await gradeFn({ data: { id: row.id } });
       setResult(r.result);
       qc.invalidateQueries({ queryKey: ["essays"] });
     } catch (e) {
       setError(
-        `Your essay is saved, but grading didn't finish: ${e instanceof Error ? e.message : "please try again."}`,
+        `Grading didn't finish: ${e instanceof Error ? e.message : "please try again."} Check the save status before leaving this page.`,
       );
     }
     setBusy(false);

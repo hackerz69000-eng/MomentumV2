@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { Loader2, Search as SearchIcon, Sparkles } from "lucide-react";
 import { z } from "zod";
 import { looksLikeQuestion, searchAll, terms, type Hit } from "@/lib/global-search";
@@ -156,7 +156,7 @@ function SearchPage() {
                   </p>
                 ) : (
                   <div className="md text-sm">
-                    <ReactMarkdown>{answer!}</ReactMarkdown>
+                    <MarkdownContent>{answer!}</MarkdownContent>
                   </div>
                 )}
                 {answer && (

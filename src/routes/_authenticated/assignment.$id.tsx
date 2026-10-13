@@ -1,9 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import { formatStudyGuideMarkdown } from "@/lib/study-guide-format";
 import { ArrowLeft, BookOpen, CheckCircle2, Clock3, FileText, FileUp, Loader2, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { ocrFile } from "@/lib/study.functions";
@@ -100,8 +99,10 @@ type StepTimeSuggestions = Record<"understand" | "brainstorm" | "outline", strin
 
 /** Lightweight, explainable estimate based on visible assignment complexity. These are optional planning hints, never timers or requirements. */
 function getAssignmentTimeSuggestions(instructions: string): StepTimeSuggestions {
-  const text = instructions.trim();
-  const wordCountText = (text.match(/\b(\d[\d,]{2,5})\s*(?:-|–|—|to)\s*(\d[\d,]{2,5})\s*words?\b/i) || [])[1] || "0";
+  const text = instructions.trim().replace(/\u2011/g, "-");
+  const wordRange = text.match(/\b(\d[\d,]{2,5})\s*(?:-|–|—|to)\s*(\d[\d,]{2,5})\s*[-–—]?\s*words?\b/i);
+  const singleWordCount = text.match(/\b(\d[\d,]{2,5})\s*[-–—]?\s*words?\b/i);
+  const wordCountText = wordRange?.[2] || singleWordCount?.[1] || "0";
   const wordCount = Number(wordCountText.replace(/,/g, ""));
   const checklistItems = (text.match(/^\s*(?:\d+[.)]|[-*])\s+/gm) || []).length;
   const complexity =
@@ -207,10 +208,11 @@ function Editor({ row }: { row: Row }) {
   });
 
   const flush = async () => {
-    await supabase
+    const { error } = await supabase
       .from("assignments")
-      .update({ ...f, updated_at: new Date().toISOString() })
+      .update({ ...f, title: f.title.trim() || "Untitled assignment", updated_at: new Date().toISOString() })
       .eq("id", row.id);
+    if (error) throw new Error("Couldn't save your latest changes before generating. Check your connection and try again.");
   };
 
   const run = async (step: AssignmentStep) => {
@@ -235,7 +237,7 @@ function Editor({ row }: { row: Row }) {
       }
     } catch (e) {
       setError(
-        `Your work is saved, but this step didn't finish: ${e instanceof Error ? e.message : "please try again."}`,
+        `This step didn't finish: ${e instanceof Error ? e.message : "please try again."} Check the save status before leaving this page.`,
       );
     }
     setBusy(null);
@@ -353,7 +355,7 @@ function Editor({ row }: { row: Row }) {
             </div>
             <div className="md text-sm p-5 md:p-6 min-h-48 overflow-x-auto">
               {out[tab] ? (
-                <ReactMarkdown>{formatStudyGuideMarkdown(out[tab]!)}</ReactMarkdown>
+                <MarkdownContent>{out[tab]!}</MarkdownContent>
               ) : (
                 <div className="max-w-prose space-y-2 text-soft">
                   <p className="font-medium text-foreground">{!f.instructions.trim() ? "Add the assignment instructions to begin." : `Your ${STEPS.find((s) => s.field === tab)?.l.slice(3).toLowerCase()} guide will appear here.`}</p>
@@ -383,7 +385,7 @@ function Editor({ row }: { row: Row }) {
                   (m.role === "user" ? "bg-cool/10" : "bg-foreground/5")
                 }
               >
-                <ReactMarkdown>{formatStudyGuideMarkdown(m.content)}</ReactMarkdown>
+                <MarkdownContent>{m.content}</MarkdownContent>
               </div>
             ))}
             <div className="flex gap-2">

@@ -1,7 +1,7 @@
 import { useServerFn } from "@tanstack/react-start";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 import {
   AudioLines,
@@ -733,7 +733,7 @@ function Player({
             </h3>
           </div>
           <div className="text-sm leading-relaxed max-h-[420px] overflow-y-auto pr-2">
-            {current?.narration ?? <ReactMarkdown>{session.script}</ReactMarkdown>}
+            {current?.narration ?? <MarkdownContent>{session.script}</MarkdownContent>}
           </div>
           <div className="flex flex-wrap gap-2">
             {ACTIONS.map((a) => (
@@ -769,7 +769,7 @@ function Player({
                     : "border border-line/70 bg-foreground/5 md",
                 )}
               >
-                <ReactMarkdown>{m.content}</ReactMarkdown>
+                <MarkdownContent>{m.content}</MarkdownContent>
               </div>
             ))}
             {busy === "ask" && (

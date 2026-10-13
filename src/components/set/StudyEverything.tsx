@@ -1,8 +1,8 @@
 import { toast } from "sonner";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useServerFn } from "@tanstack/react-start";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { Headphones, Loader2, SkipForward, Sparkles, Square } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { supabase } from "@/integrations/supabase/client";
@@ -398,7 +398,7 @@ export function StudyEverything({
         {s.kind === "guide" &&
           (guideText ? (
             <article className="max-w-3xl mx-auto rounded-2xl bg-panel border border-line/70 p-6 prose prose-invert max-w-none prose-headings:font-display prose-headings:uppercase prose-h2:text-cool2">
-              <ReactMarkdown>{guideText}</ReactMarkdown>
+              <MarkdownContent>{guideText}</MarkdownContent>
             </article>
           ) : (
             <div className="max-w-xl mx-auto rounded-2xl bg-panel border border-line/70 p-6 text-center text-sm space-y-3">

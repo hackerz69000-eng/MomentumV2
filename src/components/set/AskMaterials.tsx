@@ -1,7 +1,7 @@
 import { useServerFn } from "@tanstack/react-start";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 import { BookOpenText, Globe, Loader2, Send } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -132,7 +132,7 @@ export function AskMaterials({ set }: { set: StudySet }) {
           ) : (
             <div key={m.id} className="space-y-2">
               <div className="md text-sm">
-                <ReactMarkdown>{m.content}</ReactMarkdown>
+                <MarkdownContent>{m.content}</MarkdownContent>
               </div>
               {!!m.sources?.refs?.length && (
                 <div className="flex flex-wrap gap-1.5">

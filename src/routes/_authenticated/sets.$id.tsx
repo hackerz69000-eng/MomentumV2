@@ -1,8 +1,8 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { z } from "zod";
 import { toast } from "sonner";
 import {
@@ -475,7 +475,7 @@ function Tutor({ set }: { set: StudySet }) {
                 M
               </div>
               <div className="md text-sm min-w-0 flex-1">
-                <ReactMarkdown>{m.content}</ReactMarkdown>
+                <MarkdownContent>{m.content}</MarkdownContent>
               </div>
             </div>
           ),

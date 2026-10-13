@@ -8,6 +8,15 @@ export type SetWithCards = StudySet & { flashcards: Pick<Flashcard, "status">[] 
 
 const REMOTE_SET_MAP_KEY = "momentum_remote_set_map";
 
+async function currentUserId(): Promise<string | undefined> {
+  try {
+    const { data } = await supabase.auth.getUser();
+    return data.user?.id;
+  } catch {
+    return undefined;
+  }
+}
+
 function getRemoteSetId(localId: string): string | null {
   if (typeof window === "undefined") return null;
   try {
@@ -34,15 +43,18 @@ function saveRemoteSetId(localId: string, remoteId: string) {
  * Migrate that set once so server-side study modes can use the same real UUID.
  */
 async function migrateLocalSet(localId: string, local: StudySet): Promise<StudySet | null> {
-  const mapped = getRemoteSetId(localId);
-  if (mapped) {
-    const { data } = await supabase.from("study_sets").select("*").eq("id", mapped).single();
-    if (data) return data as StudySet;
-  }
-
   const { data: auth } = await supabase.auth.getUser();
   const userId = auth.user?.id;
   if (!userId) return null;
+  // A local record belonging to another signed-in account must never be copied
+  // into the current account during the legacy-data migration.
+  if (local.user_id && local.user_id !== userId) return null;
+
+  const mapped = getRemoteSetId(localId);
+  if (mapped) {
+    const { data } = await supabase.from("study_sets").select("*").eq("id", mapped).eq("user_id", userId).single();
+    if (data) return data as StudySet;
+  }
 
   const { data: remote, error } = await supabase
     .from("study_sets")
@@ -66,7 +78,7 @@ async function migrateLocalSet(localId: string, local: StudySet): Promise<StudyS
 
   if (error || !remote) return null;
 
-  const localCards = getLocalCards(localId);
+  const localCards = getLocalCards(localId, userId);
   if (localCards.length) {
     const { error: cardError } = await supabase.from("flashcards").insert(
       localCards.map((c, i) => ({
@@ -90,7 +102,8 @@ async function migrateLocalSet(localId: string, local: StudySet): Promise<StudyS
 }
 
 export async function fetchSets(): Promise<SetWithCards[]> {
-  const local = getLocalSets();
+  const userId = await currentUserId();
+  const local = getLocalSets(userId);
   try {
     const { data, error } = await supabase
       .from("study_sets")
@@ -112,20 +125,23 @@ export async function fetchSets(): Promise<SetWithCards[]> {
 }
 
 export async function fetchSet(id: string): Promise<StudySet> {
+  const userId = await currentUserId();
   const mapped = getRemoteSetId(id);
   const lookupId = mapped || id;
   try {
-    const { data, error } = await supabase.from("study_sets").select("*").eq("id", lookupId).single();
+    let query = supabase.from("study_sets").select("*").eq("id", lookupId);
+    if (userId) query = query.eq("user_id", userId);
+    const { data, error } = await query.single();
     if (data) return data as StudySet;
 
-    const local = getLocalSet(id);
+    const local = getLocalSet(id, userId);
     if (local) {
       const migrated = await migrateLocalSet(id, local);
       if (migrated) return migrated;
     }
     throw error || new Error("Study set not found");
   } catch (err) {
-    const local = getLocalSet(id);
+    const local = getLocalSet(id, userId);
     if (local) {
       const migrated = await migrateLocalSet(id, local);
       if (migrated) return migrated;
@@ -135,6 +151,7 @@ export async function fetchSet(id: string): Promise<StudySet> {
 }
 
 export async function fetchCards(setId: string): Promise<Flashcard[]> {
+  const userId = await currentUserId();
   const remoteId = getRemoteSetId(setId) || setId;
   try {
     const { data, error } = await supabase
@@ -145,10 +162,10 @@ export async function fetchCards(setId: string): Promise<Flashcard[]> {
 
     if (!error && data && data.length > 0) return data as Flashcard[];
 
-    const local = getLocalCards(setId);
+    const local = getLocalCards(setId, userId);
     if (local.length > 0) return local;
     return (data ?? []) as Flashcard[];
   } catch {
-    return getLocalCards(setId);
+    return getLocalCards(setId, userId);
   }
 }

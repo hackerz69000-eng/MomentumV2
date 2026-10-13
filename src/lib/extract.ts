@@ -168,7 +168,7 @@ export async function storeOriginal(userId: string, setId: string, f: File, char
     .from("study-files")
     .upload(path, f, { contentType: f.type || "application/octet-stream" });
   if (error) return false;
-  await supabase
+  const { error: metadataError } = await supabase
     .from("study_files")
     .insert({
       set_id: setId,
@@ -179,5 +179,10 @@ export async function storeOriginal(userId: string, setId: string, f: File, char
       size: f.size,
       chars,
     });
+  if (metadataError) {
+    // Avoid leaving an untracked private-storage object if metadata persistence fails.
+    await supabase.storage.from("study-files").remove([path]);
+    return false;
+  }
   return true;
 }

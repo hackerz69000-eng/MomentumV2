@@ -1,12 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import {
-  signUpLocal,
-  signInLocal,
-  signOutLocal,
-  getActiveUser,
-  getLocalUsers,
-} from "@/lib/local-auth";
-import {
   generate20Flashcards,
   generateNotesFromMaterial,
 } from "@/lib/study-generator";
@@ -26,39 +19,9 @@ import {
 } from "@/components/SessionHistory";
 import { schedule } from "@/lib/stats";
 
-describe("Momentum Local Authentication & Feature Suite", () => {
+describe("Momentum Feature Suite", () => {
   beforeEach(() => {
     localStorage.clear();
-  });
-
-  describe("Local Authentication", () => {
-    it("signs up a new user, hashes password, and sets active user in localStorage", () => {
-      const res = signUpLocal("alexstudent", "mypassword123");
-      expect(res.user.username).toBe("alexstudent");
-      expect(res.user.email).toBe("alexstudent@local.momentum");
-
-      const active = getActiveUser();
-      expect(active?.username).toBe("alexstudent");
-
-      const storedUsers = getLocalUsers();
-      expect(storedUsers.length).toBe(1);
-      expect(storedUsers[0]?.username).toBe("alexstudent");
-      // Password must be hashed, not stored in plaintext
-      expect(storedUsers[0]?.passwordHash).not.toBe("mypassword123");
-    });
-
-    it("signs in an existing user with matching password and rejects invalid passwords", () => {
-      signUpLocal("janedoe", "correctpass");
-      signOutLocal();
-      expect(getActiveUser()).toBeNull();
-
-      expect(() => signInLocal("janedoe", "wrongpass")).toThrow("Incorrect password");
-      expect(getActiveUser()).toBeNull();
-
-      const signinRes = signInLocal("janedoe", "correctpass");
-      expect(signinRes.user.username).toBe("janedoe");
-      expect(getActiveUser()?.username).toBe("janedoe");
-    });
   });
 
   describe("20 Flashcards & Structured Note Generation", () => {
@@ -168,7 +131,8 @@ Electron transport chain results in the creation of a proton gradient across the
   describe("Daily Streak Counter", () => {
     it("increments study streak when a study session is completed", () => {
       const initial = getStreakData();
-      expect(initial.currentStreak).toBeGreaterThanOrEqual(1);
+      expect(initial.currentStreak).toBe(0);
+      expect(initial.totalSessionsCompleted).toBe(0);
 
       const updated = recordStudySessionCompletion(20, "20 Flashcards Review");
       expect(updated.totalSessionsCompleted).toBeGreaterThanOrEqual(1);

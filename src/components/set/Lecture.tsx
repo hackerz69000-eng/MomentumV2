@@ -1,7 +1,7 @@
 import { useServerFn } from "@tanstack/react-start";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -870,7 +870,7 @@ function LectureDetail({
           </div>
           {lecture.notes ? (
             <article className="prose prose-invert max-w-none prose-headings:font-display prose-headings:uppercase prose-h2:text-cool2">
-              <ReactMarkdown>{lecture.notes}</ReactMarkdown>
+              <MarkdownContent>{lecture.notes}</MarkdownContent>
             </article>
           ) : (
             <p className="text-sm text-soft">
@@ -883,7 +883,7 @@ function LectureDetail({
         <div className="rounded-2xl bg-panel border border-line/70 p-6">
           {lecture.guide ? (
             <article className="prose prose-invert max-w-none prose-headings:font-display prose-headings:uppercase prose-h2:text-cool2">
-              <ReactMarkdown>{lecture.guide}</ReactMarkdown>
+              <MarkdownContent>{lecture.guide}</MarkdownContent>
             </article>
           ) : (
             <p className="text-sm text-soft">

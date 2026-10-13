@@ -31,3 +31,18 @@ Audit waves (find concrete bugs, then fix):
 - [x] Landing page redesign (preview only — user must publish)
 - [x] Premium brief phases 1–2 (command center, mistake patterns, exam mark-for-review, flashcard priority, Explain modes, search grouping)
 - [x] Tutor/Coach "destroy is not a function" fix
+
+
+## App-wide quality pass (October 2026)
+
+- [x] Shared Markdown renderer for AI responses and saved generated content; normalize flattened tables into accessible lists
+- [x] Preserve fenced code blocks during Markdown normalization
+- [x] Enforce assignment source limits fail-closed when page/chapter/section boundaries cannot be verified
+- [x] Scope local Study Set/card fallback data and legacy migration to the active account
+- [x] Correct false initial study streak and use local calendar dates
+- [x] Check high-risk content replacement and save operations; preserve old notes/cards before regeneration
+- [x] Surface restore/storage persistence errors in Recently Deleted
+- [x] Remove unused local-only password storage helper
+- [ ] Run npm install, full Vitest suite, production build, lint, and browser end-to-end regression tests in an environment with dependencies available
+
+See `APP_QUALITY_AUDIT_NOTES.md` for scope and verification limitations.

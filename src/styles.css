@@ -260,6 +260,7 @@
   border-color: var(--border);
   margin: 1.5rem 0;
 }
-.md > :first-child {
+.md > :first-child,
+.md > div:first-child > :first-child {
   margin-top: 0;
 }

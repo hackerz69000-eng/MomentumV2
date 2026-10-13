@@ -32,23 +32,25 @@ export function getLocalSets(userId?: string): SetWithCards[] {
   }
 }
 
-export function getLocalSet(id: string): StudySet | null {
+export function getLocalSet(id: string, userId?: string): StudySet | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = localStorage.getItem(SETS_KEY);
     const sets: StudySet[] = raw ? JSON.parse(raw) : [];
-    return sets.find((s) => s.id === id) ?? null;
+    return sets.find((s) => s.id === id && (userId ? (!s.user_id || s.user_id === userId) : !s.user_id)) ?? null;
   } catch {
     return null;
   }
 }
 
-export function getLocalCards(setId: string): Flashcard[] {
+export function getLocalCards(setId: string, userId?: string): Flashcard[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(CARDS_KEY);
     const cards: Flashcard[] = raw ? JSON.parse(raw) : [];
-    return cards.filter((c) => c.set_id === setId).sort((a, b) => a.position - b.position);
+    return cards
+      .filter((c) => c.set_id === setId && (userId ? (!c.user_id || c.user_id === userId) : !c.user_id))
+      .sort((a, b) => a.position - b.position);
   } catch {
     return [];
   }
