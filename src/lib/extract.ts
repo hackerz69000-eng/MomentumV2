@@ -45,6 +45,19 @@ async function shrinkImage(file: File): Promise<string> {
   return canvas.toDataURL("image/jpeg", 0.85);
 }
 
+function meaningfulWordCount(text: string): number {
+  return (text.match(/[\p{L}\p{N}]{2,}/gu) ?? []).length;
+}
+
+function looksLikePdfHeadingsOnly(text: string): boolean {
+  const cleaned = text.replace(/^\s*##\s*(?:Page|পৃষ্ঠা)\s+\d+\s*$/gim, "").trim();
+  const words = meaningfulWordCount(cleaned);
+  if (words < 35) return true;
+  const lines = cleaned.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const shortLines = lines.filter((line) => meaningfulWordCount(line) <= 5).length;
+  return lines.length >= 8 && shortLines / lines.length > 0.82 && words < lines.length * 5;
+}
+
 async function extractPdf(file: File): Promise<string> {
   try {
     const { extractText, getDocumentProxy } = await import("unpdf");
@@ -127,20 +140,25 @@ export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void)
   if (kind === "pdf") {
     onMsg(`Reading ${f.name}…`);
     let text = (await extractPdf(f)).trim();
-    if (text.length < 30) {
-      if (f.size > 10 * 1024 * 1024)
-        throw new Error(`${f.name} looks scanned and is over 10MB — split it to run OCR.`);
+    // A PDF can contain page labels/headings but no body text. Treat that as a
+    // failed extraction and try OCR instead of saving misleadingly empty context.
+    if (text.length < 30 || looksLikePdfHeadingsOnly(text)) {
+      if (f.size > 10 * 1024 * 1024) {
+        throw new Error(`${f.name} has little readable text and is larger than the current OCR limit (10 MiB). Try a text-searchable PDF or split it into smaller parts before uploading.`);
+      }
       try {
-        onMsg(`Running OCR on ${f.name}…`);
+        onMsg(`Text extraction was sparse. Trying text recognition for ${f.name}…`);
         const ocrResult = await ocr({
           data: { data: await readDataUrl(f), mediaType: "application/pdf", filename: f.name },
         });
-        if (ocrResult?.text?.trim()) {
-          text = ocrResult.text.trim();
-        }
-      } catch {
-        console.warn("OCR fallback was unavailable for scanned PDF.");
+        const ocrText = ocrResult?.text?.trim() ?? "";
+        if (meaningfulWordCount(ocrText) > meaningfulWordCount(text)) text = ocrText;
+      } catch (err) {
+        console.warn("OCR fallback was unavailable for scanned or image-based PDF.", err);
       }
+    }
+    if (looksLikePdfHeadingsOnly(text)) {
+      throw new Error(`${f.name}: Momentum could only read page headings, not the actual page text. Try downloading an OCR/text-searchable version of the PDF, or split the file into smaller parts and retry.`);
     }
     return text.trim();
   }

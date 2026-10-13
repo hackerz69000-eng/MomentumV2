@@ -35,3 +35,13 @@ Run both `drizzle/migrations/0011_reading_companion_sources.sql` and `drizzle/mi
 - Study Guide generation now lets students optionally set a test date and select multiple study sets. The generated guide combines selected lecture-based materials into one structured guide with topic mapping, plain-language explanations, definitions, comparisons, examples, practice questions with a separate answer key, quick review, and a test-date-aware study plan.
 - Additional study sets are validated server-side against the signed-in user's account before their content is included. The generated guide is saved to the current study set.
 
+
+## Reading Companion usability and extraction-quality improvements
+
+- PDF extraction now detects likely heading-only/sparse output and attempts OCR instead of accepting it as usable body text.
+- If OCR is unavailable or the PDF exceeds the current OCR request limit, the upload fails with an actionable message instead of saving misleading, low-value text.
+- Summary, Q&A, and flashcard generation reject sources that appear to contain only headings or too little readable body text; this prevents generating unsupported or generic study material from empty context.
+- Study brief and Q&A output use clearer heading hierarchy, spacing, line-height, and answer-panel styling.
+- AI prompts request concise, specific, scannable study material and direct answers rather than long unstructured paragraphs.
+
+Validation note: source-level changes were reviewed and the ZIP integrity will be checked. A full application build and live OCR/provider test were not run in this environment.
