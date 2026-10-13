@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ArrowLeft, BookOpen, FileText, FileUp, Loader2, Send, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowLeft, BookOpen, CheckCircle2, Clock3, FileText, FileUp, Loader2, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { ocrFile } from "@/lib/study.functions";
 import { ACCEPT, MAX_BYTES, extractFile, fileKind } from "@/lib/extract";
@@ -66,10 +66,13 @@ const STEPS: {
   k: Exclude<AssignmentStep, "feedback">;
   l: string;
   field: "understanding" | "brainstorm" | "outline";
+  desc: string;
+  time: string;
+  result: string;
 }[] = [
-  { k: "understand", l: "1. Understand it", field: "understanding" },
-  { k: "brainstorm", l: "2. Brainstorm", field: "brainstorm" },
-  { k: "outline", l: "3. Outline", field: "outline" },
+  { k: "understand", l: "1. Understand it", field: "understanding", desc: "Translate the teacher's instructions into plain language, identify requirements, and spot source restrictions.", time: "About 5–10 min to review", result: "A clear assignment brief and a roadmap" },
+  { k: "brainstorm", l: "2. Brainstorm", field: "brainstorm", desc: "Explore several possible directions, compare their strengths, and find evidence to investigate—without forcing a thesis too early.", time: "About 10–20 min to explore", result: "Options, questions, and evidence leads" },
+  { k: "outline", l: "3. Outline", field: "outline", desc: "Turn your chosen direction—or a provisional example—into an ordered, section-by-section plan you can write from.", time: "About 10–20 min to review", result: "A practical outline and drafting checklist" },
 ];
 
 type AssignmentAttachment = {
@@ -285,46 +288,60 @@ function Editor({ row }: { row: Row }) {
           <Field label="Your draft or partial work (optional)" value={f.draft} onChange={(v) => set("draft", v)} rows={5} placeholder="Paste your draft here or upload it above. You can add this later." />
           <div className="rounded-xl bg-cool/5 border border-cool/15 p-3 text-xs text-soft flex gap-2"><ShieldCheck className="size-4 shrink-0 text-cool2" /><p>Only assignment instructions are needed to begin. Sources, your ideas and your draft are optional and can be added later. If your instructions contain a rubric, Momentum should identify it automatically; you don't need a separate rubric field.</p></div>
         </section>
-        <section className="space-y-4">
-          <div className="flex flex-wrap gap-2">
-            {STEPS.map((s) => (
-              <button
-                key={s.k}
-                onClick={() => run(s.k)}
-                disabled={
-                  !!busy || !f.instructions.trim()
-                }
-                className={btnGhost}
-              >
-                {busy === s.k && <Loader2 className="size-4 animate-spin" />} {s.l}
-              </button>
+        <section className="space-y-4 min-w-0">
+          <div className="rounded-2xl border border-line/70 bg-panel p-4 space-y-1">
+            <p className="eyebrow text-cool2">Your assignment journey</p>
+            <h2 className="font-display text-xl font-bold">One step at a time</h2>
+            <p className="text-sm text-soft">Start with understanding, then explore ideas, then build an outline. You can revisit any step whenever you need to. Each step saves its result so you can keep working later.</p>
+          </div>
+          <div className="grid gap-3">
+            {STEPS.map((s, index) => (
+              <article key={s.k} className={"rounded-2xl border p-4 space-y-3 " + (tab === s.field ? "border-cool2/60 bg-cool/5" : "border-line/70 bg-panel")}>
+                <div className="flex items-start gap-3">
+                  <div className={"rounded-xl p-2 shrink-0 " + (out[s.field] ? "bg-emerald-500/10 text-emerald-400" : "bg-cool/10 text-cool2")}>
+                    {out[s.field] ? <CheckCircle2 className="size-5" /> : <span className="inline-flex size-5 items-center justify-center text-sm font-bold">{index + 1}</span>}
+                  </div>
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{s.l.slice(3)}</h3>{out[s.field] && <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-400">Generated</span>}</div>
+                    <p className="text-sm text-soft">{s.desc}</p>
+                    <p className="text-xs text-soft">{s.result}</p>
+                    <p className="inline-flex items-center gap-1 text-xs text-soft"><Clock3 className="size-3.5" /> {s.time}</p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => { setTab(s.field); void run(s.k); }} disabled={!!busy || !f.instructions.trim()} className={btnPrimary}>
+                    {busy === s.k ? <Loader2 className="size-4 animate-spin" /> : null}{out[s.field] ? "Regenerate this step" : "Generate this step"}
+                  </button>
+                  {out[s.field] && <button type="button" onClick={() => setTab(s.field)} className={btnGhost}>Read result</button>}
+                </div>
+              </article>
             ))}
           </div>
           {error && <ErrorBox msg={error} />}
-          <div className="flex gap-1 border-b border-line/60">
-            {STEPS.map((s) => (
-              <button
-                key={s.field}
-                onClick={() => setTab(s.field)}
-                className={
-                  "px-3 py-2 text-sm " +
-                  (tab === s.field ? "border-b-2 border-cool2 font-semibold" : "text-soft")
-                }
-              >
-                {s.l.slice(3)}
-              </button>
-            ))}
-          </div>
-          <div className="md text-sm rounded-2xl bg-panel border border-line/70 p-5 min-h-40">
-            {out[tab] ? (
-              <ReactMarkdown>{out[tab]!}</ReactMarkdown>
-            ) : (
-              <p className="text-soft">
-                {!f.instructions.trim()
-                  ? "Add the assignment instructions to begin."
-                  : "Press the step button above."}
-              </p>
-            )}
+          <div className="rounded-2xl border border-line/70 bg-panel overflow-hidden">
+            <div className="border-b border-line/60 p-4 space-y-1">
+              <p className="eyebrow text-cool2">Your workspace</p>
+              <h3 className="font-semibold">{STEPS.find((s) => s.field === tab)?.l.slice(3) ?? "Assignment guide"}</h3>
+              <p className="text-xs text-soft">Your generated result appears below. Headings and lists are formatted for scanning; use it as a working guide, not as a finished submission.</p>
+              <div className="flex flex-wrap gap-1 pt-2">
+                {STEPS.map((s) => (
+                  <button type="button" key={s.field} onClick={() => setTab(s.field)} className={"rounded-lg px-3 py-1.5 text-sm " + (tab === s.field ? "bg-cool/15 text-cool2 font-semibold" : "text-soft hover:bg-foreground/5")}>
+                    {s.l.slice(3)} {out[s.field] ? "✓" : ""}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="md text-sm p-5 md:p-6 min-h-48 overflow-x-auto">
+              {out[tab] ? (
+                <ReactMarkdown>{out[tab]!}</ReactMarkdown>
+              ) : (
+                <div className="max-w-prose space-y-2 text-soft">
+                  <p className="font-medium text-foreground">{!f.instructions.trim() ? "Add the assignment instructions to begin." : `Your ${STEPS.find((s) => s.field === tab)?.l.slice(3).toLowerCase()} guide will appear here.`}</p>
+                  <p>{!f.instructions.trim() ? "Paste the prompt or upload your teacher's instructions in the materials panel." : STEPS.find((s) => s.field === tab)?.desc}</p>
+                  <p className="text-xs">You can generate any step again as your ideas or materials change. Momentum should label verified information, recommendations, and anything you still need to check.</p>
+                </div>
+              )}
+            </div>
           </div>
           <Field
             label="Your chosen argument / thesis (optional)"
@@ -335,7 +352,9 @@ function Editor({ row }: { row: Row }) {
           />
           <p className="text-xs text-soft -mt-2">You do not need to decide on your argument before starting. The outline can suggest a provisional direction based on your instructions and brainstorm; you can change it later.</p>
           <div className="rounded-2xl bg-panel border border-line/70 p-4 space-y-3">
-            <p className="eyebrow text-cool2">Draft feedback</p>
+            <p className="eyebrow text-cool2">4. Review and improve</p>
+            <h3 className="font-semibold">Draft feedback</h3>
+            <p className="text-sm text-soft">When you have a draft or even a partial section, ask for focused feedback. Momentum should point to specific places, prioritize the most important fixes, and give you actions to revise in your own words. You can upload or paste a draft in the materials panel; feedback is optional until you are ready.</p>
             {chat.map((m, i) => (
               <div
                 key={i}
@@ -351,7 +370,7 @@ function Editor({ row }: { row: Row }) {
               <input
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
-                placeholder="e.g. Is my second paragraph's evidence strong enough?"
+                placeholder="Ask about a specific section, argument, evidence, or requirement…"
                 className={inputCls + " flex-1"}
               />
               <button

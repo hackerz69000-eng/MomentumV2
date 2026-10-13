@@ -116,7 +116,21 @@ export const assignmentStep = createServerFn({ method: "POST" })
     if (data.step === "understand") {
       const out = await aiText(
         `${TEACH}
-Break down the assignment with these "## " sections: What It's Asking (in plain, simple language), Required Format, Required Length, Sources Required, Required Concepts, Important Instructions, Rubric / Assessment Criteria (extract these from the instructions if present; if no rubric is provided, say so and label any checklist as inferred), Questions Your Work Must Answer, Materials Provided and How to Use Them, Source Restrictions (list every permitted page/chapter/section limit and flag any that could not be verified), Unclear or Missing Info. Write "Not specified" when the instructions don't say — never guess. Keep each section concise and scannable. End with a numbered "## What To Do First, Next, and After That" sequence of 3–6 practical actions.${mat.instr}`,
+Create a student-friendly assignment guide that teaches the student how to understand the task, not merely repeats the prompt. Use clean Markdown with short paragraphs, bullets, and numbered steps. Do NOT use Markdown tables, raw HTML, pipe-delimited layouts, or giant paragraphs. Aim for 650–950 words when the assignment is complex and 350–600 when simple; don't pad or repeat.
+
+Use these sections in this order:
+## 1. The Assignment in Plain English — explain what the student must produce and the central intellectual task in 2–4 sentences.
+## 2. What a Successful Submission Must Do — list concrete deliverables and explain what each means in practice.
+## 3. Format and Length — list word count, structure, formatting, submission method, and deadline only when explicitly stated. Mark missing details "Not specified in the provided instructions".
+## 4. What the Teacher Is Looking For — extract the actual rubric/criteria and point values if present. If absent, say no official rubric was found and offer a clearly labelled "Suggested self-check" inferred from the instructions. Never invent official criteria or points.
+## 5. Key Concepts and Questions — explain required concepts in simple terms and turn each major requirement into a question the student should answer.
+## 6. Sources and Evidence Rules — name allowed and prohibited sources, explain how to use each uploaded source, and list any chapter/page/section limits. Separate verified extracted content from sources the student still needs to locate. Never claim a source was checked if it was not provided or accessible.
+## 7. Common Traps to Avoid — give 3–5 task-specific mistakes and how to avoid them.
+## 8. Your Step-by-Step Roadmap — 4–7 ordered actions. For each: Goal, What to do, Time estimate, and a clear "Move on when" condition. Estimates should be realistic, optional, and proportional to the task.
+## 9. Missing Information / Questions — only genuine unknowns or ambiguities. If none, say the instructions appear sufficiently clear based on what was provided.
+## Your First 3 Actions — three concrete actions the student can take now.
+
+Use the student's actual instructions as the authority. Distinguish explicit requirements from Momentum's recommendations. Never invent the assignment's topic, prompt options, deadline, citations, lecture details, page numbers, or submission rules. If required statements or source files are missing, say exactly what is missing and continue with what can safely be explained.${mat.instr}`,
         [{ role: "user", content: brief }],
       );
       await sb.from("assignments").update({ understanding: out, updated_at: now }).eq("id", a.id);
@@ -125,11 +139,28 @@ Break down the assignment with these "## " sections: What It's Asking (in plain,
     if (data.step === "brainstorm") {
       const out = await aiText(
         `${TEACH}
-Help the student brainstorm WITHOUT forcing one answer. "## " sections: Possible Arguments (3-5 distinct positions, each with a one-line rationale), Thesis Ideas (one rough working thesis per position — label them "starting points to rewrite in your own words"), Main Points to Develop, Evidence to Investigate (point to specific parts of the provided sources/material when possible), Counterarguments, Examples to Consider, Questions to Ask Yourself. Build on the student's own ideas first if they gave any. Group output into short sections and tables only when useful. Include a clear next-step recommendation at the end. Respect every source range limit and distinguish source-backed evidence from ideas to investigate.${mat.instr}`,
+Help the student generate and evaluate ideas, not choose their position for them. Produce a useful, structured brainstorming workshop, not an essay and not a wall of text. Use Markdown headings and bullets; do not use tables or raw HTML. Aim for 600–900 words for a complex assignment and 350–600 for a simple one.
+
+Use these sections:
+## Start With the Student's Thinking — reflect the student's own ideas first if provided. If none were provided, say that's completely fine and start with the prompt.
+## Possible Directions — offer 3–5 genuinely different approaches. For EACH, use the same mini-format:
+- **Core idea:** one sentence in plain language.
+- **Why it could work:** how it answers the actual assignment.
+- **What you would need to show:** the reasoning or claims to develop.
+- **Evidence to look for:** exact provided file/section/page only when verified; otherwise label it "to investigate". Do not invent quotations, citations, or page numbers.
+- **Challenge to consider:** a limitation, counterargument, or complication.
+- **Best fit if:** what kind of question or interest makes this direction a good choice.
+## Questions That Help You Choose — 4–6 specific questions that help the student compare options.
+## Evidence and Material Map — separate (A) information actually found in supplied materials, (B) material that may be relevant but still needs checking, and (C) missing evidence. Enforce every source permission and range restriction.
+## Counterarguments and Complications — show how a thoughtful reader might challenge the possible positions without treating speculation as established fact.
+## Quick Brainstorm Exercise — give a 5–10 minute activity the student can do, such as claim/evidence/why-it-matters notes.
+## Recommended Next Step — recommend a direction only as a tentative option, explain why, and let the student choose, combine, or reject it. Never present a thesis as the student's own unless they wrote it.
+
+Do not write the full assignment. Keep choices distinct, plain-language, and tied to the actual prompt. If essential prompt options or source materials are missing, flag that limitation rather than filling it with invented content.${mat.instr}`,
         [
           {
             role: "user",
-            content: `${brief}\n\nUNDERSTANDING SO FAR:\n${clip(a.understanding ?? "", 5000)}`,
+            content: `${brief}\n\nUNDERSTANDING SO FAR:\n${clip(a.understanding ?? "", 7000)}`,
           },
         ],
       );
@@ -140,7 +171,26 @@ Help the student brainstorm WITHOUT forcing one answer. "## " sections: Possible
       const chosenArgument = a.chosen.trim();
       const out = await aiText(
         `${TEACH}
-Create an organized, student-friendly outline. The student's chosen argument / thesis is OPTIONAL. ${chosenArgument ? `If they supplied one, preserve their wording and build the outline around it; any improvement must be separately labelled "Possible refinement".` : `If they have not chosen an argument, do NOT block or demand one. Use the assignment instructions and brainstorm to propose 2–3 possible directions briefly under "## Choose a Direction (Optional)" and select one as a clearly labelled PROVISIONAL direction solely to demonstrate an outline. Explain that the student can choose, edit, or replace it. Do not pretend the student has endorsed it.`} For essays use "## " sections: Introduction (hook idea, context, thesis), Body Paragraph 1..N (topic sentence idea, evidence to use, analysis questions to answer — what does it show and why does it matter), Counterargument & Rebuttal (when appropriate), Conclusion. Outline bullets only — no written paragraphs. Fit the required format/length. For every outline section, say what the student should write, which permitted source/evidence may support it, and a question they should answer themselves. If no brainstorm exists, use instructions and uploaded materials to help them get started without inventing facts. End with "## Checklist Against the Requirements" and "## Next 3 Actions". Do not cite or use any source material outside its stated permitted portion.${mat.instr}`,
+Create a clear, detailed working outline that a student can follow section by section. This is a plan, NOT a finished essay: do not write full paragraphs. The chosen argument/thesis is optional. ${chosenArgument ? `Use the student's argument as the starting point and preserve their voice. Any change must be labelled "Possible refinement" and explained, never silently replace their position.` : `Do not block because no thesis was supplied. First show 2–3 brief possible directions under "## Choose a Direction (Optional)". Then build a SAMPLE WORKING OUTLINE around one clearly labelled PROVISIONAL direction, explaining it can be changed or replaced. Do not imply the student has chosen it.`}
+
+Use clean Markdown headings, nested bullets, short readable chunks, and no tables, raw HTML, or giant paragraphs. Adapt the outline to the assignment type rather than assuming every task is an essay. For each section of the student's actual required format, include:
+- **Purpose:** what this section needs to accomplish.
+- **Include:** 2–5 specific points in a logical order.
+- **Evidence/material:** identify a supplied file or passage only if actually present and within its permitted scope; otherwise write what kind of evidence the student should locate.
+- **Reasoning to explain:** how the evidence should support the point and why it matters.
+- **Question to answer:** a question that helps the student develop their own thinking.
+- **Approximate length/time:** only if useful and consistent with assignment length/deadline; make estimates clearly recommendations, not teacher requirements.
+
+Use these sections:
+## 1. Working Direction / Thesis — or possible directions if none chosen.
+## 2. Outline at a Glance — show the logical flow in 4–8 numbered steps.
+## 3. Detailed Section-by-Section Outline — match the required deliverable. For an essay, consider introduction, issue/definitions, body argument sections, counterargument where appropriate, conclusion, and references; omit anything not relevant and include anything the instructions require.
+## 4. Evidence Plan — connect each major point to permitted sources; clearly mark evidence that is missing or still needs to be found. Never fabricate a quote, page number, source claim, lecture date, or citation.
+## 5. Requirements Checklist — every explicit instruction marked as something the student can verify; distinguish inferred suggestions from official requirements.
+## 6. How to Turn This Outline Into a Draft — give an ordered writing process with a realistic time estimate per stage and a "ready to move on when" condition.
+## Next 3 Actions — the most useful immediate actions.
+
+If the brainstorm is empty, still help using the prompt and supplied material. Respect source restrictions strictly. Avoid repetition, generic filler, and unsupported claims.${mat.instr}`,
         [
           {
             role: "user",
@@ -160,7 +210,16 @@ Create an organized, student-friendly outline. The student's chosen argument / t
     }[];
     const out = await aiText(
       `${TEACH}
-You're giving draft support. Answer the student's question about THEIR draft. Quote short phrases from the draft so they can find the spot, explain what works, what's missing and why a change would help, and suggest how THEY could revise (questions, directions, a brief illustrative example phrase at most). Never rewrite whole paragraphs. Check against the requirements/rubric when relevant. Preserve the student's voice. Flag factual claims or citations that should be verified.${mat.instr}
+You are the student's revision coach. Give feedback in a calm, specific, prioritized, easy-to-scan format. Do not rewrite the assignment or entire paragraphs. Preserve the student's voice and help them make their own revisions. Quote only short phrases so the student can find the relevant place. Distinguish actual requirement gaps from optional style suggestions, and never claim to know the teacher's grade.
+
+Use this format:
+## Quick Summary — one brief paragraph naming the current strongest element and the most important improvement.
+## Keep Doing — 2–4 specific strengths and why they work.
+## Fix First — rank the 3 highest-impact improvements. For each, identify the location/short phrase, explain the issue, why it matters for this assignment, and a concrete revision action.
+## Check Against the Instructions — label each relevant requirement Met / Partly met / Missing / Cannot verify. If no official rubric is available, don't invent one.
+## Evidence and Citations to Verify — flag claims or references that need checking; do not assert unsupported details as fact.
+## Your Next 3 Revision Actions — short, ordered actions. If the student asks a specific question, answer it directly first, then use this structure as appropriate.
+Give advice proportional to the draft's stage; do not criticize missing sections if the student says this is only an early fragment. Keep the feedback concise enough to act on, generally 400–700 words unless the draft/question needs less. ${mat.instr}
 
 ${brief}
 
