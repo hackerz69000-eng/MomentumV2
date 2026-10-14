@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { ArrowLeft, BookOpen, CheckCircle2, Clock3, FileText, FileUp, Loader2, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { ocrFile } from "@/lib/study.functions";
@@ -24,7 +24,7 @@ export const Route = createFileRoute("/_authenticated/assignment/$id")({
       {
         name: "description",
         content:
-          "Plan assignments step by step or ask Momentum for help with any assignment question.",
+          "Work through your assignment step by step: understand it, brainstorm, outline and get draft feedback.",
       },
       { property: "og:title", content: "Assignment — Momentum" },
       { property: "og:description", content: "Step-by-step assignment guidance." },
@@ -144,14 +144,9 @@ function Editor({ row }: { row: Row }) {
     (Array.isArray(row.chat) ? row.chat : []) as { role: string; content: string }[],
   );
   const [tab, setTab] = useState<"understanding" | "brainstorm" | "outline">("understanding");
-  const [workspaceView, setWorkspaceView] = useState<"guide" | "help">("guide");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
-  const chatEndRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (workspaceView === "help") chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [chat, workspaceView, busy]);
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((p) => ({ ...p, [k]: v }));
   const sourceBundle = parseSourceBundle(f.sources);
   const timeSuggestions = getAssignmentTimeSuggestions(f.instructions);
@@ -316,18 +311,6 @@ function Editor({ row }: { row: Row }) {
           <div className="rounded-xl bg-cool/5 border border-cool/15 p-3 text-xs text-soft flex gap-2"><ShieldCheck className="size-4 shrink-0 text-cool2" /><p>Only assignment instructions are needed to begin. Sources, your ideas and your draft are optional and can be added later. If your instructions contain a rubric, Momentum should identify it automatically; you don't need a separate rubric field.</p></div>
         </section>
         <section className="space-y-4 min-w-0">
-          <div className="rounded-2xl border border-line/70 bg-panel p-2">
-            <div role="tablist" aria-label="Assignment workspace" className="grid grid-cols-2 gap-2">
-              <button type="button" role="tab" id="assignment-tab-guide" aria-controls="assignment-panel-guide" aria-selected={workspaceView === "guide"} tabIndex={workspaceView === "guide" ? 0 : -1} onClick={() => setWorkspaceView("guide")} className={"rounded-xl px-4 py-3 text-sm font-semibold transition-colors " + (workspaceView === "guide" ? "bg-cool/15 text-cool2" : "text-soft hover:bg-foreground/5")}>
-                <span className="inline-flex items-center justify-center gap-2"><BookOpen className="size-4" /> Plan &amp; outline</span>
-              </button>
-              <button type="button" role="tab" id="assignment-tab-help" aria-controls="assignment-panel-help" aria-selected={workspaceView === "help"} tabIndex={workspaceView === "help" ? 0 : -1} onClick={() => setWorkspaceView("help")} className={"rounded-xl px-4 py-3 text-sm font-semibold transition-colors " + (workspaceView === "help" ? "bg-cool/15 text-cool2" : "text-soft hover:bg-foreground/5")}>
-                <span className="inline-flex items-center justify-center gap-2"><Send className="size-4" /> Ask for help {chat.length ? <span className="rounded-full bg-cool/15 px-1.5 py-0.5 text-[10px]">{Math.ceil(chat.length / 2)}</span> : null}</span>
-              </button>
-            </div>
-          </div>
-          {error && <ErrorBox msg={error} />}
-          {workspaceView === "guide" ? <div id="assignment-panel-guide" role="tabpanel" aria-labelledby="assignment-tab-guide"><>
           <div className="rounded-2xl border border-line/70 bg-panel p-4 space-y-1">
             <p className="eyebrow text-cool2">Your assignment journey</p>
             <h2 className="font-display text-xl font-bold">One step at a time</h2>
@@ -356,6 +339,7 @@ function Editor({ row }: { row: Row }) {
               </article>
             ))}
           </div>
+          {error && <ErrorBox msg={error} />}
           <div className="rounded-2xl border border-line/70 bg-panel overflow-hidden">
             <div className="border-b border-line/60 p-4 space-y-1">
               <p className="eyebrow text-cool2">Your workspace</p>
@@ -389,15 +373,11 @@ function Editor({ row }: { row: Row }) {
             placeholder="Already have an argument? Add it here. If not, leave this blank and Momentum will help you explore a suitable direction in the outline."
           />
           <p className="text-xs text-soft -mt-2">You do not need to decide on your argument before starting. The outline can suggest a provisional direction based on your instructions and brainstorm; you can change it later.</p>
-          </></div> : <div id="assignment-panel-help" role="tabpanel" aria-labelledby="assignment-tab-help" className="rounded-2xl bg-panel border border-line/70 p-4 space-y-3">
-            <p className="eyebrow text-cool2">Assignment tutor</p>
-            <h3 className="font-display text-xl font-bold">What can I help you with?</h3>
-            <p className="text-sm text-soft">Ask in your own words about any part of this assignment: what the question means, course concepts, ideas, evidence, research, citations, structure, teacher feedback, or your draft. You can start here even before adding the instructions or writing anything; share context in your question when you can.</p>
-            {!chat.length && <div className="flex flex-wrap gap-2" aria-label="Example questions">
-              {["Explain what my assignment is asking", "Help me brainstorm possible ideas", "What should I do first?", "Explain this concept in simple terms"].map((prompt) => <button type="button" key={prompt} onClick={() => setQuestion(prompt)} className="rounded-full border border-line/70 px-3 py-2 text-xs text-soft hover:border-cool2/60 hover:text-foreground">{prompt}</button>)}
-            </div>}
-            <div className="max-h-[min(55vh,620px)] min-h-24 overflow-y-auto space-y-3 rounded-xl border border-line/60 p-3" aria-live="polite" aria-relevant="additions text">
-            {chat.length ? chat.map((m, i) => (
+          <div className="rounded-2xl bg-panel border border-line/70 p-4 space-y-3">
+            <p className="eyebrow text-cool2">4. Review and improve</p>
+            <h3 className="font-semibold">Draft feedback</h3>
+            <p className="text-sm text-soft">When you have a draft or even a partial section, ask for focused feedback. Momentum should point to specific places, prioritize the most important fixes, and give you actions to revise in your own words. You can upload or paste a draft in the materials panel; feedback is optional until you are ready.</p>
+            {chat.map((m, i) => (
               <div
                 key={i}
                 className={
@@ -407,31 +387,19 @@ function Editor({ row }: { row: Row }) {
               >
                 <MarkdownContent>{m.content}</MarkdownContent>
               </div>
-            )) : <p className="px-1 py-4 text-sm text-soft">Your conversation will appear here. Pick a starter question above or ask anything about the assignment.</p>}
-            {busy === "feedback" && <div className="flex items-center gap-2 rounded-lg bg-foreground/5 p-3 text-sm text-soft" role="status"><Loader2 className="size-4 animate-spin" /> Thinking through your question…</div>}
-            <div ref={chatEndRef} />
-            </div>
-            <form className="flex items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (!busy && question.trim()) void run("feedback"); }}>
-              <label className="min-w-0 flex-1 space-y-1">
-                <span className="text-xs font-medium text-soft">Your question</span>
-                <textarea
-                  value={question}
-                  onChange={(e) => setQuestion(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!busy && question.trim()) void run("feedback"); } }}
-                  placeholder="Ask anything about this assignment… (Shift+Enter for a new line)"
-                  className={inputCls + " w-full min-h-20 resize-y"}
-                  rows={2}
-                  maxLength={3000}
-                  aria-describedby="assignment-question-hint"
-                />
-                <span id="assignment-question-hint" className="text-[11px] text-soft">Press Enter to send · Shift+Enter for a new line · {question.length}/3000</span>
-              </label>
+            ))}
+            <div className="flex gap-2">
+              <input
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="Ask about a specific section, argument, evidence, or requirement…"
+                className={inputCls + " flex-1"}
+              />
               <button
-                type="submit"
-                aria-label="Ask for assignment help"
-                disabled={!!busy || !question.trim()}
+                aria-label="Get draft feedback"
+                onClick={() => run("feedback")}
+                disabled={!!busy || !f.draft.trim()}
                 className={btnPrimary}
-                title="Send question"
               >
                 {busy === "feedback" ? (
                   <Loader2 className="size-4 animate-spin" />
@@ -439,8 +407,8 @@ function Editor({ row }: { row: Row }) {
                   <Send className="size-4" />
                 )}
               </button>
-            </form>
-          </div>}
+            </div>
+          </div>
         </section>
       </div>
     </main>
