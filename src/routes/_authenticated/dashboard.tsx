@@ -11,6 +11,7 @@ import { ProgressBar } from "@/components/ProgressBar";
 import { DashboardWorkspace } from "@/components/DashboardWorkspace";
 import { Levels } from "@/components/Levels";
 import { DailyStreak } from "@/components/DailyStreak";
+import { LevelPill } from "@/components/LevelPill";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -82,6 +83,7 @@ function Dashboard() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
+          <LevelPill />
           <Levels percentage={cumulativePct} />
           <DailyStreak />
           <Link
@@ -280,3 +282,4 @@ function SetCard({ set }: { set: SetWithCards }) {
     </div>
   );
 }
+

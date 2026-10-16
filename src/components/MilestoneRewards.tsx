@@ -159,7 +159,7 @@ export function MilestoneRewards({ className = "" }: { className?: string }) {
           return (
             <div key={reward.id} className={`rounded-xl border p-3 ${isUnlocked ? "border-amber-400/30 bg-amber-400/5" : "border-line bg-foreground/[0.03] opacity-60"}`}>
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xl">{reward.icon}</span>
+                <span className={`grid size-11 place-items-center rounded-xl border text-2xl shadow-inner ${isUnlocked ? "border-amber-200/50 bg-gradient-to-br from-amber-300 via-orange-500 to-rose-700 shadow-amber-950/40" : "border-slate-500/40 bg-gradient-to-br from-slate-700 to-slate-950 grayscale"}`}><span className="drop-shadow">{reward.icon}</span></span>
                 {isUnlocked ? <Check className="size-3.5 text-mint" /> : <Lock className="size-3.5 text-soft" />}
               </div>
               <p className="font-semibold text-xs mt-2">{reward.name}</p>
@@ -173,7 +173,7 @@ export function MilestoneRewards({ className = "" }: { className?: string }) {
       <div className="mt-5 pt-4 border-t border-line/70">
         <div className="flex items-center justify-between gap-3 mb-3"><div><p className="text-xs font-semibold">Level milestone badges</p><p className="text-[10px] text-soft">A new badge every 10 levels · Level {level}/100</p></div><span className="text-xs font-bold text-cool2">{levelRewards.filter(([n]) => level >= n).length}/10</span></div>
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-          {levelRewards.map(([at, name, icon, description]) => { const earned = level >= at; return <div key={at} className={`rounded-xl border p-3 ${earned ? "border-amber-400/40 bg-amber-400/10" : "border-line bg-foreground/[0.03] opacity-65"}`}><div className="flex items-center justify-between"><span className="text-xl">{icon}</span>{earned ? <Check className="size-3.5 text-mint"/> : <Lock className="size-3 text-soft"/>}</div><p className="font-semibold text-xs mt-2">{name}</p><p className="text-[10px] text-soft mt-0.5">Level {at}</p><p className="text-[10px] text-soft mt-1 leading-relaxed">{description}</p></div>; })}
+          {levelRewards.map(([at, name, icon, description]) => { const earned = level >= at; return <div key={at} className={`rounded-xl border p-3 ${earned ? "border-amber-400/40 bg-amber-400/10" : "border-line bg-foreground/[0.03] opacity-65"}`}><div className="flex items-center justify-between"><span className={`grid size-12 place-items-center rounded-xl border text-2xl shadow-inner ${earned ? "border-violet-200/50 bg-gradient-to-br from-violet-300 via-indigo-500 to-blue-800 shadow-violet-950/40" : "border-slate-500/40 bg-gradient-to-br from-slate-700 to-slate-950 grayscale"}`}><span className="drop-shadow">{icon}</span></span>{earned ? <Check className="size-3.5 text-mint"/> : <Lock className="size-3 text-soft"/>}</div><p className="font-semibold text-xs mt-2">{name}</p><p className="text-[10px] text-soft mt-0.5">Level {at}</p><p className="text-[10px] text-soft mt-1 leading-relaxed">{description}</p></div>; })}
         </div>
       </div>
 

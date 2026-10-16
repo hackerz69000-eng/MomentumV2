@@ -119,9 +119,9 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
           title={`Click to view ${scope === "overall" ? "overall" : "this set's"} mastery rank ladder`}
         >
           <div
-            className={`size-8 rounded-lg bg-gradient-to-br ${currentRank.color} flex items-center justify-center text-white shadow-md shrink-0`}
+            className={`size-10 rounded-xl border border-white/30 bg-gradient-to-br ${currentRank.color} flex items-center justify-center text-white shadow-md shrink-0`}
           >
-            <Icon className="size-4 animate-pulse" />
+            <div className="grid size-8 place-items-center rounded-lg border border-white/30 bg-black/10 shadow-inner"><Icon className="size-5 drop-shadow-md" /></div>
           </div>
 
           <div className="min-w-0 pr-1">

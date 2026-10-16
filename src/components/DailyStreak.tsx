@@ -15,18 +15,18 @@ function localDayKey(date = new Date()): string {
 export const STREAK_EVENT = "momentum_streak_updated";
 
 const ACTIVITY_TASKS = [
-  { id: "quiz", label: "Finish a quiz" },
-  { id: "flashcards", label: "Review flashcards" },
-  { id: "recall", label: "Complete active recall" },
-  { id: "focus", label: "Finish a focus timer" },
+  { id: "quiz", label: "Complete a quiz or exam" },
+  { id: "flashcards", label: "Review a flashcard set" },
+  { id: "recall", label: "Finish an active-recall round" },
+  { id: "focus", label: "Complete a focus timer" },
+  { id: "practice", label: "Complete another practice activity" },
 ] as const;
 
 function getDailyTasks(day: string) {
-  // Rotate the required pair by local calendar day so the challenge changes daily.
+  // All five distinct tasks are required; rotate their order daily so the checklist feels fresh.
   const epochDay = Math.floor(new Date(`${day}T12:00:00`).getTime() / 86400000);
-  const pairs = [["quiz", "flashcards"], ["recall", "focus"], ["quiz", "recall"], ["flashcards", "focus"], ["quiz", "focus"], ["flashcards", "recall"]];
-  const pair = pairs[((epochDay % pairs.length) + pairs.length) % pairs.length]!;
-  return ACTIVITY_TASKS.filter((task) => pair.includes(task.id));
+  const shift = ((epochDay % ACTIVITY_TASKS.length) + ACTIVITY_TASKS.length) % ACTIVITY_TASKS.length;
+  return [...ACTIVITY_TASKS.slice(shift), ...ACTIVITY_TASKS.slice(0, shift)];
 }
 
 export interface StreakData {
@@ -230,7 +230,7 @@ export function DailyStreak({ className = "" }: DailyStreakProps) {
             Daily Study Streak
           </DialogTitle>
           <p className="text-xs text-soft mt-1">
-            Consistent daily practice builds compound retention. Complete two different study activities each day (for example, a quiz plus flashcards). Manual session logs and button clicks never count.
+            Consistent daily practice builds retention. Complete all five distinct daily tasks to earn streak credit. Manual session logs and button clicks never count.
           </p>
         </DialogHeader>
 
@@ -244,7 +244,7 @@ export function DailyStreak({ className = "" }: DailyStreakProps) {
           <p className="text-xs text-soft mt-1">
             {studiedToday
               ? "You've successfully studied today! Great job maintaining momentum."
-              : "Complete a study session today to keep your streak going!"}
+              : "Complete all five study tasks today to earn streak credit!"}
           </p>
 
           <div className="mt-5 grid grid-cols-2 gap-2 text-left">
@@ -264,14 +264,14 @@ export function DailyStreak({ className = "" }: DailyStreakProps) {
 
           <div className="mt-5 rounded-xl border border-line bg-foreground/5 p-3 text-left">
             <p className="text-xs font-semibold">Today's study tasks</p>
-            <p className="text-xs text-soft mt-1">Complete two different activity types to earn today's streak credit.</p>
+            <p className="text-xs text-soft mt-1">Complete all five distinct tasks to earn today's streak credit. The order changes daily.</p>
             <div className="grid grid-cols-2 gap-2 mt-3">
               {getDailyTasks(today).map((task) => {
                 const done = (data.todayActivities ?? []).includes(task.id);
                 return <div key={task.id} className={`rounded-lg border p-2 text-xs ${done ? "border-emerald-500/40 bg-emerald-500/10" : "border-line bg-panel"}`}><span className="flex items-center gap-1.5">{done ? <CheckCircle2 className="size-3.5 text-mint" /> : <Calendar className="size-3.5 text-soft" />}{task.label}</span></div>;
               })}
             </div>
-            <p className="text-[11px] text-soft mt-3">{getDailyTasks(today).every((task) => (data.todayActivities ?? []).includes(task.id)) ? "Daily goal complete — streak credit earned." : `${getDailyTasks(today).filter((task) => (data.todayActivities ?? []).includes(task.id)).length}/2 required tasks completed.`}</p>
+            <p className="text-[11px] text-soft mt-3">{getDailyTasks(today).every((task) => (data.todayActivities ?? []).includes(task.id)) ? "Daily goal complete — streak credit earned." : `${getDailyTasks(today).filter((task) => (data.todayActivities ?? []).includes(task.id)).length}/5 required tasks completed.`}</p>
           </div>
         </div>
       </DialogContent>

@@ -64,7 +64,7 @@ export function PomodoroTimer({ setId = null, topicName = "Pomodoro Focus", clas
       void logActivity("session", setId, 1, undefined, { duration_seconds: mins * 60, meta: { source: "pomodoro", focusMinutes } });
       if (sound) playTone("chime");
       const recapScore = Math.min(100, Math.round(55 + (mins / Math.max(1, focusMinutes)) * 35 + (mins >= focusMinutes ? 10 : 0)));
-      toast.success(`Session complete · ${mins} min focused · Focus score ${recapScore}/100`, { description: `${topicName} · Progress and session history updated. Complete today’s other required task to earn streak credit.` });
+      toast.success(`Session complete · ${mins} min focused · Focus score ${recapScore}/100`, { description: `${topicName} · Progress and session history updated. Complete all five distinct daily tasks to earn streak credit.` });
       setMode("break");
       setRemaining(breakMinutes * 60);
     } else {

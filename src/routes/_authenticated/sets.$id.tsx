@@ -42,6 +42,7 @@ import { AudioStudy } from "@/components/set/AudioStudy";
 import { fetchMistakes } from "@/lib/mistakes";
 import { Levels } from "@/components/Levels";
 import { DailyStreak } from "@/components/DailyStreak";
+import { LevelPill } from "@/components/LevelPill";
 
 const TABS = [
   "overview",
@@ -226,6 +227,7 @@ function SetPage() {
             </h1>
           </div>
           <div className="flex items-center gap-2 mt-4 shrink-0">
+            <LevelPill />
             <Levels percentage={overallMastery} scope="overall" />
             <DailyStreak />
             <span className="eyebrow text-cool2 hidden sm:inline-block">{set.subject || "General"}</span>

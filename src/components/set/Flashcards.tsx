@@ -111,7 +111,7 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
     // has been exhausted.
     if (nextIndex >= nextOrder.length) {
       recordStudySessionCompletion(15, `Flashcards (${cards.length} cards)`);
-      toast.success("Flashcard review completed. Finish today’s other required task to earn streak credit.");
+      toast.success("Flashcard review completed. Complete all five distinct daily tasks to earn streak credit.");
     }
 
     try {
