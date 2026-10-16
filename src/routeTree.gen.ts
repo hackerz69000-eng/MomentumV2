@@ -16,6 +16,7 @@ import { Route as AuthenticatedCoachRouteImport } from './routes/_authenticated/
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedExamRouteImport } from './routes/_authenticated/exam'
 import { Route as AuthenticatedHistoryRouteImport } from './routes/_authenticated/history'
+import { Route as AuthenticatedAttemptsIdRouteImport } from './routes/_authenticated/attempts.$id'
 import { Route as AuthenticatedSearchRouteImport } from './routes/_authenticated/search'
 import { Route as AuthenticatedTrashRouteImport } from './routes/_authenticated/trash'
 import { Route as AuthenticatedTurnitinRouteImport } from './routes/_authenticated/turnitin'
@@ -60,6 +61,11 @@ const AuthenticatedExamRoute = AuthenticatedExamRouteImport.update({
 const AuthenticatedHistoryRoute = AuthenticatedHistoryRouteImport.update({
   id: '/history',
   path: '/history',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedAttemptsIdRoute = AuthenticatedAttemptsIdRouteImport.update({
+  id: '/attempts/$id',
+  path: '/attempts/$id',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedSearchRoute = AuthenticatedSearchRouteImport.update({
@@ -127,6 +133,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/exam': typeof AuthenticatedExamRoute
   '/history': typeof AuthenticatedHistoryRoute
+  '/attempts/$id': typeof AuthenticatedAttemptsIdRoute
   '/search': typeof AuthenticatedSearchRoute
   '/trash': typeof AuthenticatedTrashRoute
   '/turnitin': typeof AuthenticatedTurnitinRoute
@@ -146,6 +153,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/exam': typeof AuthenticatedExamRoute
   '/history': typeof AuthenticatedHistoryRoute
+  '/attempts/$id': typeof AuthenticatedAttemptsIdRoute
   '/search': typeof AuthenticatedSearchRoute
   '/trash': typeof AuthenticatedTrashRoute
   '/turnitin': typeof AuthenticatedTurnitinRoute
@@ -188,6 +196,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/exam'
     | '/history'
+    | '/attempts/$id'
     | '/search'
     | '/trash'
     | '/turnitin'
@@ -207,6 +216,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/exam'
     | '/history'
+    | '/attempts/$id'
     | '/search'
     | '/trash'
     | '/turnitin'
@@ -227,6 +237,7 @@ export interface FileRouteTypes {
     | '/_authenticated/dashboard'
     | '/_authenticated/exam'
     | '/_authenticated/history'
+    | '/_authenticated/attempts/$id'
     | '/_authenticated/search'
     | '/_authenticated/trash'
     | '/_authenticated/turnitin'
@@ -297,6 +308,13 @@ declare module '@tanstack/react-router' {
       path: '/history'
       fullPath: '/history'
       preLoaderRoute: typeof AuthenticatedHistoryRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/attempts/$id': {
+      id: '/_authenticated/attempts/$id'
+      path: '/attempts/$id'
+      fullPath: '/attempts/$id'
+      preLoaderRoute: typeof AuthenticatedAttemptsIdRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/search': {
@@ -384,6 +402,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedExamRoute: typeof AuthenticatedExamRoute
   AuthenticatedHistoryRoute: typeof AuthenticatedHistoryRoute
+  AuthenticatedAttemptsIdRoute: typeof AuthenticatedAttemptsIdRoute
   AuthenticatedSearchRoute: typeof AuthenticatedSearchRoute
   AuthenticatedTrashRoute: typeof AuthenticatedTrashRoute
   AuthenticatedTurnitinRoute: typeof AuthenticatedTurnitinRoute
@@ -400,6 +419,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedExamRoute: AuthenticatedExamRoute,
   AuthenticatedHistoryRoute: AuthenticatedHistoryRoute,
+  AuthenticatedAttemptsIdRoute: AuthenticatedAttemptsIdRoute,
   AuthenticatedSearchRoute: AuthenticatedSearchRoute,
   AuthenticatedTrashRoute: AuthenticatedTrashRoute,
   AuthenticatedTurnitinRoute: AuthenticatedTurnitinRoute,

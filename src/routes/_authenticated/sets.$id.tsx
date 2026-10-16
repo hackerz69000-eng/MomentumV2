@@ -17,7 +17,8 @@ import {
   MessageCircle,
   LayoutDashboard,
 } from "lucide-react";
-import { fetchCards, fetchSet, type StudySet } from "@/lib/queries";
+import { fetchCards, fetchSet, fetchSets, type StudySet } from "@/lib/queries";
+import { computeProgress } from "@/lib/progress";
 import { supabase } from "@/integrations/supabase/client";
 import { askTutor, processSet } from "@/lib/study.functions";
 import { setStats, type Attempt } from "@/lib/stats";
@@ -154,6 +155,7 @@ function SetPage() {
   const { tab = "overview" } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const setQ = useQuery({ queryKey: ["set", id], queryFn: () => fetchSet(id), retry: 1 });
+  const allSetsQ = useQuery({ queryKey: ["sets"], queryFn: fetchSets });
   const cardsQ = useQuery({ queryKey: ["cards", id], queryFn: () => fetchCards(id) });
   const attemptsQ = useQuery({
     queryKey: ["attempts", id],
@@ -194,6 +196,17 @@ function SetPage() {
   const attempts = attemptsQ.data ?? [];
   const mistakes = mistakesQ.data ?? [];
   const stats = setStats(cards, attempts, mistakes);
+  const allSets = allSetsQ.data ?? [];
+  const overallTotals = allSets.reduce((acc, item) => {
+    const progress = computeProgress(item.flashcards, item.quiz_score, item.quiz_total);
+    acc.cards += progress.total;
+    acc.mastered += progress.mastered;
+    if (progress.quizPct != null) { acc.quizSum += progress.quizPct; acc.quizN += 1; }
+    return acc;
+  }, { cards: 0, mastered: 0, quizSum: 0, quizN: 0 });
+  const overallCardPct = overallTotals.cards ? Math.round(overallTotals.mastered / overallTotals.cards * 100) : 0;
+  const overallQuizAvg = overallTotals.quizN ? Math.round(overallTotals.quizSum / overallTotals.quizN) : null;
+  const overallMastery = overallQuizAvg == null ? overallCardPct : Math.round((overallCardPct + overallQuizAvg) / 2);
 
   return (
     <main className="flex-1 min-w-0">
@@ -211,7 +224,7 @@ function SetPage() {
             </h1>
           </div>
           <div className="flex items-center gap-2 mt-4 shrink-0">
-            <Levels percentage={stats.readiness} scope="set" />
+            <Levels percentage={overallMastery} scope="overall" />
             <DailyStreak />
             <span className="eyebrow text-cool2 hidden sm:inline-block">{set.subject || "General"}</span>
           </div>

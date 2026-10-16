@@ -231,11 +231,23 @@ export function QuizRunner({
       score: idx.filter((i) => results[i]!.correct).length,
       total: idx.length,
       duration_seconds: duration,
-      results: idx.map((i) => ({
-        topic: questions[i]!.topic,
-        correct: results[i]!.correct,
-        q: questions[i]!.question.slice(0, 200),
-      })),
+      results: idx.map((i) => {
+        const q = questions[i]!;
+        const a = answers[i] ?? null;
+        const studentAnswer = a == null || String(a).trim() === "" ? "Not answered" : q.type === "short" ? String(a) : (q.options[Number(a)] ?? "");
+        const correctAnswer = q.type === "short" ? (q.answerText || "") : (q.options[q.answer] ?? "");
+        return {
+          topic: q.topic,
+          correct: results[i]!.correct,
+          q: q.question,
+          question: q.question,
+          questionType: q.type,
+          options: q.options,
+          studentAnswer,
+          correctAnswer,
+          explanation: q.explanation || results[i]!.feedback || "",
+        };
+      }),
     }));
     const { error } = await supabase.from("quiz_attempts").insert(rows);
     if (error) {

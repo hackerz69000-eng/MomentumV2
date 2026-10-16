@@ -17,84 +17,16 @@ export interface RpgRank {
 }
 
 export const RPG_RANKS: RpgRank[] = [
-  {
-    tier: 1,
-    title: "Novice",
-    subtitle: "Initiate of Knowledge",
-    minPct: 0,
-    maxPct: 19,
-    color: "from-amber-700 to-amber-900",
-    badgeBg: "bg-amber-950/40",
-    borderColor: "border-amber-700/50",
-    textColor: "text-amber-400",
-    icon: Shield,
-    description: "Beginning mastery; consistent evidence of recall is still needed.",
-  },
-  {
-    tier: 2,
-    title: "Apprentice",
-    subtitle: "Active Learner",
-    minPct: 20,
-    maxPct: 39,
-    color: "from-slate-500 to-cyan-600",
-    badgeBg: "bg-cyan-950/40",
-    borderColor: "border-cyan-700/50",
-    textColor: "text-cyan-300",
-    icon: Compass,
-    description: "Building reliable recall across multiple concepts and practice sessions.",
-  },
-  {
-    tier: 3,
-    title: "Adept",
-    subtitle: "Applied Thinker",
-    minPct: 40,
-    maxPct: 59,
-    color: "from-emerald-600 to-teal-700",
-    badgeBg: "bg-emerald-950/40",
-    borderColor: "border-emerald-600/50",
-    textColor: "text-emerald-300",
-    icon: Award,
-    description: "Demonstrating applied understanding across a broad set of concepts.",
-  },
-  {
-    tier: 4,
-    title: "Scholar",
-    subtitle: "High Comprehension",
-    minPct: 60,
-    maxPct: 74,
-    color: "from-blue-600 to-indigo-700",
-    badgeBg: "bg-indigo-950/40",
-    borderColor: "border-indigo-500/50",
-    textColor: "text-indigo-300",
-    icon: Sparkles,
-    description: "Sustained understanding, strong quiz results, and broad retention.",
-  },
-  {
-    tier: 5,
-    title: "Sage",
-    subtitle: "Analytical Master",
-    minPct: 75,
-    maxPct: 89,
-    color: "from-purple-600 to-violet-800",
-    badgeBg: "bg-violet-950/40",
-    borderColor: "border-violet-500/50",
-    textColor: "text-violet-300",
-    icon: Trophy,
-    description: "Very strong retention with consistently high performance across topics.",
-  },
-  {
-    tier: 6,
-    title: "Grandmaster",
-    subtitle: "Exam Paragon",
-    minPct: 90,
-    maxPct: 100,
-    color: "from-amber-400 to-yellow-600",
-    badgeBg: "bg-amber-950/50",
-    borderColor: "border-amber-400/60",
-    textColor: "text-amber-300",
-    icon: Crown,
-    description: "Exceptional demonstrated mastery across practice and recall.",
-  },
+  { tier: 1, title: 'Novice', subtitle: 'Initiate of Knowledge', minPct: 0, maxPct: 9, color: 'from-stone-600 to-stone-800', badgeBg: 'bg-stone-950/40', borderColor: 'border-stone-600/50', textColor: 'text-stone-300', icon: Shield, description: 'Beginning your study journey; build a steady practice habit.' },
+  { tier: 2, title: 'Apprentice', subtitle: 'Active Learner', minPct: 10, maxPct: 19, color: 'from-amber-700 to-amber-900', badgeBg: 'bg-amber-950/40', borderColor: 'border-amber-700/50', textColor: 'text-amber-400', icon: Compass, description: 'Building reliable recall through repeated practice.' },
+  { tier: 3, title: 'Practitioner', subtitle: 'Consistent Builder', minPct: 20, maxPct: 29, color: 'from-slate-500 to-cyan-700', badgeBg: 'bg-cyan-950/40', borderColor: 'border-cyan-700/50', textColor: 'text-cyan-300', icon: Shield, description: 'Developing dependable knowledge across key concepts.' },
+  { tier: 4, title: 'Adept', subtitle: 'Applied Thinker', minPct: 30, maxPct: 39, color: 'from-emerald-600 to-teal-700', badgeBg: 'bg-emerald-950/40', borderColor: 'border-emerald-600/50', textColor: 'text-emerald-300', icon: Award, description: 'Applying what you learn instead of only recognizing it.' },
+  { tier: 5, title: 'Scholar', subtitle: 'High Comprehension', minPct: 40, maxPct: 49, color: 'from-blue-600 to-indigo-700', badgeBg: 'bg-indigo-950/40', borderColor: 'border-indigo-500/50', textColor: 'text-indigo-300', icon: Sparkles, description: 'Demonstrating strong understanding across multiple topics.' },
+  { tier: 6, title: 'Specialist', subtitle: 'Focused Expert', minPct: 50, maxPct: 59, color: 'from-violet-600 to-purple-800', badgeBg: 'bg-violet-950/40', borderColor: 'border-violet-500/50', textColor: 'text-violet-300', icon: Award, description: 'Showing reliable command of challenging material.' },
+  { tier: 7, title: 'Sage', subtitle: 'Analytical Master', minPct: 60, maxPct: 69, color: 'from-purple-600 to-fuchsia-800', badgeBg: 'bg-purple-950/40', borderColor: 'border-purple-500/50', textColor: 'text-purple-300', icon: Trophy, description: 'Retaining knowledge and reasoning confidently.' },
+  { tier: 8, title: 'Virtuoso', subtitle: 'Advanced Practitioner', minPct: 70, maxPct: 79, color: 'from-sky-500 to-blue-700', badgeBg: 'bg-sky-950/40', borderColor: 'border-sky-500/50', textColor: 'text-sky-300', icon: Sparkles, description: 'Performing strongly and consistently across topics.' },
+  { tier: 9, title: 'Luminary', subtitle: 'Master of Insight', minPct: 80, maxPct: 89, color: 'from-orange-500 to-rose-700', badgeBg: 'bg-orange-950/40', borderColor: 'border-orange-500/50', textColor: 'text-orange-300', icon: Crown, description: 'Demonstrating excellent mastery and durable recall.' },
+  { tier: 10, title: 'Grandmaster', subtitle: 'Exam Paragon', minPct: 90, maxPct: 100, color: 'from-amber-400 to-yellow-600', badgeBg: 'bg-amber-950/50', borderColor: 'border-amber-400/60', textColor: 'text-amber-300', icon: Crown, description: 'Exceptional demonstrated mastery across practice and recall.' }
 ];
 
 interface LevelsProps {
@@ -171,10 +103,10 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
         <DialogHeader>
           <DialogTitle className="font-display text-2xl flex items-center gap-2">
             <Trophy className="size-5 text-cool2" />
-            RPG Academic Ranks
+            Momentum Mastery Tiers
           </DialogTitle>
           <p className="text-xs text-soft mt-1">
-            Ranks use one shared mastery scale. Higher tiers require stronger demonstrated recall and quiz performance.
+            Your tier is based on the mastery percentage shown here. Overall rank summarizes all study progress; a study-set rank reflects that set only, so the two can differ.
           </p>
         </DialogHeader>
 
@@ -204,7 +136,7 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
         </div>
 
         <div className="mt-4 space-y-2">
-          <p className="eyebrow text-soft">All RPG Ranks</p>
+          <p className="eyebrow text-soft">All Mastery Tiers</p>
           <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
             {RPG_RANKS.map((r) => {
               const isCurrent = r.tier === currentRank.tier;

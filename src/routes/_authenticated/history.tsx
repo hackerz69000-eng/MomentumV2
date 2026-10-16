@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Search, ArrowUpRight, Filter } from "lucide-react";
+import { Loader2, Search, ArrowUpRight, Filter, ClipboardCheck } from "lucide-react";
 import { useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { dayKey } from "@/lib/activity";
@@ -122,6 +122,14 @@ function group(rows: Row[]): Item[] {
 function HistoryPage() {
   const [searchText, setSearchText] = useState("");
   const [kindFilter, setKindFilter] = useState("all");
+  const attemptsQ = useQuery({
+    queryKey: ["attempts", "history-review"],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("quiz_attempts").select("id, kind, created_at, score, total, duration_seconds, set_id").order("created_at", { ascending: false }).limit(100);
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
   const q = useQuery({
     queryKey: ["activity", "history"],
     queryFn: async () => {
@@ -187,6 +195,15 @@ function HistoryPage() {
         </p>
       </header>
       <div className="p-5 md:p-8 max-w-3xl space-y-6">
+        <section className="rounded-2xl bg-panel border border-line/70 p-4 space-y-3">
+          <div><h2 className="font-display text-lg uppercase tracking-wide">Quiz & Exam Results</h2><p className="text-xs text-soft">Open a completed attempt any time to review your answers and explanations.</p></div>
+          {attemptsQ.isLoading && <Loader2 className="size-5 animate-spin text-cool2"/>}
+          {attemptsQ.data?.length === 0 && <p className="text-sm text-soft">Your completed quizzes and exams will appear here.</p>}
+          <div className="space-y-2">{(attemptsQ.data ?? []).map((a) => {
+            const setName = a.set_id ? q.data?.names.get(a.set_id) : null;
+            return <Link key={a.id} to="/attempts/$id" params={{ id: a.id }} className="flex items-center justify-between gap-3 rounded-xl border border-line/70 p-3 hover:border-cool/50 transition-colors"><div className="flex items-center gap-3 min-w-0"><ClipboardCheck className="size-4 text-cool2 shrink-0"/><div className="min-w-0"><p className="text-sm font-semibold">{a.kind === "exam" || a.kind === "comprehensive" ? "Exam" : "Quiz"}{setName ? ` · ${setName}` : a.kind === "comprehensive" ? " · Multiple sets" : ""}</p><p className="text-xs text-soft">{new Date(a.created_at).toLocaleString()} {a.duration_seconds ? `· ${Math.max(1, Math.round(a.duration_seconds / 60))} min` : ""}</p></div></div><div className="text-right shrink-0"><p className="text-sm font-semibold">{a.score}/{a.total}</p><p className="text-xs text-cool2">{a.total ? Math.round(a.score / a.total * 100) : 0}% · Review</p></div></Link>;
+          })}</div>
+        </section>
         <div className="grid sm:grid-cols-[1fr_200px] gap-3">
           <label className="flex items-center gap-2 rounded-xl bg-panel border border-line px-3 py-2.5">
             <Search className="size-4 text-soft shrink-0" />
