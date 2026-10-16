@@ -17,17 +17,24 @@ export interface RpgRank {
 }
 
 const TIER_NAMES = [
-  "Novice", "Apprentice", "Practitioner", "Adept", "Scholar",
-  "Specialist", "Sage", "Virtuoso", "Luminary", "Expert",
-  "Pathfinder", "Strategist", "Prodigy", "Mastermind", "Authority",
-  "Pioneer", "Champion", "Legend", "Mythic", "Grandmaster",
+  "Rookie", "Sparkplug", "Page Turner", "Mindforge", "Lore Hunter", "Quiz Rogue", "Focus Knight", "Brainstormer", "Cipher Seeker", "Skill Smith",
+  "Recall Ranger", "Insight Adept", "Lorekeeper", "Neural Nomad", "Arcane Scholar", "Knowledge Warden", "Thoughtsmith", "Puzzle Phantom", "Study Samurai", "Savant-in-Training",
+  "Memory Maverick", "Concept Crusher", "Wisdom Weaver", "Focus Alchemist", "Theorem Tactician", "Mind Paladin", "Recall Ronin", "Logic Titan", "Scholar Supreme", "Brainstorm Baron",
+  "Chronicle Keeper", "Syllabus Slayer", "Cognition Commander", "Mastery Marauder", "Insight Overlord", "Mnemonic Monarch", "Quantum Quester", "Lorebreaker", "Grand Strategist", "Apex Intellect",
+  "Mythic Mind", "Omniscient Orbit", "Eureka Engine", "Cosmic Savant", "Ascendant Sage", "Paragon of Knowledge", "Infinite Thinker", "Mind Eternal", "Legend.exe", "Study Deity",
 ];
-const TIER_SUBTITLES = [
-  "Initiate of Knowledge", "Active Learner", "Consistent Builder", "Applied Thinker", "High Comprehension",
-  "Focused Expert", "Analytical Master", "Advanced Practitioner", "Master of Insight", "Reliable Expert",
-  "Independent Thinker", "Strategic Learner", "Rapid Integrator", "Complex Problem Solver", "Deep Knowledge",
-  "Knowledge Pioneer", "Elite Performer", "Living Legend", "Exceptional Mastery", "Exam Paragon",
-];
+const TIER_SUBTITLES = TIER_NAMES.map((_, i) => [
+  "Your story starts here", "A little spark, a lot of potential", "Turning pages into progress", "Forging stronger thinking", "Hunting down understanding",
+  "Taking on every question", "Guarding your focus", "Ideas are connecting", "Cracking the tricky bits", "Crafting durable skills",
+  "Recall under pressure", "Seeing the deeper pattern", "Keeping knowledge close", "Exploring new mental paths", "Scholarship with a little magic",
+  "Protecting what you've learned", "Building ideas that last", "Solving with style", "Discipline meets courage", "Potential becoming power",
+  "Making memory your superpower", "Breaking through hard concepts", "Weaving facts into insight", "Turning effort into mastery", "Tactical with every theory",
+  "Defending the fundamentals", "Calm, sharp, consistent", "Built for big challenges", "A force in the study realm", "Ideas answer your call",
+  "Keeping the whole story straight", "Taking down the syllabus", "Commanding complex concepts", "Relentless pursuit of mastery", "Insight at full power",
+  "Ruling the memory palace", "Curiosity at cosmic scale", "Breaking through old limits", "Planning like a legend", "Operating at the edge",
+  "A mind of mythic strength", "Orbiting big ideas", "Powered by breakthroughs", "A universe of understanding", "Rising beyond the ordinary",
+  "Excellence, earned", "Thinking without borders", "Knowledge that endures", "Achievement unlocked", "The final form of focus",
+][i]);
 const TIER_COLORS = [
   ["from-stone-600 to-stone-800", "bg-stone-950/40", "border-stone-600/50", "text-stone-300"],
   ["from-amber-700 to-amber-900", "bg-amber-950/40", "border-amber-700/50", "text-amber-400"],
@@ -52,15 +59,15 @@ const TIER_COLORS = [
 ];
 const TIER_ICONS = [Shield, Compass, Shield, Award, Sparkles, Award, Trophy, Sparkles, Crown, Award, Compass, Trophy, Sparkles, Shield, Award, Compass, Trophy, Crown, Sparkles, Crown];
 export const RPG_RANKS: RpgRank[] = TIER_NAMES.map((title, i) => ({
-  tier: i + 1, title, subtitle: TIER_SUBTITLES[i]!, minPct: i * 5,
-  maxPct: i === 19 ? 100 : i * 5 + 4,
-  color: TIER_COLORS[i]![0]!, badgeBg: TIER_COLORS[i]![1]!,
-  borderColor: TIER_COLORS[i]![2]!, textColor: TIER_COLORS[i]![3]!,
-  icon: TIER_ICONS[i]!, description: i === 0
+  tier: i + 1, title, subtitle: TIER_SUBTITLES[i]!, minPct: i * 2,
+  maxPct: i === 49 ? 100 : i * 2 + 1,
+  color: TIER_COLORS[i % TIER_COLORS.length]![0]!, badgeBg: TIER_COLORS[i % TIER_COLORS.length]![1]!,
+  borderColor: TIER_COLORS[i % TIER_COLORS.length]![2]!, textColor: TIER_COLORS[i % TIER_COLORS.length]![3]!,
+  icon: TIER_ICONS[i % TIER_ICONS.length]!, description: i === 0
     ? "Beginning your study journey; build a steady practice habit."
-    : i === 19
-      ? "Exceptional demonstrated mastery across practice and recall."
-      : `Tier ${i + 1}: build durable recall, apply ideas, and demonstrate consistent mastery to advance.`,
+    : i === 49
+      ? "The ultimate study rank: exceptional mastery across practice and recall."
+      : `Tier ${i + 1}: ${title} — build durable recall, apply ideas, and demonstrate consistent mastery to advance.`,
 }));
 
 interface LevelsProps {
@@ -196,7 +203,7 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
                     </div>
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <span className="font-semibold text-foreground">{r.title}</span>
+                        <span className="font-semibold text-foreground">Tier {r.tier}: {r.title}</span>
                         <span className="text-[10px] text-soft">
                           ({r.minPct}%–{r.maxPct}%)
                         </span>

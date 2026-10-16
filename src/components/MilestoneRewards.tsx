@@ -16,7 +16,7 @@ type Reward = {
   name: string;
   description: string;
   icon: string;
-  type: "streak" | "hours";
+  type: "streak" | "hours" | "all";
   threshold: number;
   theme?: ThemeId;
 };
@@ -41,7 +41,7 @@ const THEMES: { id: ThemeId; name: string; description: string }[] = themeIds.ma
 
 // Fifty milestones alternate between longest streak and accumulated study time.
 // Every milestone from #3 onward also unlocks one of the twenty cosmetic themes at spaced intervals.
-const REWARDS: Reward[] = milestoneNames.map((name, i) => {
+const BASE_REWARDS: Reward[] = milestoneNames.map((name, i) => {
   const number = i + 1;
   const type = i % 2 === 0 ? "streak" : "hours";
   const threshold = type === "streak" ? Math.max(1, Math.ceil(number / 2) * 3) : Math.ceil(number / 2) * 5;
@@ -54,7 +54,17 @@ const REWARDS: Reward[] = milestoneNames.map((name, i) => {
   };
 });
 
+const REWARDS: Reward[] = [...BASE_REWARDS, {
+  id: "milestone-study-fiend",
+  name: "Study Fiend",
+  description: "Unlock every other milestone reward to earn this ultimate badge.",
+  icon: "😈",
+  type: "all",
+  threshold: BASE_REWARDS.length,
+}];
+
 function unlocked(reward: Reward, streak: ReturnType<typeof getStreakData>) {
+  if (reward.type === "all") return BASE_REWARDS.every((item) => unlocked(item, streak));
   return reward.type === "streak" ? streak.longestStreak >= reward.threshold : (streak.totalStudyMinutes ?? 0) >= reward.threshold * 60;
 }
 

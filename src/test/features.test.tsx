@@ -120,12 +120,12 @@ Electron transport chain results in the creation of a proton gradient across the
       const novice = RPG_RANKS.find((r) => 5 >= r.minPct && 5 <= r.maxPct);
       expect(novice?.title).toBe("Novice");
 
-      expect(RPG_RANKS).toHaveLength(20);
-      const specialist = RPG_RANKS.find((r) => 55 >= r.minPct && 55 <= r.maxPct);
-      expect(specialist?.title).toBe("Specialist");
+      expect(RPG_RANKS).toHaveLength(50);
+      const tier28 = RPG_RANKS.find((r) => 55 >= r.minPct && 55 <= r.maxPct);
+      expect(tier28?.tier).toBe(28);
 
-      const grandmaster = RPG_RANKS.find((r) => 95 >= r.minPct && 95 <= r.maxPct);
-      expect(grandmaster?.title).toBe("Grandmaster");
+      const finalTier = RPG_RANKS.find((r) => 99 >= r.minPct && 99 <= r.maxPct);
+      expect(finalTier?.title).toBe("Study Deity");
     });
   });
 
