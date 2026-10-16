@@ -61,6 +61,7 @@ const TABS = [
   "plan",
   "materials",
   "reading",
+  "history",
 ] as const satisfies readonly Tab[];
 
 const TAB_GROUPS: {
@@ -101,7 +102,7 @@ const TAB_GROUPS: {
   {
     id: "tools",
     label: "AI & Tools",
-    tabs: ["tutor", "ask", "search"],
+    tabs: ["tutor", "ask", "search", "history"],
     defaultTab: "tutor",
     icon: MessageCircle,
   },
@@ -124,6 +125,7 @@ const LABELS: Record<Tab, string> = {
   plan: "Study Plan",
   materials: "Materials",
   reading: "Reading Companion",
+  history: "Quiz & Exam History",
 };
 
 export const Route = createFileRoute("/_authenticated/sets/$id")({
@@ -316,6 +318,7 @@ function SetPage() {
             {tab === "lectures" && <Lecture set={set} attempts={attempts} topics={stats.topics} />}
             {tab === "mistakes" && <MistakeBank setId={set.id} mistakes={mistakes} />}
             {tab === "ask" && <AskMaterials set={set} />}
+            {tab === "history" && <section className="rounded-2xl border border-line bg-panel p-5 md:p-6 space-y-3"><h2 className="font-display text-2xl uppercase">Quiz & Exam History</h2><p className="text-sm text-soft">Open completed quizzes and exams, compare past scores, and review saved answers and explanations. Your results stay available after you leave this study set.</p><Link to="/history" className="inline-flex items-center gap-2 rounded-lg bg-brand text-ink px-4 py-2 text-sm font-semibold">Open quiz & exam history <ArrowLeft className="size-4 rotate-180" /></Link></section>}
           </div>
         )}
       </div>

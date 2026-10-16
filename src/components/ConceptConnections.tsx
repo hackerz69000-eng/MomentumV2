@@ -1,10 +1,11 @@
 import { useServerFn } from "@tanstack/react-start";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, BookOpenCheck, Check, ChevronRight, Loader2, Network, RefreshCw, Sparkles } from "lucide-react";
 import type { SetWithCards } from "@/lib/queries";
 import { generateConceptConnections } from "@/lib/study.functions";
 import { toast } from "sonner";
 
+type SavedMap = { id: string; title: string; setId: string; createdAt: string; concepts: Concept[] };
 type Concept = {
   name: string;
   summary: string;
@@ -21,6 +22,28 @@ export function ConceptConnections({ sets }: { sets: SetWithCards[] }) {
   const [revealed, setRevealed] = useState(false);
   const [confidence, setConfidence] = useState<Record<string, "learning" | "practising" | "confident">>({});
   const [busy, setBusy] = useState(false);
+  const [savedMaps, setSavedMaps] = useState<SavedMap[]>([]);
+  const [activeMapId, setActiveMapId] = useState("");
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("momentum:saved-concept-maps:v1");
+      if (raw) {
+        const parsed = JSON.parse(raw) as SavedMap[];
+        setSavedMaps(parsed);
+        if (parsed[0]) {
+          setActiveMapId(parsed[0].id); setSetId(parsed[0].setId);
+          setConcepts(parsed[0].concepts); setSelectedName(parsed[0].concepts[0]?.name ?? "");
+        }
+      }
+    } catch { /* ignore malformed local cache */ }
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem("momentum:saved-concept-maps:v1", JSON.stringify(savedMaps)); } catch { /* storage may be unavailable */ }
+  }, [savedMaps]);
+  const openSavedMap = (map: SavedMap) => {
+    setActiveMapId(map.id); setSetId(map.setId); setConcepts(map.concepts);
+    setSelectedName(map.concepts[0]?.name ?? ""); setRevealed(false); setConfidence({});
+  };
   const selected = sets.find((s) => s.id === setId);
   const selectedConcept = concepts.find((c) => c.name === selectedName) ?? concepts[0];
   const connections = useMemo(() => {
@@ -38,10 +61,9 @@ export function ConceptConnections({ sets }: { sets: SetWithCards[] }) {
     try {
       const result = await generate({ data: { setId, focus: focus.trim() || undefined } });
       const next = result.concepts as Concept[];
-      setConcepts(next);
-      setSelectedName(next[0]?.name ?? "");
-      setRevealed(false);
-      setConfidence({});
+      const saved: SavedMap = { id: crypto.randomUUID(), title: `${selected?.name ?? "Study set"}${focus.trim() ? ` · ${focus.trim()}` : " · Concept map"}`, setId, createdAt: new Date().toISOString(), concepts: next };
+      setSavedMaps((current) => [saved, ...current]); setActiveMapId(saved.id);
+      setConcepts(next); setSelectedName(next[0]?.name ?? ""); setRevealed(false); setConfidence({});
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't build the concept map.");
     } finally {
@@ -52,6 +74,7 @@ export function ConceptConnections({ sets }: { sets: SetWithCards[] }) {
   return (
     <section className="px-5 md:px-8 py-6">
       <div className="rounded-2xl border border-line bg-panel p-5 md:p-6">
+        {savedMaps.length > 0 && <div className="mt-4 border-b border-line pb-3"><p className="text-xs font-semibold text-soft mb-2">Your saved maps · {savedMaps.length}</p><div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Saved concept maps">{savedMaps.map((map) => <div key={map.id} className={`shrink-0 flex items-center rounded-lg border ${activeMapId === map.id ? "border-cool2 bg-cool/10" : "border-line bg-accent"}`}><button role="tab" aria-selected={activeMapId === map.id} onClick={() => openSavedMap(map)} className="px-3 py-2 text-xs font-medium max-w-52 truncate">{map.title}<span className="block text-[10px] text-soft">{new Date(map.createdAt).toLocaleDateString()}</span></button><button aria-label={`Delete ${map.title}`} title="Delete saved map" onClick={() => { setSavedMaps((all) => all.filter((item) => item.id !== map.id)); if (activeMapId === map.id) { setActiveMapId(""); setConcepts([]); setSelectedName(""); } }} className="px-2 text-soft hover:text-destructive">×</button></div>)}</div></div>}
         <div className="flex flex-col xl:flex-row xl:items-end gap-4 justify-between">
           <div>
             <div className="flex items-center gap-2 text-cool2"><Network className="size-5" /><span className="eyebrow">Understand & Connect</span></div>
@@ -59,7 +82,7 @@ export function ConceptConnections({ sets }: { sets: SetWithCards[] }) {
             <p className="text-sm text-soft mt-1 max-w-2xl">Explore the concepts, inspect how they connect, then practise explaining the relationship from memory. This is a study tool, not just a generated summary.</p>
           </div>
           <div className="flex flex-wrap gap-2 min-w-0 xl:max-w-2xl xl:justify-end">
-            <select aria-label="Study set for concept map" value={setId} onChange={(e) => { setSetId(e.target.value); setConcepts([]); setSelectedName(""); setRevealed(false); }} className="rounded-lg border border-line bg-accent px-3 py-2 text-sm min-w-48">
+            <select aria-label="Study set for concept map" value={setId} onChange={(e) => { setSetId(e.target.value); setActiveMapId(""); setConcepts([]); setSelectedName(""); setRevealed(false); }} className="rounded-lg border border-line bg-accent px-3 py-2 text-sm min-w-48">
               {sets.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             <input aria-label="Focus topic" value={focus} onChange={(e) => setFocus(e.target.value)} placeholder="Focus on a topic (optional)" className="rounded-lg border border-line bg-accent px-3 py-2 text-sm w-56" />

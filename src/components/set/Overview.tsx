@@ -31,7 +31,8 @@ export type Tab =
   | "lectures"
   | "mistakes"
   | "ask"
-  | "reading";
+  | "reading"
+  | "history";
 
 export function Overview({
   set,
