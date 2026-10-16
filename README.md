@@ -78,3 +78,15 @@ The Turnitin practice page can compare against documents the student adds locall
 ### Cross-device progression storage
 
 Apply `supabase/migrations/20261016000000_user_progression.sql` in the Supabase SQL Editor (or through your normal migration workflow) before deploying this version. It creates the RLS-protected `public.user_progression` row per authenticated user. On authenticated app startup, Momentum merges the device's existing XP/streak/freeze/reward snapshot with the account row and saves progression changes to Supabase. Existing browser-local progress is retained and merged on first sync; review the first signed-in device's values before treating it as canonical.
+
+### Admin progression editor
+
+The authenticated `/admin-progression` page is shown only to accounts whose **Supabase Auth `app_metadata.role`** is `admin`. The database RPCs enforce the same check; changing ordinary `user_metadata` is not sufficient. After applying `supabase/migrations/20261016010000_admin_progression_editor.sql`, grant the role to a trusted account from the Supabase SQL Editor (replace the email):
+
+```sql
+update auth.users
+set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"admin"}'::jsonb
+where email = 'your-admin-email@example.com';
+```
+
+The admin page accepts a target user's UUID from **Authentication → Users**. XP controls the calculated level; tier can be set to Automatic or explicitly overridden from tiers 1–50. The editor uses security-definer RPCs that reject non-admin JWTs. Apply the migration before using the page.

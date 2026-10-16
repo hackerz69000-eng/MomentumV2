@@ -78,13 +78,21 @@ interface LevelsProps {
 
 export function Levels({ percentage, className = "", scope = "overall" }: LevelsProps) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [tierOverride, setTierOverride] = useState<number | null>(null);
+  useEffect(() => {
+    const readOverride = () => {
+      try { const raw = localStorage.getItem("momentum_tier_override_v1"); const value = raw == null ? null : Number(raw); setTierOverride(value !== null && Number.isInteger(value) && value >= 1 && value <= 50 ? value : null); } catch { setTierOverride(null); }
+    };
+    readOverride(); window.addEventListener("momentum_tier_override_updated", readOverride); window.addEventListener("storage", readOverride);
+    return () => { window.removeEventListener("momentum_tier_override_updated", readOverride); window.removeEventListener("storage", readOverride); };
+  }, []);
   const clampedPct = Math.max(0, Math.min(100, Math.round(percentage)));
 
   const currentRank = useMemo(() => {
     return (
-      RPG_RANKS.find((r) => clampedPct >= r.minPct && clampedPct <= r.maxPct) || RPG_RANKS[0]!
+      (scope === "overall" && tierOverride ? RPG_RANKS[tierOverride - 1] : undefined) || RPG_RANKS.find((r) => clampedPct >= r.minPct && clampedPct <= r.maxPct) || RPG_RANKS[0]!
     );
-  }, [clampedPct]);
+  }, [clampedPct, scope, tierOverride]);
 
   const nextRank = useMemo(() => {
     const nextIdx = RPG_RANKS.findIndex((r) => r.tier === currentRank.tier) + 1;

@@ -19,6 +19,7 @@ import { Route as AuthenticatedHistoryRouteImport } from './routes/_authenticate
 import { Route as AuthenticatedAttemptsIdRouteImport } from './routes/_authenticated/attempts.$id'
 import { Route as AuthenticatedSearchRouteImport } from './routes/_authenticated/search'
 import { Route as AuthenticatedTrashRouteImport } from './routes/_authenticated/trash'
+import { Route as AuthenticatedAdminProgressionRouteImport } from './routes/_authenticated/admin-progression'
 import { Route as AuthenticatedTurnitinRouteImport } from './routes/_authenticated/turnitin'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
 import { Route as ApiSimilarityDiscoveryRouteImport } from './routes/api/similarity-discovery'
@@ -76,6 +77,11 @@ const AuthenticatedSearchRoute = AuthenticatedSearchRouteImport.update({
 const AuthenticatedTrashRoute = AuthenticatedTrashRouteImport.update({
   id: '/trash',
   path: '/trash',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedAdminProgressionRoute = AuthenticatedAdminProgressionRouteImport.update({
+  id: '/admin-progression',
+  path: '/admin-progression',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedTurnitinRoute = AuthenticatedTurnitinRouteImport.update({
@@ -136,6 +142,7 @@ export interface FileRoutesByFullPath {
   '/attempts/$id': typeof AuthenticatedAttemptsIdRoute
   '/search': typeof AuthenticatedSearchRoute
   '/trash': typeof AuthenticatedTrashRoute
+  '/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
@@ -156,6 +163,7 @@ export interface FileRoutesByTo {
   '/attempts/$id': typeof AuthenticatedAttemptsIdRoute
   '/search': typeof AuthenticatedSearchRoute
   '/trash': typeof AuthenticatedTrashRoute
+  '/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
@@ -177,6 +185,7 @@ export interface FileRoutesById {
   '/_authenticated/history': typeof AuthenticatedHistoryRoute
   '/_authenticated/search': typeof AuthenticatedSearchRoute
   '/_authenticated/trash': typeof AuthenticatedTrashRoute
+  '/_authenticated/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/_authenticated/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
@@ -199,6 +208,7 @@ export interface FileRouteTypes {
     | '/attempts/$id'
     | '/search'
     | '/trash'
+    | '/admin-progression'
     | '/turnitin'
     | '/api/transcribe'
     | '/api/similarity-discovery'
@@ -219,6 +229,7 @@ export interface FileRouteTypes {
     | '/attempts/$id'
     | '/search'
     | '/trash'
+    | '/admin-progression'
     | '/turnitin'
     | '/api/transcribe'
     | '/api/similarity-discovery'
@@ -240,6 +251,7 @@ export interface FileRouteTypes {
     | '/_authenticated/attempts/$id'
     | '/_authenticated/search'
     | '/_authenticated/trash'
+    | '/_authenticated/admin-progression'
     | '/_authenticated/turnitin'
     | '/api/transcribe'
     | '/api/similarity-discovery'
@@ -331,6 +343,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedTrashRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/admin-progression': {
+      id: '/_authenticated/admin-progression'
+      path: '/admin-progression'
+      fullPath: '/admin-progression'
+      preLoaderRoute: typeof AuthenticatedAdminProgressionRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/turnitin': {
       id: '/_authenticated/turnitin'
       path: '/turnitin'
@@ -405,6 +424,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedAttemptsIdRoute: typeof AuthenticatedAttemptsIdRoute
   AuthenticatedSearchRoute: typeof AuthenticatedSearchRoute
   AuthenticatedTrashRoute: typeof AuthenticatedTrashRoute
+  AuthenticatedAdminProgressionRoute: typeof AuthenticatedAdminProgressionRoute
   AuthenticatedTurnitinRoute: typeof AuthenticatedTurnitinRoute
   AuthenticatedAssignmentIdRoute: typeof AuthenticatedAssignmentIdRoute
   AuthenticatedEssayIdRoute: typeof AuthenticatedEssayIdRoute
@@ -422,6 +442,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAttemptsIdRoute: AuthenticatedAttemptsIdRoute,
   AuthenticatedSearchRoute: AuthenticatedSearchRoute,
   AuthenticatedTrashRoute: AuthenticatedTrashRoute,
+  AuthenticatedAdminProgressionRoute: AuthenticatedAdminProgressionRoute,
   AuthenticatedTurnitinRoute: AuthenticatedTurnitinRoute,
   AuthenticatedAssignmentIdRoute: AuthenticatedAssignmentIdRoute,
   AuthenticatedEssayIdRoute: AuthenticatedEssayIdRoute,

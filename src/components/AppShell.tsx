@@ -12,6 +12,7 @@ import {
   FileCheck,
   FileUp,
   Trash2,
+  ShieldCheck,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
@@ -73,6 +74,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           <Link to="/trash" className={navCls} activeProps={{ className: activeCls }}>
             <Trash2 className="size-4" /> Recently Deleted
           </Link>
+          {user?.app_metadata?.role === "admin" && <Link to="/admin-progression" className={navCls} activeProps={{ className: activeCls }}>
+            <ShieldCheck className="size-4" /> Progression Editor
+          </Link>}
         </nav>
         <div className="mt-auto space-y-2 pt-6">
           <div className="rounded-lg p-3 bg-accent border border-line">

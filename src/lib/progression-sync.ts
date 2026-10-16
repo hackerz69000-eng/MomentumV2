@@ -6,6 +6,8 @@ const FREEZE_KEY = "momentum_streak_freezes_v1";
 const REWARD_ANNOUNCEMENTS_KEY = "momentum_announced_reward_ids_v1";
 const REWARDS_THEME_KEY = "momentum_rewards_theme";
 const ACTIVITY_IDS_KEY = "momentum_xp_activity_ids_v1";
+const TIER_OVERRIDE_KEY = "momentum_tier_override_v1";
+const LAST_SYNC_KEY = "momentum_progression_last_sync_v1";
 const TABLE = "user_progression";
 
 type JsonRecord = Record<string, unknown>;
@@ -23,6 +25,7 @@ function localSnapshot() {
     reward_announcements: parseArray(typeof localStorage === "undefined" ? null : localStorage.getItem(REWARD_ANNOUNCEMENTS_KEY)),
     reward_theme: typeof localStorage === "undefined" ? "default" : localStorage.getItem(REWARDS_THEME_KEY) ?? "default",
     activity_ids: parseArray(typeof localStorage === "undefined" ? null : localStorage.getItem(ACTIVITY_IDS_KEY)),
+    tier_override: typeof localStorage === "undefined" ? null : localStorage.getItem(TIER_OVERRIDE_KEY),
   };
 }
 function parseArray(raw: unknown): string[] {
@@ -51,7 +54,7 @@ function mergeStreak(local: JsonRecord, remote: JsonRecord): JsonRecord {
 export async function initializeProgressionSync(userId: string): Promise<() => void> {
   if (typeof window === "undefined" || !userId) return () => {};
   const table = (supabase as any).from(TABLE);
-  const { data, error } = await table.select("user_id,xp,streak_data,freeze_data,reward_announcements,reward_theme,activity_ids,updated_at").eq("user_id", userId).maybeSingle();
+  const { data, error } = await table.select("user_id,xp,streak_data,freeze_data,reward_announcements,reward_theme,activity_ids,tier_override,updated_at").eq("user_id", userId).maybeSingle();
   if (error) {
     console.error("[progression] Could not load cloud progression. Apply the user_progression migration and verify RLS.", error.message);
     return () => {};
@@ -59,6 +62,9 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
 
   const local = localSnapshot();
   const remote = (data ?? {}) as JsonRecord;
+  const previousSync = Number(localStorage.getItem(LAST_SYNC_KEY) ?? 0);
+  const remoteUpdatedAt = Date.parse(String(remote.updated_at ?? "")) || 0;
+  const remoteWasEditedSinceSync = previousSync > 0 && remoteUpdatedAt > previousSync;
   const streak = mergeStreak(local.streak_data, (remote.streak_data as JsonRecord | null) ?? {});
   const freezesLocal = local.freeze_data;
   const freezesRemote = (remote.freeze_data as JsonRecord | null) ?? {};
@@ -67,12 +73,13 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
     used: Math.max(0, number(freezesLocal.used), number(freezesRemote.used)),
   };
   const merged = {
-    xp: Math.max(local.xp, number(remote.xp)),
+    xp: remoteWasEditedSinceSync ? number(remote.xp) : Math.max(local.xp, number(remote.xp)),
     streak_data: streak,
     freeze_data: freezeData,
     reward_announcements: [...new Set([...local.reward_announcements, ...parseArray(remote.reward_announcements)])],
     reward_theme: typeof remote.reward_theme === "string" ? remote.reward_theme : local.reward_theme,
     activity_ids: [...new Set([...local.activity_ids, ...parseArray(remote.activity_ids)])].slice(-5000),
+    tier_override: data ? (remote.tier_override == null ? null : String(remote.tier_override)) : local.tier_override,
   };
   setXpFromCloud(merged.xp);
   localStorage.setItem(STREAK_KEY, JSON.stringify(merged.streak_data));
@@ -80,6 +87,9 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
   localStorage.setItem(REWARD_ANNOUNCEMENTS_KEY, JSON.stringify(merged.reward_announcements));
   localStorage.setItem(REWARDS_THEME_KEY, merged.reward_theme);
   localStorage.setItem(ACTIVITY_IDS_KEY, JSON.stringify(merged.activity_ids));
+  if (merged.tier_override == null) localStorage.removeItem(TIER_OVERRIDE_KEY); else localStorage.setItem(TIER_OVERRIDE_KEY, String(merged.tier_override));
+  localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
+  window.dispatchEvent(new Event("momentum_tier_override_updated"));
   window.dispatchEvent(new Event("momentum_streak_updated"));
   window.dispatchEvent(new Event("momentum_freeze_updated"));
 
@@ -99,10 +109,12 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
         reward_announcements: snapshot.reward_announcements,
         reward_theme: snapshot.reward_theme,
         activity_ids: snapshot.activity_ids,
+        tier_override: snapshot.tier_override == null || snapshot.tier_override === "" ? null : Number(snapshot.tier_override),
         updated_at: new Date().toISOString(),
       };
       const { error: saveError } = await ((supabase as any).from(TABLE)).upsert(payload, { onConflict: "user_id" });
       if (saveError) console.error("[progression] Cloud save failed:", saveError.message);
+      else localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
     } finally { writing = false; }
   };
   const schedule = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { void persist(); }, 250); };
