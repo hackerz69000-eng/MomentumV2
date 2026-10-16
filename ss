@@ -1,0 +1,556 @@
+warning: in the working copy of 'ASSIGNMENT_HELPER_GUIDED_WORKSPACE_NOTES.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/set/ReadingCompanion.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/lib/reading.functions.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/lib/writing.functions.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/routes/_authenticated/assignment.$id.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'ss', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/ASSIGNMENT_HELPER_GUIDED_WORKSPACE_NOTES.md b/ASSIGNMENT_HELPER_GUIDED_WORKSPACE_NOTES.md[m
+[1mindex aecf482..eeb1d6b 100644[m
+[1m--- a/ASSIGNMENT_HELPER_GUIDED_WORKSPACE_NOTES.md[m
+[1m+++ b/ASSIGNMENT_HELPER_GUIDED_WORKSPACE_NOTES.md[m
+[36m@@ -16,24 +16,3 @@[m
+ - Manually exercised the Markdown formatter against both the existing study-guide table case and the reported Assignment Helper-style flattened table; both rendered as readable lists with no raw pipe-table syntax or `<br>` tag.[m
+ - TypeScript/TSX syntax transpilation checks are run for the changed source files.[m
+ - A full application build and Vitest suite require installing the project's dependencies first; they are not claimed as passing unless run in an environment with dependencies installed.[m
+[31m-[m
+[31m-## Open-ended assignment help[m
+[31m-[m
+[31m-- The Assignment Helper conversation now accepts questions before a student has written a draft; an empty draft no longer blocks the chat.[m
+[31m-- Students can ask about the prompt, course concepts, planning, possible arguments, structure, evidence, citation questions, research strategy, teacher feedback, or draft revision.[m
+[31m-- Responses use the current assignment instructions, rubric, permitted source bundle and limits, notes, chosen argument, generated guides, draft (if present), and recent conversation history where relevant.[m
+[31m-- The helper is instructed to answer the actual question rather than forcing every response into a draft-review template. It should identify missing context, avoid invented requirements/citations/source claims, respect source restrictions, and coach rather than write the whole assignment.[m
+[31m-- Updated the UI label, explanatory text, placeholder, accessible button label, and send-button guard so students can ask without a draft.[m
+[31m-[m
+[31m-## Verification for open-ended assignment help[m
+[31m-[m
+[31m-- Reviewed the modified server and UI code paths. A full TypeScript build and automated test suite have not been run in this environment because project dependencies are not installed.[m
+[31m-[m
+[31m-## Final usability and accessibility pass[m
+[31m-[m
+[31m-- The Ask for help tab now includes starter-question chips, speaker labels, a visible response-loading state, and automatic scrolling to the newest conversation content.[m
+[31m-- The question composer is a multiline textarea with a 3,000-character limit, a live character count, Enter-to-send, and Shift+Enter for a new line.[m
+[31m-- Added tab/tabpanel relationships and selected-tab keyboard focus semantics for clearer assistive-technology navigation.[m
+[31m-- The tutor can now answer a question even when assignment instructions have not been entered yet. It is instructed to be transparent that it has not seen the prompt and still help from the student's question rather than refusing outright.[m
+[31m-- Persisted chat history is filtered to valid user/assistant messages before it is passed back to the model.[m
+[31m-- Validation: TypeScript transpilation/syntax checks passed for all 161 `.ts`/`.tsx` source files. A full typecheck, production build, lint, automated test suite, and live model round-trip remain unverified because dependencies could not be installed in this environment.[m
+[1mdiff --git a/src/components/set/ReadingCompanion.tsx b/src/components/set/ReadingCompanion.tsx[m
+[1mindex 0b0f0bb..f08509a 100644[m
+[1m--- a/src/components/set/ReadingCompanion.tsx[m
+[1m+++ b/src/components/set/ReadingCompanion.tsx[m
+[36m@@ -3,7 +3,7 @@[m [mimport { MarkdownContent } from "@/components/MarkdownContent";[m
+ import { useQuery, useQueryClient } from "@tanstack/react-query";[m
+ import { useMemo, useState, type FormEvent } from "react";[m
+ import { toast } from "sonner";[m
+[31m-import { BookOpen, FileText, GraduationCap, Loader2, MessageCircle, Sparkles, Layers, RefreshCw, Send, Link2, Unlink, BookMarked, LibraryBig, AlertTriangle, Trash2 } from "lucide-react";[m
+[32m+[m[32mimport { BookOpen, FileText, GraduationCap, Loader2, MessageCircle, Sparkles, Layers, RefreshCw, Send, Link2, Unlink, BookMarked, LibraryBig, AlertTriangle, Trash2, Copy, Check, ChevronDown, ChevronUp } from "lucide-react";[m
+ import type { StudySet } from "@/lib/queries";[m
+ import { readingAddDocument, readingDeleteDocument, readingAsk, readingGenerateCards, readingListSources, readingLinkSource, readingSaveCards, readingSummary, readingUnlinkSource } from "@/lib/reading.functions";[m
+ import { btnGhost, btnPrimary, inputCls } from "./ui";[m
+[36m@@ -30,6 +30,12 @@[m [mexport function ReadingCompanion({ set }: { set: StudySet }) {[m
+   const unlinkFn = useServerFn(readingUnlinkSource);[m
+   const [busy, setBusy] = useState<"summary" | "ask" | "cards" | "save" | "link" | string | null>(null);[m
+   const [summary, setSummary] = useState("");[m
+[32m+[m[32m  const [activeSummarySection, setActiveSummarySection] = useState(0);[m
+[32m+[m[32m  const [expandedSummarySections, setExpandedSummarySections] = useState<number[]>([]);[m
+[32m+[m[32m  const [copiedSummary, setCopiedSummary] = useState(false);[m
+[32m+[m[32m  const [summarySourceKey, setSummarySourceKey] = useState("all");[m
+[32m+[m[32m  const [completedSections, setCompletedSections] = useState<number[]>([]);[m
+[32m+[m[32m  const [showAnswerKey, setShowAnswerKey] = useState(false);[m
+   const [question, setQuestion] = useState("");[m
+   const [answer, setAnswer] = useState("");[m
+   const [cards, setCards] = useState<DraftCard[]>([]);[m
+[36m@@ -47,10 +53,33 @@[m [mexport function ReadingCompanion({ set }: { set: StudySet }) {[m
+   const lectures = sourcesQ.data?.lectures ?? [];[m
+   const availableLectures = useMemo(() => lectures.filter((l) => l.setId === sourceSetId && l.hasContent), [lectures, sourceSetId]);[m
+   const selectedSourceKey = sourceKey === "all" ? undefined : sourceKey;[m
+[32m+[m[32m  const summaryIsStale = Boolean(summary) && summarySourceKey !== sourceKey;[m
+[32m+[m[32m  const completedCount = completedSections.length;[m
+   const hasReading = sources.some((s) => s.kind === "reading");[m
+   const hasLecture = sources.some((s) => s.kind === "lecture");[m
+   const readingCount = sources.filter((s) => s.kind === "reading").length;[m
+   const lectureCount = sources.filter((s) => s.kind === "lecture").length;[m
+[32m+[m[32m  const summarySections = useMemo(() => {[m
+[32m+[m[32m    if (!summary.trim()) return [];[m
+[32m+[m[32m    const lines = summary.replace(/\r\n/g, "\n").split("\n");[m
+[32m+[m[32m    const sections: { title: string; body: string }[] = [];[m
+[32m+[m[32m    let currentTitle = "Overview";[m
+[32m+[m[32m    let currentBody: string[] = [];[m
+[32m+[m[32m    for (const line of lines) {[m
+[32m+[m[32m      const heading = line.match(/^#{1,3}\s+(.+?)\s*#*$/);[m
+[32m+[m[32m      if (heading) {[m
+[32m+[m[32m        if (currentBody.join("\n").trim() || sections.length === 0) sections.push({ title: currentTitle, body: currentBody.join("\n").trim() });[m
+[32m+[m[32m        currentTitle = heading[1].replace(/\*\*/g, "").trim();[m
+[32m+[m[32m        currentBody = [];[m
+[32m+[m[32m      } else currentBody.push(line);[m
+[32m+[m[32m    }[m
+[32m+[m[32m    if (currentBody.join("\n").trim()) sections.push({ title: currentTitle, body: currentBody.join("\n").trim() });[m
+[32m+[m[32m    return sections.filter(section => section.body || section.title !== "Overview");[m
+[32m+[m[32m  }, [summary]);[m
+[32m+[m[32m  const copySummary = async () => {[m
+[32m+[m[32m    try { await navigator.clipboard.writeText(summary); setCopiedSummary(true); window.setTimeout(() => setCopiedSummary(false), 1800); }[m
+[32m+[m[32m    catch { toast.error("Couldn't copy the study brief. Select the text and copy it instead."); }[m
+[32m+[m[32m  };[m
+ [m
+   const run = async <T,>(kind: string, fn: () => Promise<T>): Promise<T | null> => {[m
+     setBusy(kind);[m
+[36m@@ -63,7 +92,7 @@[m [mexport function ReadingCompanion({ set }: { set: StudySet }) {[m
+   };[m
+   const makeSummary = async () => {[m
+     const result = await run("summary", () => summaryFn({ data: { setId: set.id, sourceKey: selectedSourceKey } }));[m
+[31m-    if (result) setSummary(result.summary);[m
+[32m+[m[32m    if (result) { setSummary(result.summary); setSummarySourceKey(sourceKey); setActiveSummarySection(0); setExpandedSummarySections([]); setCompletedSections([]); setShowAnswerKey(false); }[m
+   };[m
+   const ask = async (e: FormEvent) => {[m
+     e.preventDefault(); if (!question.trim()) return;[m
+[36m@@ -165,7 +194,22 @@[m [mexport function ReadingCompanion({ set }: { set: StudySet }) {[m
+         </div>[m
+       </>}[m
+     </div>[m
+[31m-    <div className="rounded-2xl bg-panel border border-line/70 p-5 space-y-3"><div className="flex items-center gap-2"><Sparkles className="size-5 text-cool2"/><h3 className="font-semibold">Study brief</h3></div><p className="text-sm text-soft">Start with the lecture material, then use the reading to explain difficult ideas, define unfamiliar terms, and identify what the reading adds or does not cover. Source references are included when available.</p><label className="block text-xs text-soft space-y-1">Use sources<select className={inputCls + " w-full sm:max-w-xl"} value={sourceKey} onChange={e => setSourceKey(e.target.value)}><option value="all">All connected sources</option>{sources.map(s => <option key={s.key} value={s.key}>{s.title}</option>)}</select></label><button className={btnPrimary} disabled={!!busy || !sources.length || sourcesQ.isError} onClick={() => void makeSummary()}>{busy === "summary" ? <Loader2 className="size-4 animate-spin"/> : <RefreshCw className="size-4"/>}{summary ? "Refresh lecture guide" : "Explain my lecture using the reading"}</button>{summary && <article className="reading-output border-t border-line/60 pt-5 text-sm leading-7"><div className="prose prose-invert prose-sm max-w-none prose-headings:normal-case prose-headings:font-display prose-headings:tracking-normal prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg prose-p:leading-7 prose-li:my-1 prose-strong:text-foreground prose-h2:mt-7 prose-h3:mt-5"><MarkdownContent>{summary}</MarkdownContent></div></article>}</div>[m
+[32m+[m[32m    <div className="rounded-2xl bg-panel border border-line/70 p-5 space-y-3"><div className="flex items-center gap-2"><Sparkles className="size-5 text-cool2"/><h3 className="font-semibold">Study brief</h3></div><p className="text-sm text-soft">Build an active study session, not just a summary: compare the sources, mark sections as reviewed, attempt practice questions before revealing the key, and turn the hardest concepts into flashcards.</p><label className="block text-xs text-soft space-y-1">Use sources<select className={inputCls + " w-full sm:max-w-xl"} value={sourceKey} onChange={e => setSourceKey(e.target.value)}><option value="all">All connected sources</option>{sources.map(s => <option key={s.key} value={s.key}>{s.title}</option>)}</select></label><button className={btnPrimary} disabled={!!busy || !sources.length || sourcesQ.isError} onClick={() => void makeSummary()}>{busy === "summary" ? <Loader2 className="size-4 animate-spin"/> : <RefreshCw className="size-4"/>}{summary ? "Refresh lecture guide" : "Explain my lecture using the reading"}</button>{summary && <section className="reading-output border-t border-line/60 pt-5 space-y-4" aria-label="Generated study brief">[m
+[32m+[m[32m      <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="eyebrow text-cool2">Your study workspace</p><h4 className="font-display text-xl mt-1">Study brief, section by section</h4><p className="text-xs text-soft mt-1">Jump to a topic, compare the sources, then use the practice questions to check what you remember.</p></div><button type="button" className={btnGhost} onClick={() => void copySummary()}>{copiedSummary ? <Check className="size-4"/> : <Copy className="size-4"/>}{copiedSummary ? "Copied" : "Copy brief"}</button></div>[m
+[32m+[m[32m      {summaryIsStale && <div role="status" className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-3 text-sm">You changed the selected sources after this brief was generated. Refresh the brief to compare the current selection.</div>}[m
+[32m+[m[32m      <div className="rounded-xl border border-line/70 p-4 space-y-2"><div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold">Study session progress</p><p className="text-xs text-soft">Mark a section reviewed when you can explain it without looking.</p></div><span className="text-sm font-semibold tabular-nums">{completedCount}/{summarySections.length}</span></div><div className="h-2 rounded-full bg-foreground/10 overflow-hidden"><div className="h-full rounded-full bg-mint transition-all" style={{width: `${summarySections.length ? completedCount / summarySections.length * 100 : 0}%`}} /></div><div className="flex flex-wrap gap-2"><button type="button" className={btnGhost} onClick={() => setCompletedSections(summarySections.map((_, i) => i))}>Mark all reviewed</button><button type="button" className={btnGhost} onClick={() => setCompletedSections([])}>Reset progress</button></div></div>[m
+[32m+[m[32m      {summarySections.length > 1 && <nav className="flex gap-2 overflow-x-auto pb-2" aria-label="Study brief sections">{summarySections.map((section, index) => <button type="button" key={`${section.title}-${index}`} onClick={() => { setActiveSummarySection(index); document.getElementById(`reading-summary-section-${index}`)?.scrollIntoView({ behavior: "smooth", block: "start" }); }} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition ${activeSummarySection === index ? "border-cool/50 bg-cool/15 text-cool2" : "border-line/70 text-soft hover:bg-foreground/5"}`}>{section.title}</button>)}</nav>}[m
+[32m+[m[32m      <div className="space-y-3">{summarySections.map((section, index) => {[m
+[32m+[m[32m        const collapsible = section.body.length > 900;[m
+[32m+[m[32m        const expanded = !collapsible || expandedSummarySections.includes(index) || activeSummarySection === index;[m
+[32m+[m[32m        return <section id={`reading-summary-section-${index}`} key={`${section.title}-${index}`} className={`scroll-mt-6 rounded-xl border ${activeSummarySection === index ? "border-cool/40 bg-cool/[0.035]" : "border-line/70 bg-foreground/[0.015]"} p-4 md:p-5 space-y-3`}>[m
+[32m+[m[32m          <div className="flex items-start justify-between gap-3"><div className="flex items-start gap-3 min-w-0"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-cool/10 text-cool2 text-sm font-bold">{index + 1}</span><div className="min-w-0"><h5 className="font-display text-lg leading-snug">{section.title}</h5><p className="text-xs text-soft mt-1">{index === 0 ? "Start here" : /clarif|compare|lecture adds|difference/i.test(section.title) ? "Connect and compare sources" : /question|practice|check understanding/i.test(section.title) ? "Test your recall" : /term|glossary/i.test(section.title) ? "Build your vocabulary" : /source|reference/i.test(section.title) ? "Trace claims to course material" : "Review this topic"}</p></div></div>{collapsible && <button type="button" className="p-1.5 rounded-md hover:bg-foreground/5 text-soft" aria-label={`${expanded ? "Collapse" : "Expand"} ${section.title}`} onClick={() => setExpandedSummarySections(old => expanded ? old.filter(n => n !== index) : [...old, index])}>{expanded ? <ChevronUp className="size-4"/> : <ChevronDown className="size-4"/>}</button>}</div>[m
+[32m+[m[32m          {expanded && <>{/answer key|answers/i.test(section.title) && <div className="mb-3"><button type="button" className={btnGhost} onClick={() => setShowAnswerKey(v => !v)}>{showAnswerKey ? "Hide answers" : "Reveal answer key"}</button></div>}{(!/answer key|answers/i.test(section.title) || showAnswerKey) ? <div className="prose prose-invert prose-sm max-w-none prose-headings:normal-case prose-headings:font-display prose-headings:tracking-normal prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg prose-p:leading-7 prose-li:my-1 prose-strong:text-foreground prose-h2:mt-5 prose-h3:mt-4"><MarkdownContent>{section.body}</MarkdownContent></div> : <p className="text-sm text-soft">Try the questions first, then reveal the answers to check your understanding.</p>}</>}[m
+[32m+[m[32m          {index === summarySections.length - 1 && /question|practice|check understanding/i.test(section.title) && <p className="rounded-lg bg-mint/10 border border-mint/20 px-3 py-2 text-xs text-soft">Study tip: answer before revealing or checking the key. For any missed question, return to the relevant section and explain the idea in your own words.</p>}[m
+[32m+[m[32m          <label className="flex items-center gap-2 border-t border-line/50 pt-3 text-sm cursor-pointer"><input type="checkbox" checked={completedSections.includes(index)} onChange={e => setCompletedSections(old => e.target.checked ? [...old, index] : old.filter(n => n !== index))} />I can explain this section without looking</label>[m
+[32m+[m[32m        </section>;[m
+[32m+[m[32m      })}</div>[m
+[32m+[m[32m    </section>}</div>[m
+     <div className="rounded-2xl bg-panel border border-line/70 p-5 space-y-3"><div className="flex items-center gap-2"><MessageCircle className="size-5 text-cool2"/><h3 className="font-semibold">Ask your course sources</h3></div><p className="text-sm text-soft">Ask why a lecture concept works, how the reading explains it, what the teacher added, or what to review. Momentum should distinguish source evidence from explanation and never invent page numbers.</p><form onSubmit={ask} className="space-y-2"><label className="block text-xs text-soft space-y-1">Answer from<select className={inputCls + " w-full"} value={sourceKey} onChange={e => setSourceKey(e.target.value)}><option value="all">All connected sources</option>{sources.map(s => <option key={s.key} value={s.key}>{s.title}</option>)}</select></label><div className="flex gap-2"><input value={question} onChange={e => setQuestion(e.target.value)} className={inputCls + " flex-1 min-w-0"} placeholder="e.g. Compare the reading with the lecture…"/><button disabled={!!busy || !question.trim() || !sources.length || sourcesQ.isError} className={btnPrimary}>{busy === "ask" ? <Loader2 className="size-4 animate-spin"/> : <Send className="size-4"/>}Ask</button></div></form>{answer && <article className="rounded-xl border border-line/70 bg-foreground/[0.025] p-4 md:p-5"><div className="prose prose-invert prose-sm max-w-none prose-headings:normal-case prose-headings:font-display prose-headings:tracking-normal prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg prose-p:leading-7 prose-li:my-1 prose-strong:text-foreground prose-h2:mt-6 prose-h3:mt-4"><MarkdownContent>{answer}</MarkdownContent></div></article>}</div>[m
+     <div className="rounded-2xl bg-panel border border-line/70 p-5 space-y-3"><div className="flex items-center gap-2"><Layers className="size-5 text-cool2"/><h3 className="font-semibold">Turn sources into flashcards</h3></div><p className="text-sm text-soft">Generate a preview from connected readings and lectures, select what to keep, and add it to this existing set. Duplicate questions are skipped, including duplicates within the preview.</p><button className={btnGhost} disabled={!!busy || !sources.length || sourcesQ.isError} onClick={() => void generate()}>{busy === "cards" ? <Loader2 className="size-4 animate-spin"/> : <Sparkles className="size-4"/>}Generate preview</button>{cards.length > 0 && <div className="space-y-3 border-t border-line/60 pt-4">{cards.map((c, i) => <label key={`${i}-${c.q}`} className="flex gap-3 rounded-lg border border-line/70 p-3 cursor-pointer"><input type="checkbox" checked={selected.includes(i)} onChange={e => setSelected(old => e.target.checked ? [...old, i] : old.filter(n => n !== i))} className="mt-1"/><span className="min-w-0"><span className="block text-sm font-semibold">{c.q}</span><span className="block text-sm text-soft mt-1">{c.a}</span>{c.t && <span className="block text-xs text-cool2 mt-1">{c.t}</span>}</span></label>)}<div className="flex flex-wrap items-center gap-2"><button className={btnPrimary} disabled={!!busy || !selected.length} onClick={() => void saveCards()}>{busy === "save" ? <Loader2 className="size-4 animate-spin"/> : <Layers className="size-4"/>}Add {selected.length} selected</button><button className={btnGhost} onClick={() => {setCards([]);setSelected([])}}>Discard preview</button></div></div>}</div>[m
+   </div>;[m
+[1mdiff --git a/src/lib/reading.functions.ts b/src/lib/reading.functions.ts[m
+[1mindex 219d80c..0f4f552 100644[m
+[1m--- a/src/lib/reading.functions.ts[m
+[1m+++ b/src/lib/reading.functions.ts[m
+[36m@@ -151,7 +151,7 @@[m [mexport const readingSummary = createServerFn({ method: "POST" })[m
+     const set = await loadSet(context.supabase, data.setId);[m
+     const sources = selectedSources(await collectSources(context.supabase, set), data.sourceKey);[m
+     const sourceText = sources.map((s, i) => `SOURCE ${i + 1}: ${s.title}\n${clip(s.text, 28000)}`).join("\n\n---\n\n");[m
+[31m-    const summary = await aiText(`You are Momentum's lecture-first Reading Companion. The Study Set's lecture/course material is the primary learning target; readings are supporting context that should make the lecture easier to understand, not replace it. Create a genuinely useful, readable study brief in clean Markdown using only the supplied course sources. Avoid giant paragraphs and repeated generic advice. Use concise paragraphs, bullets for lists, bold key terms, and examples only when supported by the sources. Keep the sections distinct and specific to the actual material. When both lecture and reading sources exist, explain the lecture concepts first, then use the reading to clarify them, identify reading concepts not addressed in the lecture, and flag any genuine discrepancies without assuming either source is automatically correct. Start with a title, then sections: Lecture concepts explained, How the reading clarifies them, Important terms, What the lecture adds, Questions to check understanding, and Source references. Cite source names and any explicit page/slide/section markers in the provided text. Never invent page numbers. If no page marker exists, cite the source name and a short identifying heading or say the extracted text has no page-level markers. Do not invent facts. Explicitly mark when sources do not provide enough information. Distinguish reading content from lecture content. ${ci(set)}`,[m
+[32m+[m[32m    const summary = await aiText(`You are Momentum's lecture-first Reading Companion. The Study Set's lecture/course material is the primary learning target; readings are supporting context that should make the lecture easier to understand, not replace it. Create a genuinely useful, actionable study workspace in clean Markdown using only the supplied course sources. This must feel like a guided learning tool, not a prose essay or wall of notes. Keep paragraphs to 2-4 sentences, use meaningful headings, bold key terms, and make each section useful for a specific student task. Prefer concise, information-dense explanations over repeating the same idea. Start with a concise title and a 2-3 sentence overview of the big idea. Then use these sections in this order: (1) Start here: 3-5 high-yield takeaways, each phrased as a complete, memorable claim; (2) Lecture concepts explained: group related ideas under short subheadings; explain what each means, how it connects to other concepts, and why it matters; use a causal chain or timeline only when supported by the sources; (3) Lecture vs. reading: when both source types exist, use a compact Markdown table with columns Topic, Lecture emphasis, Reading contribution, and Relationship (clarifies/adds/differs/not covered). Keep each cell concise; compare like with like; if one source type is missing, say so rather than implying a comparison was made; (4) Important terms: term — plain-language definition — why it matters; distinguish terms that are easy to confuse; (5) What the reading adds / what remains lecture-only: separate these clearly and only include supported items; (6) Common confusions: 2-4 likely mix-ups grounded in these sources, and how to tell the concepts apart; if no genuine confusions are supported, say so; (7) Check your understanding: 5-7 varied questions, with answers in a separate Answer key section so the student can try first. Include a mix of retrieval, explain-in-your-own-words, application to a source-supported example, and compare/connect questions when sources support it. Avoid trivia-only or trick questions; make distractors plausible but clearly incorrect from the sources; (8) A 10-minute study path with concrete steps using this brief (e.g. closed-book recall, check, retry missed ideas), not generic motivational advice; (9) Source references. Cite source names and explicit page/slide/section markers present in the supplied text. Never invent page numbers, quotations, details, or source support. If no page marker exists, cite the source name and a short identifying heading or say the extracted text has no page-level markers. Do not invent facts. Explicitly flag gaps and genuine discrepancies without assuming either source is automatically correct. Distinguish lecture claims from reading claims and label any necessary inference as an inference. ${ci(set)}`,[m
+       [{ role: "user", content: `STUDY SET: ${set.name} (${set.subject || "General"})\n\nSOURCES:\n${sourceText}` }]);[m
+     return { summary };[m
+   });[m
+[1mdiff --git a/src/lib/writing.functions.ts b/src/lib/writing.functions.ts[m
+[1mindex d9b0d36..264d617 100644[m
+[1m--- a/src/lib/writing.functions.ts[m
+[1m+++ b/src/lib/writing.functions.ts[m
+[36m@@ -67,9 +67,9 @@[m [mexport const assignmentStep = createServerFn({ method: "POST" })[m
+     const sb = context.supabase;[m
+     const { data: a, error } = await sb.from("assignments").select("*").eq("id", data.id).single();[m
+     if (error || !a) throw new Error("Assignment not found");[m
+[31m-    if (data.step !== "feedback" && !a.instructions.trim()) throw new Error("Add the assignment instructions first.");[m
+[32m+[m[32m    if (!a.instructions.trim()) throw new Error("Add the assignment instructions first.");[m
+     const mat = await setContext(sb, a.set_id);[m
+[31m-    const brief = `ASSIGNMENT INSTRUCTIONS:\n${clip(a.instructions || "(not provided yet; help with the context the student shares and ask for the prompt only when it is necessary)", 12000)}\n\nEXISTING SEPARATE RUBRIC FIELD (optional legacy field; also inspect the assignment instructions for rubric criteria):\n${clip(a.rubric || "(no separate rubric field; inspect the instructions for assessment criteria)", 8000)}\n\nSOURCE MATERIAL AND SCOPE LIMITS:\n${formatAssignmentSources(a.sources || "", 36000)}\n\nSTUDENT'S OWN IDEAS / NOTES:\n${clip(a.ideas || "(none yet)", 6000)}${mat.text}`;[m
+[32m+[m[32m    const brief = `ASSIGNMENT INSTRUCTIONS:\n${clip(a.instructions, 12000)}\n\nEXISTING SEPARATE RUBRIC FIELD (optional legacy field; also inspect the assignment instructions for rubric criteria):\n${clip(a.rubric || "(no separate rubric field; inspect the instructions for assessment criteria)", 8000)}\n\nSOURCE MATERIAL AND SCOPE LIMITS:\n${formatAssignmentSources(a.sources || "", 36000)}\n\nSTUDENT'S OWN IDEAS / NOTES:\n${clip(a.ideas || "(none yet)", 6000)}${mat.text}`;[m
+     const now = new Date().toISOString();[m
+ [m
+     if (data.step === "understand") {[m
+[36m@@ -178,41 +178,39 @@[m [mIf the brainstorm is empty, still help using the prompt and supplied material. R[m
+       if (saveError) throw new Error("Your outline was generated but could not be saved. Please try again.");[m
+       return { text: out };[m
+     }[m
+[31m-    // Open-ended assignment help: students can ask questions before or after drafting.[m
+[31m-    const q = (data.question ?? "").trim() || "Can you help me figure out the best next step for this assignment?";[m
+[31m-    const chat = (Array.isArray(a.chat) ? a.chat : [])[m
+[31m-      .filter((message: any) => message && (message.role === "user" || message.role === "assistant") && typeof message.content === "string")[m
+[31m-      .slice(-8) as { role: "user" | "assistant"; content: string }[];[m
+[32m+[m[32m    // feedback on the student's draft[m
+[32m+[m[32m    const q = (data.question ?? "").trim() || "How can I make this stronger?";[m
+[32m+[m[32m    if (!a.draft.trim()) throw new Error("Paste or write some of your draft first.");[m
+[32m+[m[32m    const chat = (Array.isArray(a.chat) ? a.chat : []) as {[m
+[32m+[m[32m      role: "user" | "assistant";[m
+[32m+[m[32m      content: string;[m
+[32m+[m[32m    }[];[m
+     const out = await aiText([m
+       `${TEACH}[m
+[31m-You are also the student's open-ended assignment tutor. Answer the student's actual question directly, even if they have not started a draft. They may ask about the prompt, concepts, terminology, planning, brainstorming, thesis ideas, structure, evidence, citations, research strategy, interpreting feedback, time management, or any other issue related to completing this assignment. Do not force every answer into draft feedback or a fixed template.[m
+[32m+[m[32mYou are the student's revision coach. Give feedback in a calm, specific, prioritized, easy-to-scan format. Do not rewrite the assignment or entire paragraphs. Preserve the student's voice and help them make their own revisions. Quote only short phrases so the student can find the relevant place. Distinguish actual requirement gaps from optional style suggestions, and never claim to know the teacher's grade.[m
+ [m
+[31m-Use the supplied assignment instructions, rubric, permitted sources, student notes, chosen argument, outline, brainstorm, and draft when relevant. If a question can be answered from the provided context, answer it clearly and practically. If assignment instructions are not provided, do not refuse to help: answer using the student's question and general knowledge, make clear that you have not seen the prompt, and ask them to share it only if needed for a precise answer. If it depends on missing information, say what is missing and still provide the help that is supported. Clearly distinguish facts from supplied materials, general knowledge, and suggestions. Never invent citations, page numbers, quotes, source claims, teacher requirements, or grading outcomes. Respect source restrictions. Explain difficult ideas in plain language, use examples when useful, and break complicated tasks into manageable steps. When asked to improve the student's own work, give specific guidance and brief illustrative phrases rather than silently replacing their voice or writing the whole assignment. If the student asks a broad question, offer a useful starting answer and one focused follow-up only if needed. Use readable Markdown with headings and lists where helpful; no tables, raw HTML, pipe-delimited layouts, or <br> tags. Keep the response proportional to the question.[m
+[32m+[m[32mUse this format:[m
+[32m+[m[32m## Quick Summary — one brief paragraph naming the current strongest element and the most important improvement.[m
+[32m+[m[32m## Keep Doing — 2–4 specific strengths and why they work.[m
+[32m+[m[32m## Fix First — rank the 3 highest-impact improvements. For each, identify the location/short phrase, explain the issue, why it matters for this assignment, and a concrete revision action.[m
+[32m+[m[32m## Check Against the Instructions — label each relevant requirement Met / Partly met / Missing / Cannot verify. If no official rubric is available, don't invent one.[m
+[32m+[m[32m## Evidence and Citations to Verify — flag claims or references that need checking; do not assert unsupported details as fact.[m
+[32m+[m[32m## Your Next 3 Revision Actions — short, ordered actions. If the student asks a specific question, answer it directly first, then use this structure as appropriate.[m
+[32m+[m[32mGive advice proportional to the draft's stage; do not criticize missing sections if the student says this is only an early fragment. Keep the feedback concise enough to act on, generally 400–700 words unless the draft/question needs less. ${mat.instr}[m
+ [m
+[31m-ASSIGNMENT CONTEXT:[m
+ ${brief}[m
+ [m
+[31m-STUDENT'S CHOSEN ARGUMENT / THESIS:[m
+[31m-${clip(a.chosen || "(not chosen yet)", 3000)}[m
+[32m+[m[32mTHESIS / CHOSEN ARGUMENT: ${a.chosen || "(not set)"}[m
+[32m+[m[32mOUTLINE:\n${clip(a.outline ?? "(none)", 5000)}[m
+ [m
+[31m-CURRENT DRAFT (may be empty or incomplete):[m
+[31m-${clip(a.draft || "(no draft provided yet)", 18000)}[m
+[31m-[m
+[31m-UNDERSTANDING GUIDE:[m
+[31m-${clip(a.understanding || "(not generated yet)", 4000)}[m
+[31m-[m
+[31m-BRAINSTORM:[m
+[31m-${clip(a.brainstorm || "(not generated yet)", 4000)}[m
+[31m-[m
+[31m-OUTLINE:[m
+[31m-${clip(a.outline || "(not generated yet)", 4000)}${mat.instr}`,[m
+[32m+[m[32mCURRENT DRAFT:\n${clip(a.draft, 25000)}`,[m
+       [...chat.slice(-8), { role: "user", content: q }],[m
+     );[m
+     const next = [...chat, { role: "user", content: q }, { role: "assistant", content: out }].slice([m
+       -30,[m
+     );[m
+     const { error: saveError } = await sb.from("assignments").update({ chat: next, updated_at: now }).eq("id", a.id);[m
+[31m-    if (saveError) throw new Error("Your answer was generated but could not be saved. Please try again.");[m
+[32m+[m[32m    if (saveError) throw new Error("Feedback was generated but could not be saved. Please try again.");[m
+     return { text: out };[m
+   });[m
+ [m
+[1mdiff --git a/src/routes/_authenticated/assignment.$id.tsx b/src/routes/_authenticated/assignment.$id.tsx[m
+[1mindex 756c5c3..fa88785 100644[m
+[1m--- a/src/routes/_authenticated/assignment.$id.tsx[m
+[1m+++ b/src/routes/_authenticated/assignment.$id.tsx[m
+[36m@@ -2,7 +2,7 @@[m [mimport { createFileRoute, Link } from "@tanstack/react-router";[m
+ import { MarkdownContent } from "@/components/MarkdownContent";[m
+ import { useQuery, useQueryClient } from "@tanstack/react-query";[m
+ import { useServerFn } from "@tanstack/react-start";[m
+[31m-import { useEffect, useRef, useState } from "react";[m
+[32m+[m[32mimport { useState } from "react";[m
+ import { ArrowLeft, BookOpen, CheckCircle2, Clock3, FileText, FileUp, Loader2, Send, ShieldCheck, Trash2 } from "lucide-react";[m
+ import { toast } from "sonner";[m
+ import { ocrFile } from "@/lib/study.functions";[m
+[36m@@ -24,7 +24,7 @@[m [mexport const Route = createFileRoute("/_authenticated/assignment/$id")({[m
+       {[m
+         name: "description",[m
+         content:[m
+[31m-          "Plan assignments step by step or ask Momentum for help with any assignment question.",[m
+[32m+[m[32m          "Work through your assignment step by step: understand it, brainstorm, outline and get draft feedback.",[m
+       },[m
+       { property: "og:title", content: "Assignment — Momentum" },[m
+       { property: "og:description", content: "Step-by-step assignment guidance." },[m
+[36m@@ -144,14 +144,9 @@[m [mfunction Editor({ row }: { row: Row }) {[m
+     (Array.isArray(row.chat) ? row.chat : []) as { role: string; content: string }[],[m
+   );[m
+   const [tab, setTab] = useState<"understanding" | "brainstorm" | "outline">("understanding");[m
+[31m-  const [workspaceView, setWorkspaceView] = useState<"guide" | "help">("guide");[m
+   const [busy, setBusy] = useState<string | null>(null);[m
+   const [error, setError] = useState<string | null>(null);[m
+   const [question, setQuestion] = useState("");[m
+[31m-  const chatEndRef = useRef<HTMLDivElement | null>(null);[m
+[31m-  useEffect(() => {[m
+[31m-    if (workspaceView === "help") chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });[m
+[31m-  }, [chat, workspaceView, busy]);[m
+   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((p) => ({ ...p, [k]: v }));[m
+   const sourceBundle = parseSourceBundle(f.sources);[m
+   const timeSuggestions = getAssignmentTimeSuggestions(f.instructions);[m
+[36m@@ -316,18 +311,6 @@[m [mfunction Editor({ row }: { row: Row }) {[m
+           <div className="rounded-xl bg-cool/5 border border-cool/15 p-3 text-xs text-soft flex gap-2"><ShieldCheck className="size-4 shrink-0 text-cool2" /><p>Only assignment instructions are needed to begin. Sources, your ideas and your draft are optional and can be added later. If your instructions contain a rubric, Momentum should identify it automatically; you don't need a separate rubric field.</p></div>[m
+         </section>[m
+         <section className="space-y-4 min-w-0">[m
+[31m-          <div className="rounded-2xl border border-line/70 bg-panel p-2">[m
+[31m-            <div role="tablist" aria-label="Assignment workspace" className="grid grid-cols-2 gap-2">[m
+[31m-              <button type="button" role="tab" id="assignment-tab-guide" aria-controls="assignment-panel-guide" aria-selected={workspaceView === "guide"} tabIndex={workspaceView === "guide" ? 0 : -1} onClick={() => setWorkspaceView("guide")} className={"rounded-xl px-4 py-3 text-sm font-semibold transition-colors " + (workspaceView === "guide" ? "bg-cool/15 text-cool2" : "text-soft hover:bg-foreground/5")}>[m
+[31m-                <span className="inline-flex items-center justify-center gap-2"><BookOpen className="size-4" /> Plan &amp; outline</span>[m
+[31m-              </button>[m
+[31m-              <button type="button" role="tab" id="assignment-tab-help" aria-controls="assignment-panel-help" aria-selected={workspaceView === "help"} tabIndex={workspaceView === "help" ? 0 : -1} onClick={() => setWorkspaceView("help")} className={"rounded-xl px-4 py-3 text-sm font-semibold transition-colors " + (workspaceView === "help" ? "bg-cool/15 text-cool2" : "text-soft hover:bg-foreground/5")}>[m
+[31m-                <span className="inline-flex items-center justify-center gap-2"><Send className="size-4" /> Ask for help {chat.length ? <span className="rounded-full bg-cool/15 px-1.5 py-0.5 text-[10px]">{Math.ceil(chat.length / 2)}</span> : null}</span>[m
+[31m-              </button>[m
+[31m-            </div>[m
+[31m-          </div>[m
+[31m-          {error && <ErrorBox msg={error} />}[m
+[31m-          {workspaceView === "guide" ? <div id="assignment-panel-guide" role="tabpanel" aria-labelledby="assignment-tab-guide"><>[m
+           <div className="rounded-2xl border border-line/70 bg-panel p-4 space-y-1">[m
+             <p className="eyebrow text-cool2">Your assignment journey</p>[m
+             <h2 className="font-display text-xl font-bold">One step at a time</h2>[m
+[36m@@ -356,6 +339,7 @@[m [mfunction Editor({ row }: { row: Row }) {[m
+               </article>[m
+             ))}[m
+           </div>[m
+[32m+[m[32m          {error && <ErrorBox msg={error} />}[m
+           <div className="rounded-2xl border border-line/70 bg-panel overflow-hidden">[m
+             <div className="border-b border-line/60 p-4 space-y-1">[m
+               <p className="eyebrow text-cool2">Your workspace</p>[m
+[36m@@ -389,15 +373,11 @@[m [mfunction Editor({ row }: { row: Row }) {[m
+             placeholder="Already have an argument? Add it here. If not, leave this blank and Momentum will help you explore a suitable direction in the outline."[m
+           />[m
+           <p className="text-xs text-soft -mt-2">You do not need to decide on your argument before starting. The outline can suggest a provisional direction based on your instructions and brainstorm; you can change it later.</p>[m
+[31m-          </></div> : <div id="assignment-panel-help" role="tabpanel" aria-labelledby="assignment-tab-help" className="rounded-2xl bg-panel border border-line/70 p-4 space-y-3">[m
+[31m-            <p className="eyebrow text-cool2">Assignment tutor</p>[m
+[31m-            <h3 className="font-display text-xl font-bold">What can I help you with?</h3>[m
+[31m-            <p className="text-sm text-soft">Ask in your own words about any part of this assignment: what the question means, course concepts, ideas, evidence, research, citations, structure, teacher feedback, or your draft. You can start here even before adding the instructions or writing anything; share context in your question when you can.</p>[m
+[31m-            {!chat.length && <div className="flex flex-wrap gap-2" aria-label="Example questions">[m
+[31m-              {["Explain what my assignment is asking", "Help me brainstorm possible ideas", "What should I do first?", "Explain this concept in simple terms"].map((prompt) => <button type="button" key={prompt} onClick={() => setQuestion(prompt)} className="rounded-full border border-line/70 px-3 py-2 text-xs text-soft hover:border-cool2/60 hover:text-foreground">{prompt}</button>)}[m
+[31m-            </div>}[m
+[31m-            <div className="max-h-[min(55vh,620px)] min-h-24 overflow-y-auto space-y-3 rounded-xl border border-line/60 p-3" aria-live="polite" aria-relevant="additions text">[m
+[31m-            {chat.length ? chat.map((m, i) => ([m
+[32m+[m[32m          <div className="rounded-2xl bg-panel border border-line/70 p-4 space-y-3">[m
+[32m+[m[32m            <p className="eyebrow text-cool2">4. Review and improve</p>[m
+[32m+[m[32m            <h3 className="font-semibold">Draft feedback</h3>[m
+[32m+[m[32m            <p className="text-sm text-soft">When you have a draft or even a partial section, ask for focused feedback. Momentum should point to specific places, prioritize the most important fixes, and give you actions to revise in your own words. You can upload or paste a draft in the materials panel; feedback is optional until you are ready.</p>[m
+[32m+[m[32m            {chat.map((m, i) => ([m
+               <div[m
+                 key={i}[m
+                 className={[m
+[36m@@ -407,31 +387,19 @@[m [mfunction Editor({ row }: { row: Row }) {[m
+               >[m
+                 <MarkdownContent>{m.content}</MarkdownContent>[m
+               </div>[m
+[31m-            )) : <p className="px-1 py-4 text-sm text-soft">Your conversation will appear here. Pick a starter question above or ask anything about the assignment.</p>}[m
+[31m-            {busy === "feedback" && <div className="flex items-center gap-2 rounded-lg bg-foreground/5 p-3 text-sm text-soft" role="status"><Loader2 className="size-4 animate-spin" /> Thinking through your question…</div>}[m
+[31m-            <div ref={chatEndRef} />[m
+[31m-            </div>[m
+[31m-            <form className="flex items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (!busy && question.trim()) void run("feedback"); }}>[m
+[31m-              <label className="min-w-0 flex-1 space-y-1">[m
+[31m-                <span className="text-xs font-medium text-soft">Your question</span>[m
+[31m-                <textarea[m
+[31m-                  value={question}[m
+[31m-                  onChange={(e) => setQuestion(e.target.value)}[m
+[31m-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!busy && question.trim()) void run("feedback"); } }}[m
+[31m-                  placeholder="Ask anything about this assignment… (Shift+Enter for a new line)"[m
+[31m-                  className={inputCls + " w-full min-h-20 resize-y"}[m
+[31m-                  rows={2}[m
+[31m-                  maxLength={3000}[m
+[31m-                  aria-describedby="assignment-question-hint"[m
+[31m-                />[m
+[31m-                <span id="assignment-question-hint" className="text-[11px] text-soft">Press Enter to send · Shift+Enter for a new line · {question.length}/3000</span>[m
+[31m-              </label>[m
+[32m+[m[32m            ))}[m
+[32m+[m[32m            <div className="flex gap-2">[m
+[32m+[m[32m              <input[m
+[32m+[m[32m                value={question}[m
+[32m+[m[32m                onChange={(e) => setQuestion(e.target.value)}[m
+[32m+[m[32m                placeholder="Ask about a specific section, argument, evidence, or requirement…"[m
+[32m+[m[32m                className={inputCls + " flex-1"}[m
+[32m+[m[32m              />[m
+               <button[m
+[31m-                type="submit"[m
+[31m-                aria-label="Ask for assignment help"[m
+[31m-                disabled={!!busy || !question.trim()}[m
+[32m+[m[32m                aria-label="Get draft feedback"[m
+[32m+[m[32m                onClick={() => run("feedback")}[m
+[32m+[m[32m                disabled={!!busy || !f.draft.trim()}[m
+                 className={btnPrimary}[m
+[31m-                title="Send question"[m
+               >[m
+                 {busy === "feedback" ? ([m
+                   <Loader2 className="size-4 animate-spin" />[m
+[36m@@ -439,8 +407,8 @@[m [mfunction Editor({ row }: { row: Row }) {[m
+                   <Send className="size-4" />[m
+                 )}[m
+               </button>[m
+[31m-            </form>[m
+[31m-          </div>}[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m          </div>[m
+         </section>[m
+       </div>[m
+     </main>[m
+[1mdiff --git a/ss b/ss[m
+[1mindex e69de29..4f9b0a9 100644[m
+[1m--- a/ss[m
+[1m+++ b/ss[m
+[36m@@ -0,0 +1,193 @@[m
+[32m+[m[32mwarning: in the working copy of 'ASSIGNMENT_HELPER_GUIDED_WORKSPACE_NOTES.md', LF will be replaced by CRLF the next time Git touches it[m
+[32m+[m[32mwarning: in the working copy of 'src/lib/writing.functions.ts', LF will be replaced by CRLF the next time Git touches it[m
+[32m+[m[32mwarning: in the working copy of 'src/routes/_authenticated/assignment.$id.tsx', LF will be replaced by CRLF the next time Git touches it[m
+[32m+[m[32m[1mdiff --git a/ASSIGNMENT_HELPER_GUIDED_WORKSPACE_NOTES.md b/ASSIGNMENT_HELPER_GUIDED_WORKSPACE_NOTES.md[m[m
+[32m+[m[32m[1mindex 02531ae..aecf482 100644[m[m
+[32m+[m[32m[1m--- a/ASSIGNMENT_HELPER_GUIDED_WORKSPACE_NOTES.md[m[m
+[32m+[m[32m[1m+++ b/ASSIGNMENT_HELPER_GUIDED_WORKSPACE_NOTES.md[m[m
+[32m+[m[32m[36m@@ -28,3 +28,12 @@[m[m
+[32m+[m[32m ## Verification for open-ended assignment help[m[m
+[32m+[m[32m [m[m
+[32m+[m[32m - Reviewed the modified server and UI code paths. A full TypeScript build and automated test suite have not been run in this environment because project dependencies are not installed.[m[m
+[32m+[m[32m[32m+[m[m
+[32m+[m[32m[32m+[m[32m## Final usability and accessibility pass[m[m
+[32m+[m[32m[32m+[m[m
+[32m+[m[32m[32m+[m[32m- The Ask for help tab now includes starter-question chips, speaker labels, a visible response-loading state, and automatic scrolling to the newest conversation content.[m[m
+[32m+[m[32m[32m+[m[32m- The question composer is a multiline textarea with a 3,000-character limit, a live character count, Enter-to-send, and Shift+Enter for a new line.[m[m
+[32m+[m[32m[32m+[m[32m- Added tab/tabpanel relationships and selected-tab keyboard focus semantics for clearer assistive-technology navigation.[m[m
+[32m+[m[32m[32m+[m[32m- The tutor can now answer a question even when assignment instructions have not been entered yet. It is instructed to be transparent that it has not seen the prompt and still help from the student's question rather than refusing outright.[m[m
+[32m+[m[32m[32m+[m[32m- Persisted chat history is filtered to valid user/assistant messages before it is passed back to the model.[m[m
+[32m+[m[32m[32m+[m[32m- Validation: TypeScript transpilation/syntax checks passed for all 161 `.ts`/`.tsx` source files. A full typecheck, production build, lint, automated test suite, and live model round-trip remain unverified because dependencies could not be installed in this environment.[m[m
+[32m+[m[32m[1mdiff --git a/src/lib/writing.functions.ts b/src/lib/writing.functions.ts[m[m
+[32m+[m[32m[1mindex 62696a0..d9b0d36 100644[m[m
+[32m+[m[32m[1m--- a/src/lib/writing.functions.ts[m[m
+[32m+[m[32m[1m+++ b/src/lib/writing.functions.ts[m[m
+[32m+[m[32m[36m@@ -67,9 +67,9 @@[m [mexport const assignmentStep = createServerFn({ method: "POST" })[m[m
+[32m+[m[32m     const sb = context.supabase;[m[m
+[32m+[m[32m     const { data: a, error } = await sb.from("assignments").select("*").eq("id", data.id).single();[m[m
+[32m+[m[32m     if (error || !a) throw new Error("Assignment not found");[m[m
+[32m+[m[32m[31m-    if (!a.instructions.trim()) throw new Error("Add the assignment instructions first.");[m[m
+[32m+[m[32m[32m+[m[32m    if (data.step !== "feedback" && !a.instructions.trim()) throw new Error("Add the assignment instructions first.");[m[m
+[32m+[m[32m     const mat = await setContext(sb, a.set_id);[m[m
+[32m+[m[32m[31m-    const brief = `ASSIGNMENT INSTRUCTIONS:\n${clip(a.instructions, 12000)}\n\nEXISTING SEPARATE RUBRIC FIELD (optional legacy field; also inspect the assignment instructions for rubric criteria):\n${clip(a.rubric || "(no separate rubric field; inspect the instructions for assessment criteria)", 8000)}\n\nSOURCE MATERIAL AND SCOPE LIMITS:\n${formatAssignmentSources(a.sources || "", 36000)}\n\nSTUDENT'S OWN IDEAS / NOTES:\n${clip(a.ideas || "(none yet)", 6000)}${mat.text}`;[m[m
+[32m+[m[32m[32m+[m[32m    const brief = `ASSIGNMENT INSTRUCTIONS:\n${clip(a.instructions || "(not provided yet; help with the context the student shares and ask for the prompt only when it is necessary)", 12000)}\n\nEXISTING SEPARATE RUBRIC FIELD (optional legacy field; also inspect the assignment instructions for rubric criteria):\n${clip(a.rubric || "(no separate rubric field; inspect the instructions for assessment criteria)", 8000)}\n\nSOURCE MATERIAL AND SCOPE LIMITS:\n${formatAssignmentSources(a.sources || "", 36000)}\n\nSTUDENT'S OWN IDEAS / NOTES:\n${clip(a.ideas || "(none yet)", 6000)}${mat.text}`;[m[m
+[32m+[m[32m     const now = new Date().toISOString();[m[m
+[32m+[m[32m [m[m
+[32m+[m[32m     if (data.step === "understand") {[m[m
+[32m+[m[32m[36m@@ -180,15 +180,14 @@[m [mIf the brainstorm is empty, still help using the prompt and supplied material. R[m[m
+[32m+[m[32m     }[m[m
+[32m+[m[32m     // Open-ended assignment help: students can ask questions before or after drafting.[m[m
+[32m+[m[32m     const q = (data.question ?? "").trim() || "Can you help me figure out the best next step for this assignment?";[m[m
+[32m+[m[32m[31m-    const chat = (Array.isArray(a.chat) ? a.chat : []) as {[m[m
+[32m+[m[32m[31m-      role: "user" | "assistant";[m[m
+[32m+[m[32m[31m-      content: string;[m[m
+[32m+[m[32m[31m-    }[];[m[m
+[32m+[m[32m[32m+[m[32m    const chat = (Array.isArray(a.chat) ? a.chat : [])[m[m
+[32m+[m[32m[32m+[m[32m      .filter((message: any) => message && (message.role === "user" || message.role === "assistant") && typeof message.content === "string")[m[m
+[32m+[m[32m[32m+[m[32m      .slice(-8) as { role: "user" | "assistant"; content: string }[];[m[m
+[32m+[m[32m     const out = await aiText([m[m
+[32m+[m[32m       `${TEACH}[m[m
+[32m+[m[32m You are also the student's open-ended assignment tutor. Answer the student's actual question directly, even if they have not started a draft. They may ask about the prompt, concepts, terminology, planning, brainstorming, thesis ideas, structure, evidence, citations, research strategy, interpreting feedback, time management, or any other issue related to completing this assignment. Do not force every answer into draft feedback or a fixed template.[m[m
+[32m+[m[32m [m[m
+[32m+[m[32m[31m-Use the supplied assignment instructions, rubric, permitted sources, student notes, chosen argument, outline, brainstorm, and draft when relevant. If a question can be answered from the provided context, answer it clearly and practically. If it depends on missing information, say what is missing and still provide the help that is supported. Clearly distinguish facts from supplied materials, general knowledge, and suggestions. Never invent citations, page numbers, quotes, source claims, teacher requirements, or grading outcomes. Respect source restrictions. Explain difficult ideas in plain language, use examples when useful, and break complicated tasks into manageable steps. When asked to improve the student's own work, give specific guidance and brief illustrative phrases rather than silently replacing their voice or writing the whole assignment. If the student asks a broad question, offer a useful starting answer and one focused follow-up only if needed. Use readable Markdown with headings and lists where helpful; no tables, raw HTML, pipe-delimited layouts, or <br> tags. Keep the response proportional to the question.[m[m
+[32m+[m[32m[32m+[m[32mUse the supplied assignment instructions, rubric, permitted sources, student notes, chosen argument, outline, brainstorm, and draft when relevant. If a question can be answered from the provided context, answer it clearly and practically. If assignment instructions are not provided, do not refuse to help: answer using the student's question and general knowledge, make clear that you have not seen the prompt, and ask them to share it only if needed for a precise answer. If it depends on missing information, say what is missing and still provide the help that is supported. Clearly distinguish facts from supplied materials, general knowledge, and suggestions. Never invent citations, page numbers, quotes, source claims, teacher requirements, or grading outcomes. Respect source restrictions. Explain difficult ideas in plain language, use examples when useful, and break complicated tasks into manageable steps. When asked to improve the student's own work, give specific guidance and brief illustrative phrases rather than silently replacing their voice or writing the whole assignment. If the student asks a broad question, offer a useful starting answer and one focused follow-up only if needed. Use readable Markdown with headings and lists where helpful; no tables, raw HTML, pipe-delimited layouts, or <br> tags. Keep the response proportional to the question.[m[m
+[32m+[m[32m [m[m
+[32m+[m[32m ASSIGNMENT CONTEXT:[m[m
+[32m+[m[32m ${brief}[m[m
+[32m+[m[32m[1mdiff --git a/src/routes/_authenticated/assignment.$id.tsx b/src/routes/_authenticated/assignment.$id.tsx[m[m
+[32m+[m[32m[1mindex 5ad06f7..756c5c3 100644[m[m
+[32m+[m[32m[1m--- a/src/routes/_authenticated/assignment.$id.tsx[m[m
+[32m+[m[32m[1m+++ b/src/routes/_authenticated/assignment.$id.tsx[m[m
+[32m+[m[32m[36m@@ -2,7 +2,7 @@[m [mimport { createFileRoute, Link } from "@tanstack/react-router";[m[m
+[32m+[m[32m import { MarkdownContent } from "@/components/MarkdownContent";[m[m
+[32m+[m[32m import { useQuery, useQueryClient } from "@tanstack/react-query";[m[m
+[32m+[m[32m import { useServerFn } from "@tanstack/react-start";[m[m
+[32m+[m[32m[31m-import { useState } from "react";[m[m
+[32m+[m[32m[32m+[m[32mimport { useEffect, useRef, useState } from "react";[m[m
+[32m+[m[32m import { ArrowLeft, BookOpen, CheckCircle2, Clock3, FileText, FileUp, Loader2, Send, ShieldCheck, Trash2 } from "lucide-react";[m[m
+[32m+[m[32m import { toast } from "sonner";[m[m
+[32m+[m[32m import { ocrFile } from "@/lib/study.functions";[m[m
+[32m+[m[32m[36m@@ -24,7 +24,7 @@[m [mexport const Route = createFileRoute("/_authenticated/assignment/$id")({[m[m
+[32m+[m[32m       {[m[m
+[32m+[m[32m         name: "description",[m[m
+[32m+[m[32m         content:[m[m
+[32m+[m[32m[31m-          "Work through your assignment step by step: understand it, brainstorm, outline and get draft feedback.",[m[m
+[32m+[m[32m[32m+[m[32m          "Plan assignments step by step or ask Momentum for help with any assignment question.",[m[m
+[32m+[m[32m       },[m[m
+[32m+[m[32m       { property: "og:title", content: "Assignment — Momentum" },[m[m
+[32m+[m[32m       { property: "og:description", content: "Step-by-step assignment guidance." },[m[m
+[32m+[m[32m[36m@@ -144,9 +144,14 @@[m [mfunction Editor({ row }: { row: Row }) {[m[m
+[32m+[m[32m     (Array.isArray(row.chat) ? row.chat : []) as { role: string; content: string }[],[m[m
+[32m+[m[32m   );[m[m
+[32m+[m[32m   const [tab, setTab] = useState<"understanding" | "brainstorm" | "outline">("understanding");[m[m
+[32m+[m[32m[32m+[m[32m  const [workspaceView, setWorkspaceView] = useState<"guide" | "help">("guide");[m[m
+[32m+[m[32m   const [busy, setBusy] = useState<string | null>(null);[m[m
+[32m+[m[32m   const [error, setError] = useState<string | null>(null);[m[m
+[32m+[m[32m   const [question, setQuestion] = useState("");[m[m
+[32m+[m[32m[32m+[m[32m  const chatEndRef = useRef<HTMLDivElement | null>(null);[m[m
+[32m+[m[32m[32m+[m[32m  useEffect(() => {[m[m
+[32m+[m[32m[32m+[m[32m    if (workspaceView === "help") chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });[m[m
+[32m+[m[32m[32m+[m[32m  }, [chat, workspaceView, busy]);[m[m
+[32m+[m[32m   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((p) => ({ ...p, [k]: v }));[m[m
+[32m+[m[32m   const sourceBundle = parseSourceBundle(f.sources);[m[m
+[32m+[m[32m   const timeSuggestions = getAssignmentTimeSuggestions(f.instructions);[m[m
+[32m+[m[32m[36m@@ -311,6 +316,18 @@[m [mfunction Editor({ row }: { row: Row }) {[m[m
+[32m+[m[32m           <div className="rounded-xl bg-cool/5 border border-cool/15 p-3 text-xs text-soft flex gap-2"><ShieldCheck className="size-4 shrink-0 text-cool2" /><p>Only assignment instructions are needed to begin. Sources, your ideas and your draft are optional and can be added later. If your instructions contain a rubric, Momentum should identify it automatically; you don't need a separate rubric field.</p></div>[m[m
+[32m+[m[32m         </section>[m[m
+[32m+[m[32m         <section className="space-y-4 min-w-0">[m[m
+[32m+[m[32m[32m+[m[32m          <div className="rounded-2xl border border-line/70 bg-panel p-2">[m[m
+[32m+[m[32m[32m+[m[32m            <div role="tablist" aria-label="Assignment workspace" className="grid grid-cols-2 gap-2">[m[m
+[32m+[m[32m[32m+[m[32m              <button type="button" role="tab" id="assignment-tab-guide" aria-controls="assignment-panel-guide" aria-selected={workspaceView === "guide"} tabIndex={workspaceView === "guide" ? 0 : -1} onClick={() => setWorkspaceView("guide")} className={"rounded-xl px-4 py-3 text-sm font-semibold transition-colors " + (workspaceView === "guide" ? "bg-cool/15 text-cool2" : "text-soft hover:bg-foreground/5")}>[m[m
+[32m+[m[32m[32m+[m[32m                <span className="inline-flex items-center justify-center gap-2"><BookOpen className="size-4" /> Plan &amp; outline</span>[m[m
+[32m+[m[32m[32m+[m[32m              </button>[m[m
+[32m+[m[32m[32m+[m[32m              <button type="button" role="tab" id="assignment-tab-help" aria-controls="assignment-panel-help" aria-selected={workspaceView === "help"} tabIndex={workspaceView === "help" ? 0 : -1} onClick={() => setWorkspaceView("help")} className={"rounded-xl px-4 py-3 text-sm font-semibold transition-colors " + (workspaceView === "help" ? "bg-cool/15 text-cool2" : "text-soft hover:bg-foreground/5")}>[m[m
+[32m+[m[32m[32m+[m[32m                <span className="inline-flex items-center justify-center gap-2"><Send className="size-4" /> Ask for help {chat.length ? <span className="rounded-full bg-cool/15 px-1.5 py-0.5 text-[10px]">{Math.ceil(chat.length / 2)}</span> : null}</span>[m[m
+[32m+[m[32m[32m+[m[32m              </button>[m[m
+[32m+[m[32m[32m+[m[32m            </div>[m[m
+[32m+[m[32m[32m+[m[32m          </div>[m[m
+[32m+[m[32m[32m+[m[32m          {error && <ErrorBox msg={error} />}[m[m
+[32m+[m[32m[32m+[m[32m          {workspaceView === "guide" ? <div id="assignment-panel-guide" role="tabpanel" aria-labelledby="assignment-tab-guide"><>[m[m
+[32m+[m[32m           <div className="rounded-2xl border border-line/70 bg-panel p-4 space-y-1">[m[m
+[32m+[m[32m             <p className="eyebrow text-cool2">Your assignment journey</p>[m[m
+[32m+[m[32m             <h2 className="font-display text-xl font-bold">One step at a time</h2>[m[m
+[32m+[m[32m[36m@@ -339,7 +356,6 @@[m [mfunction Editor({ row }: { row: Row }) {[m[m
+[32m+[m[32m               </article>[m[m
+[32m+[m[32m             ))}[m[m
+[32m+[m[32m           </div>[m[m
+[32m+[m[32m[31m-          {error && <ErrorBox msg={error} />}[m[m
+[32m+[m[32m           <div className="rounded-2xl border border-line/70 bg-panel overflow-hidden">[m[m
+[32m+[m[32m             <div className="border-b border-line/60 p-4 space-y-1">[m[m
+[32m+[m[32m               <p className="eyebrow text-cool2">Your workspace</p>[m[m
+[32m+[m[32m[36m@@ -373,11 +389,15 @@[m [mfunction Editor({ row }: { row: Row }) {[m[m
+[32m+[m[32m             placeholder="Already have an argument? Add it here. If not, leave this blank and Momentum will help you explore a suitable direction in the outline."[m[m
+[32m+[m[32m           />[m[m
+[32m+[m[32m           <p className="text-xs text-soft -mt-2">You do not need to decide on your argument before starting. The outline can suggest a provisional direction based on your instructions and brainstorm; you can change it later.</p>[m[m
+[32m+[m[32m[31m-          <div className="rounded-2xl bg-panel border border-line/70 p-4 space-y-3">[m[m
+[32m+[m[32m[31m-            <p className="eyebrow text-cool2">4. Review and improve</p>[m[m
+[32m+[m[32m[31m-            <h3 className="font-semibold">Ask for assignment help</h3>[m[m
+[32m+[m[32m[31m-            <p className="text-sm text-soft">Ask Momentum anything about this assignment—even before you start writing. Get help understanding the prompt, explaining a concept, choosing an approach, planning, finding what evidence you need, citations, structure, or improving a draft. Your assignment instructions and uploaded materials help shape the answer.</p>[m[m
+[32m+[m[32m[31m-            {chat.map((m, i) => ([m[m
+[32m+[m[32m[32m+[m[32m          </></div> : <div id="assignment-panel-help" role="tabpanel" aria-labelledby="assignment-tab-help" className="rounded-2xl bg-panel border border-line/70 p-4 space-y-3">[m[m
+[32m+[m[32m[32m+[m[32m            <p className="eyebrow text-cool2">Assignment tutor</p>[m[m
+[32m+[m[32m[32m+[m[32m            <h3 className="font-display text-xl font-bold">What can I help you with?</h3>[m[m
+[32m+[m[32m[32m+[m[32m            <p className="text-sm text-soft">Ask in your own words about any part of this assignment: what the question means, course concepts, ideas, evidence, research, citations, structure, teacher feedback, or your draft. You can start here even before adding the instructions or writing anything; share context in your question when you can.</p>[m[m
+[32m+[m[32m[32m+[m[32m            {!chat.length && <div className="flex flex-wrap gap-2" aria-label="Example questions">[m[m
+[32m+[m[32m[32m+[m[32m              {["Explain what my assignment is asking", "Help me brainstorm possible ideas", "What should I do first?", "Explain this concept in simple terms"].map((prompt) => <button type="button" key={prompt} onClick={() => setQuestion(prompt)} className="rounded-full border border-line/70 px-3 py-2 text-xs text-soft hover:border-cool2/60 hover:text-foreground">{prompt}</button>)}[m[m
+[32m+[m[32m[32m+[m[32m            </div>}[m[m
+[32m+[m[32m[32m+[m[32m            <div className="max-h-[min(55vh,620px)] min-h-24 overflow-y-auto space-y-3 rounded-xl border border-line/60 p-3" aria-live="polite" aria-relevant="additions text">[m[m
+[32m+[m[32m[32m+[m[32m            {chat.length ? chat.map((m, i) => ([m[m
+[32m+[m[32m               <div[m[m
+[32m+[m[32m                 key={i}[m[m
+[32m+[m[32m                 className={[m[m
+[32m+[m[32m[36m@@ -387,19 +407,31 @@[m [mfunction Editor({ row }: { row: Row }) {[m[m
+[32m+[m[32m               >[m[m
+[32m+[m[32m                 <MarkdownContent>{m.content}</MarkdownContent>[m[m
+[32m+[m[32m               </div>[m[m
+[32m+[m[32m[31m-            ))}[m[m
+[32m+[m[32m[31m-            <div className="flex gap-2">[m[m
+[32m+[m[32m[31m-              <input[m[m
+[32m+[m[32m[31m-                value={question}[m[m
+[32m+[m[32m[31m-                onChange={(e) => setQuestion(e.target.value)}[m[m
+[32m+[m[32m[31m-                placeholder="What do you need help with? Ask anything about this assignment…"[m[m
+[32m+[m[32m[31m-                className={inputCls + " flex-1"}[m[m
+[32m+[m[32m[31m-              />[m[m
+[32m+[m[32m[32m+[m[32m            )) : <p className="px-1 py-4 text-sm text-soft">Your conversation will appear here. Pick a starter question above or ask anything about the assignment.</p>}[m[m
+[32m+[m[32m[32m+[m[32m            {busy === "feedback" && <div className="flex items-center gap-2 rounded-lg bg-foreground/5 p-3 text-sm text-soft" role="status"><Loader2 className="size-4 animate-spin" /> Thinking through your question…</div>}[m[m
+[32m+[m[32m[32m+[m[32m            <div ref={chatEndRef} />[m[m
+[32m+[m[32m[32m+[m[32m            </div>[m[m
+[32m+[m[32m[32m+[m[32m            <form className="flex items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (!busy && question.trim()) void run("feedback"); }}>[m[m
+[32m+[m[32m[32m+[m[32m              <label className="min-w-0 flex-1 space-y-1">[m[m
+[32m+[m[32m[32m+[m[32m                <span className="text-xs font-medium text-soft">Your question</span>[m[m
+[32m+[m[32m[32m+[m[32m                <textarea[m[m
+[32m+[m[32m[32m+[m[32m                  value={question}[m[m
+[32m+[m[32m[32m+[m[32m                  onChange={(e) => setQuestion(e.target.value)}[m[m
+[32m+[m[32m[32m+[m[32m                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!busy && question.trim()) void run("feedback"); } }}[m[m
+[32m+[m[32m[32m+[m[32m                  placeholder="Ask anything about this assignment… (Shift+Enter for a new line)"[m[m
+[32m+[m[32m[32m+[m[32m                  className={inputCls + " w-full min-h-20 resize-y"}[m[m
+[32m+[m[32m[32m+[m[32m                  rows={2}[m[m
+[32m+[m[32m[32m+[m[32m                  maxLength={3000}[m[m
+[32m+[m[32m[32m+[m[32m                  aria-describedby="assignment-question-hint"[m[m
+[32m+[m[32m[32m+[m[32m                />[m[m
+[32m+[m[32m[32m+[m[32m                <span id="assignment-question-hint" className="text-[11px] text-soft">Press Enter to send · Shift+Enter for a new line · {question.length}/3000</span>[m[m
+[32m+[m[32m[32m+[m[32m              </label>[m[m
+[32m+[m[32m               <button[m[m
+[32m+[m[32m[32m+[m[32m                type="submit"[m[m
+[32m+[m[32m                 aria-label="Ask for assignment help"[m[m
+[32m+[m[32m[31m-                onClick={() => run("feedback")}[m[m
+[32m+[m[32m                 disabled={!!busy || !question.trim()}[m[m
+[32m+[m[32m                 className={btnPrimary}[m[m
+[32m+[m[32m[32m+[m[32m                title="Send question"[m[m
+[32m+[m[32m               >[m[m
+[32m+[m[32m                 {busy === "feedback" ? ([m[m
+[32m+[m[32m                   <Loader2 className="size-4 animate-spin" />[m[m
+[32m+[m[32m[36m@@ -407,8 +439,8 @@[m [mfunction Editor({ row }: { row: Row }) {[m[m
+[32m+[m[32m                   <Send className="size-4" />[m[m
+[32m+[m[32m                 )}[m[m
+[32m+[m[32m               </button>[m[m
+[32m+[m[32m[31m-            </div>[m[m
+[32m+[m[32m[31m-          </div>[m[m
+[32m+[m[32m[32m+[m[32m            </form>[m[m
+[32m+[m[32m[32m+[m[32m          </div>}[m[m
+[32m+[m[32m         </section>[m[m
+[32m+[m[32m       </div>[m[m
+[32m+[m[32m     </main>[m[m
