@@ -74,3 +74,7 @@ Momentum includes a **Turnitin Submission** preparation screen at `/turnitin`. S
 ## Similarity pre-check source discovery
 
 The Turnitin practice page can compare against documents the student adds locally. It also offers an explicit-consent source-discovery pass that searches accessible public-web pages through Brave Search (when `BRAVE_SEARCH_API_KEY` is configured) and scholarly metadata/abstracts through Crossref. Add `BRAVE_SEARCH_API_KEY` as a **server-side** Vercel environment variable and redeploy; do not use a `VITE_` prefix. See `TURNITIN_SIMILARITY_PRECHECK_NOTES.md` for the implementation, privacy notice, and limitations. The result is a local similarity pre-check, never an official or predicted Turnitin score.
+
+### Cross-device progression storage
+
+Apply `supabase/migrations/20261016000000_user_progression.sql` in the Supabase SQL Editor (or through your normal migration workflow) before deploying this version. It creates the RLS-protected `public.user_progression` row per authenticated user. On authenticated app startup, Momentum merges the device's existing XP/streak/freeze/reward snapshot with the account row and saves progression changes to Supabase. Existing browser-local progress is retained and merged on first sync; review the first signed-in device's values before treating it as canonical.

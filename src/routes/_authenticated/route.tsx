@@ -9,6 +9,7 @@ import { useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { AppShell } from "@/components/AppShell";
+import { initializeProgressionSync } from "@/lib/progression-sync";
 
 export const Route = createFileRoute("/_authenticated")({
   ssr: false,
@@ -53,6 +54,15 @@ function Gate() {
   useEffect(() => {
     if (!loading && !user) navigate({ to: "/auth" });
   }, [loading, user, navigate]);
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    let cleanup: (() => void) | undefined;
+    void initializeProgressionSync(user.id).then((stop) => {
+      if (cancelled) stop(); else cleanup = stop;
+    });
+    return () => { cancelled = true; cleanup?.(); };
+  }, [user?.id]);
   if (loading || !user) {
     return (
       <div className="min-h-screen grid place-items-center bg-ink">

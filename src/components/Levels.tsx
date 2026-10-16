@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Shield, Sparkles, Trophy, Award, Crown, Compass, Info, CheckCircle2 } from "lucide-react";
+import { Shield, Sparkles, Trophy, Award, Crown, Compass, Info, CheckCircle2, Flame, BookOpen, Hammer, ScrollText, Swords, Target, Brain, KeyRound, Gem, WandSparkles, Castle, Feather, Orbit, Atom, Star, Medal, Zap, Lightbulb, Eye, Mountain, Rocket, Infinity, Sun, Moon, Diamond, Hexagon, CircleDot, BrainCircuit, GraduationCap, Telescope, Sword, ShieldCheck, Crown as RoyalCrown, Flower2, Waves, Snowflake, Bolt, Orbit as Galaxy, Fingerprint, Dna, Network, Cpu, BadgeCheck, Flag } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 export interface RpgRank {
@@ -57,7 +57,7 @@ const TIER_COLORS = [
   ["from-purple-500 to-indigo-900", "bg-purple-950/40", "border-purple-500/50", "text-purple-300"],
   ["from-amber-400 to-yellow-600", "bg-amber-950/50", "border-amber-400/60", "text-amber-300"],
 ];
-const TIER_ICONS = [Shield, Compass, Shield, Award, Sparkles, Award, Trophy, Sparkles, Crown, Award, Compass, Trophy, Sparkles, Shield, Award, Compass, Trophy, Crown, Sparkles, Crown];
+const TIER_ICONS = [Shield, Flame, BookOpen, Hammer, ScrollText, Swords, Target, Brain, KeyRound, Gem, WandSparkles, Castle, Feather, Orbit, Atom, Star, Medal, Zap, Lightbulb, Eye, Mountain, Rocket, Infinity, Sun, Moon, Diamond, Hexagon, CircleDot, BrainCircuit, GraduationCap, Telescope, Sword, ShieldCheck, RoyalCrown, Flower2, Waves, Snowflake, Bolt, Galaxy, Fingerprint, Dna, Network, Cpu, BadgeCheck, Flag, Trophy, Crown, Sparkles, Award, Compass];
 export const RPG_RANKS: RpgRank[] = TIER_NAMES.map((title, i) => ({
   tier: i + 1, title, subtitle: TIER_SUBTITLES[i]!, minPct: i * 2,
   maxPct: i === 49 ? 100 : i * 2 + 1,
@@ -221,9 +221,9 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
                     <div
-                      className={`size-7 rounded-md bg-gradient-to-br ${r.color} flex items-center justify-center text-white shrink-0`}
+                      className={`relative size-9 rounded-xl bg-gradient-to-br ${r.color} flex items-center justify-center text-white shrink-0 shadow-lg ring-1 ring-white/25 before:absolute before:inset-[3px] before:rounded-[9px] before:border before:border-white/25 after:absolute after:-inset-1 after:rounded-xl after:border after:border-white/10`}
                     >
-                      <RankIcon className="size-3.5" />
+                      <RankIcon className="relative z-10 size-[18px] drop-shadow-md" strokeWidth={2.25} />
                     </div>
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">

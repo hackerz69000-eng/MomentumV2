@@ -3,6 +3,12 @@ export type FreezeData = { available: number; used: number };
 const XP_KEY = "momentum_xp_v1";
 const FREEZE_KEY = "momentum_streak_freezes_v1";
 
+export function setXpFromCloud(xp: number) {
+  const safe = Number.isFinite(xp) ? Math.max(0, Math.floor(xp)) : 0;
+  try { localStorage.setItem(XP_KEY, String(safe)); window.dispatchEvent(new Event("momentum_xp_updated")); } catch {}
+  return safe;
+}
+
 export function getXp() {
   try {
     const value = Number(localStorage.getItem(XP_KEY) ?? 0);
