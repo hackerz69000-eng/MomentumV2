@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { CheckCircle2, Circle, Plus, Trash2, Target, Sparkles, BookOpen } from "lucide-react";
 import { toast } from "sonner";
-import { recordStudySessionCompletion } from "./DailyStreak";
 
 export interface StudyGoal {
   id: string;
@@ -94,9 +93,9 @@ export function DailyStudyGoals({ className = "", onGoalCompleted }: DailyStudyG
       if (g.id === id) {
         const nextState = !g.completed;
         if (nextState) {
-          toast.success(`Goal completed: "${g.topic}"! Streak updated! 🔥`);
-          // Record completion to update streak & session history
-          recordStudySessionCompletion(g.targetMinutes || 15, `${g.chapter ? g.chapter + ": " : ""}${g.topic}`);
+          toast.success(`Goal marked complete: "${g.topic}".`);
+          // A checked goal is a planning signal, not proof of studying. Real
+          // completed study activities update the streak through their own flows.
           if (onGoalCompleted) onGoalCompleted(g);
         }
         return {

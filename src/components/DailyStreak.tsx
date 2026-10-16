@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { Flame, CheckCircle2, Award, Calendar } from "lucide-react";
-import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { getFreezes, useFreeze } from "@/lib/gamification";
 
@@ -15,17 +14,34 @@ function localDayKey(date = new Date()): string {
 
 export const STREAK_EVENT = "momentum_streak_updated";
 
+const ACTIVITY_TASKS = [
+  { id: "quiz", label: "Finish a quiz" },
+  { id: "flashcards", label: "Review flashcards" },
+  { id: "recall", label: "Complete active recall" },
+  { id: "focus", label: "Finish a focus timer" },
+] as const;
+
+function getDailyTasks(day: string) {
+  // Rotate the required pair by local calendar day so the challenge changes daily.
+  const epochDay = Math.floor(new Date(`${day}T12:00:00`).getTime() / 86400000);
+  const pairs = [["quiz", "flashcards"], ["recall", "focus"], ["quiz", "recall"], ["flashcards", "focus"], ["quiz", "focus"], ["flashcards", "recall"]];
+  const pair = pairs[((epochDay % pairs.length) + pairs.length) % pairs.length]!;
+  return ACTIVITY_TASKS.filter((task) => pair.includes(task.id));
+}
+
 export interface StreakData {
   currentStreak: number;
   longestStreak: number;
   lastStudyDate: string | null; // YYYY-MM-DD
   totalSessionsCompleted: number;
   totalStudyMinutes: number;
+  todayActivities?: string[];
+  activityDate?: string | null;
 }
 
 export function getStreakData(): StreakData {
   if (typeof window === "undefined") {
-    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
+    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0, todayActivities: [] };
   }
   try {
     const raw = localStorage.getItem(STREAK_KEY);
@@ -36,6 +52,8 @@ export function getStreakData(): StreakData {
         lastStudyDate: null,
         totalSessionsCompleted: 0,
         totalStudyMinutes: 0,
+        todayActivities: [],
+        activityDate: null,
       };
       localStorage.setItem(STREAK_KEY, JSON.stringify(initial));
       return initial;
@@ -47,28 +65,42 @@ export function getStreakData(): StreakData {
       lastStudyDate: parsed.lastStudyDate ?? null,
       totalSessionsCompleted: parsed.totalSessionsCompleted ?? 0,
       totalStudyMinutes: parsed.totalStudyMinutes ?? 0,
+      todayActivities: parsed.todayActivities ?? [],
+      activityDate: parsed.activityDate ?? parsed.lastStudyDate ?? null,
     };
   } catch {
-    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
+    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0, todayActivities: [] };
   }
 }
 
 export function recordStudySessionCompletion(durationMinutes = 15, topicName = "Study Session"): StreakData {
   if (typeof window === "undefined") {
-    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0 };
+    return { currentStreak: 0, longestStreak: 0, lastStudyDate: null, totalSessionsCompleted: 0, totalStudyMinutes: 0, todayActivities: [] };
   }
 
   const prev = getStreakData();
   const today = localDayKey();
+  const normalizedTopic = topicName.toLowerCase();
+  const activity = normalizedTopic.includes("quiz") || normalizedTopic.includes("exam") ? "quiz"
+    : normalizedTopic.includes("flashcard") ? "flashcards"
+    : normalizedTopic.includes("recall") ? "recall"
+    : normalizedTopic.includes("pomodoro") || normalizedTopic.includes("focus") || normalizedTopic.includes("study session") ? "focus"
+    : "practice";
+  const todayActivities = prev.activityDate === today ? [...new Set([...(prev.todayActivities ?? []), activity])] : [activity];
+  // A streak day requires two distinct meaningful study modes. Logging a session is not enough.
+  const requiredTasks = getDailyTasks(today).map((task) => task.id);
+  const goalMet = requiredTasks.every((task) => todayActivities.includes(task));
 
   let nextStreak = prev.currentStreak;
   let isNewDay = false;
 
-  if (!prev.lastStudyDate) {
+  if (!goalMet) {
+    nextStreak = prev.currentStreak;
+  } else if (!prev.lastStudyDate) {
     nextStreak = 1;
     isNewDay = true;
   } else if (prev.lastStudyDate === today) {
-    // Already studied today; streak holds, just increase session count
+    // Already earned today; never increase the streak more than once per calendar day
     nextStreak = Math.max(1, prev.currentStreak);
   } else {
     // Check difference in days
@@ -95,7 +127,9 @@ export function recordStudySessionCompletion(durationMinutes = 15, topicName = "
   const updated: StreakData = {
     currentStreak: nextStreak,
     longestStreak: Math.max(nextStreak, prev.longestStreak),
-    lastStudyDate: today,
+    lastStudyDate: goalMet ? today : prev.lastStudyDate,
+    todayActivities,
+    activityDate: today,
     totalSessionsCompleted: prev.totalSessionsCompleted + 1,
     totalStudyMinutes: (prev.totalStudyMinutes ?? 0) + Math.max(0, durationMinutes),
   };
@@ -153,11 +187,6 @@ export function DailyStreak({ className = "" }: DailyStreakProps) {
   const today = localDayKey();
   const studiedToday = mounted && data.lastStudyDate === today;
 
-  const handleManualComplete = () => {
-    const res = recordStudySessionCompletion(20, "Daily Review Focus");
-    setData(res);
-    toast.success(`Study session logged! Your streak is now ${res.currentStreak} day${res.currentStreak === 1 ? "" : "s"}! 🔥`);
-  };
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -198,7 +227,7 @@ export function DailyStreak({ className = "" }: DailyStreakProps) {
             Daily Study Streak
           </DialogTitle>
           <p className="text-xs text-soft mt-1">
-            Consistent daily practice builds compound retention. Complete any study session to extend your streak!
+            Consistent daily practice builds compound retention. Complete two different study activities each day (for example, a quiz plus flashcards). Manual session logs and button clicks never count.
           </p>
         </DialogHeader>
 
@@ -230,14 +259,17 @@ export function DailyStreak({ className = "" }: DailyStreakProps) {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={handleManualComplete}
-            className="w-full mt-5 font-semibold text-xs bg-brand text-ink py-2.5 rounded-xl flex items-center justify-center gap-2 hover:opacity-95 transition-opacity"
-          >
-            <CheckCircle2 className="size-4" />
-            Complete Study Session (+1 Streak)
-          </button>
+          <div className="mt-5 rounded-xl border border-line bg-foreground/5 p-3 text-left">
+            <p className="text-xs font-semibold">Today's study tasks</p>
+            <p className="text-xs text-soft mt-1">Complete two different activity types to earn today's streak credit.</p>
+            <div className="grid grid-cols-2 gap-2 mt-3">
+              {getDailyTasks(today).map((task) => {
+                const done = (data.todayActivities ?? []).includes(task.id);
+                return <div key={task.id} className={`rounded-lg border p-2 text-xs ${done ? "border-emerald-500/40 bg-emerald-500/10" : "border-line bg-panel"}`}><span className="flex items-center gap-1.5">{done ? <CheckCircle2 className="size-3.5 text-mint" /> : <Calendar className="size-3.5 text-soft" />}{task.label}</span></div>;
+              })}
+            </div>
+            <p className="text-[11px] text-soft mt-3">{getDailyTasks(today).every((task) => (data.todayActivities ?? []).includes(task.id)) ? "Daily goal complete — streak credit earned." : `${getDailyTasks(today).filter((task) => (data.todayActivities ?? []).includes(task.id)).length}/2 required tasks completed.`}</p>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

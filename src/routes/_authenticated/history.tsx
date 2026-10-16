@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { Loader2, Search, ArrowUpRight, Filter } from "lucide-react";
+import { useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { dayKey } from "@/lib/activity";
 
@@ -43,6 +44,7 @@ type Item = {
   total: number | null;
   seconds: number | null;
   correct?: number;
+  meta?: unknown;
 };
 
 const LABEL: Record<string, string> = {
@@ -111,13 +113,15 @@ function group(rows: Row[]): Item[] {
       score: r.score,
       total: r.kind === "recall" ? (r.total ?? 1) : r.total,
       seconds: r.duration_seconds,
+      meta: r.meta,
     });
   }
   return out.reverse();
 }
 
 function HistoryPage() {
-  const since = new Date(Date.now() - 31 * 86400000).toISOString();
+  const [searchText, setSearchText] = useState("");
+  const [kindFilter, setKindFilter] = useState("all");
   const q = useQuery({
     queryKey: ["activity", "history"],
     queryFn: async () => {
@@ -126,7 +130,6 @@ function HistoryPage() {
           supabase
             .from("study_activity")
             .select("id, kind, count, created_at, set_id, score, total, duration_seconds, meta")
-            .gte("created_at", since)
             .order("created_at", { ascending: false })
             .limit(3000),
           supabase.from("study_sets").select("id, name"),
@@ -148,13 +151,20 @@ function HistoryPage() {
   });
   const today = dayKey(new Date().toISOString());
   const yesterday = dayKey(new Date(Date.now() - 86400000).toISOString());
+  const filteredItems = (q.data?.items ?? []).filter((it) => {
+    const name = it.setId ? q.data?.names.get(it.setId) ?? "" : "";
+    const matchesText = `${LABEL[it.kind] ?? it.kind} ${name}`.toLowerCase().includes(searchText.trim().toLowerCase());
+    const matchesKind = kindFilter === "all" || (kindFilter === "study" ? ["guide", "session", "lecture", "audio", "mistake"].includes(it.kind) : kindFilter === "practice" ? ["quiz", "adaptive", "exam", "comprehensive", "recall", "flashcard"].includes(it.kind) : it.kind === kindFilter);
+    return matchesText && matchesKind;
+  });
   const buckets: [string, Item[]][] = [
     ["Today", []],
     ["Yesterday", []],
     ["Previous 7 days", []],
     ["Previous 30 days", []],
+    ["Earlier", []],
   ];
-  for (const it of q.data?.items ?? []) {
+  for (const it of filteredItems) {
     const d = dayKey(it.at);
     const age = (Date.parse(today) - Date.parse(d)) / 86400000;
     (d === today
@@ -163,7 +173,9 @@ function HistoryPage() {
         ? buckets[1]
         : age <= 7
           ? buckets[2]
-          : buckets[3])![1].push(it);
+          : age <= 30
+            ? buckets[3]
+            : buckets[4])![1].push(it);
   }
 
   return (
@@ -171,13 +183,35 @@ function HistoryPage() {
       <header className="sticky top-0 z-20 px-5 md:px-8 py-5 bg-ink/60 backdrop-blur-xl border-b border-line/60">
         <h1 className="font-display text-2xl md:text-3xl uppercase tracking-wide">Study History</h1>
         <p className="text-sm text-soft">
-          Your last 30 days. Click an item to go back to that study set.
+          Your recorded study work across available dates. Search it, filter it, and reopen the relevant tool or study set.
         </p>
       </header>
       <div className="p-5 md:p-8 max-w-3xl space-y-6">
+        <div className="grid sm:grid-cols-[1fr_200px] gap-3">
+          <label className="flex items-center gap-2 rounded-xl bg-panel border border-line px-3 py-2.5">
+            <Search className="size-4 text-soft shrink-0" />
+            <input value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="Search past study work or set names…" className="min-w-0 w-full bg-transparent text-sm outline-none" />
+          </label>
+          <label className="flex items-center gap-2 rounded-xl bg-panel border border-line px-3 py-2.5">
+            <Filter className="size-4 text-soft shrink-0" />
+            <select value={kindFilter} onChange={(e) => setKindFilter(e.target.value)} className="w-full bg-transparent text-sm outline-none text-foreground">
+              <option value="all">All activity</option>
+              <option value="study">Study tools & sessions</option>
+              <option value="practice">Practice & testing</option>
+              <option value="flashcard">Flashcards</option>
+              <option value="guide">Study guides</option>
+              <option value="lecture">Lectures</option>
+              <option value="audio">Audio study</option>
+              <option value="mistake">Mistake Bank</option>
+            </select>
+          </label>
+        </div>
         {q.isLoading && <Loader2 className="size-6 animate-spin text-cool2" />}
         {q.data && q.data.items.length === 0 && (
-          <p className="text-sm text-soft">No study activity in the last 30 days yet.</p>
+          <p className="text-sm text-soft">No saved activity found yet. Completed work will appear here when the activity is recorded.</p>
+        )}
+        {q.data && q.data.items.length > 0 && filteredItems.length === 0 && (
+          <p className="text-sm text-soft">No past work matches that search or filter.</p>
         )}
         {buckets
           .filter(([, items]) => items.length)
@@ -213,6 +247,7 @@ function HistoryPage() {
                           ? `${it.score}/${it.total} · ${Math.round(((it.score ?? 0) / it.total) * 100)}%`
                           : ""}
                       </span>
+                      {(it.setId && name) || it.kind === "comprehensive" ? <span className="text-[11px] font-semibold text-cool2 inline-flex items-center gap-1 shrink-0">Reopen <ArrowUpRight className="size-3" /></span> : null}
                     </div>
                   );
                   return (
@@ -229,11 +264,9 @@ function HistoryPage() {
                         <Link
                           to="/exam"
                           search={
-                            ((it as { meta?: { sets?: string[] } }).meta?.sets?.length
+                            ((it.meta as { sets?: string[] } | null)?.sets?.length
                               ? {
-                                  include: (it as { meta?: { sets?: string[] } }).meta!.sets!.join(
-                                    ",",
-                                  ),
+                                  include: (it.meta as { sets: string[] }).sets.join(","),
                                 }
                               : {}) as never
                           }

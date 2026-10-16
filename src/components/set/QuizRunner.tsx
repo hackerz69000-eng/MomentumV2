@@ -274,7 +274,7 @@ export function QuizRunner({
     }
     const mins = Math.max(5, Math.round(duration / 60) || 10);
     recordStudySessionCompletion(mins, set?.name ? `Quiz: ${set.name}` : "Study Quiz");
-    toast.success("Quiz completed! Study session recorded & Daily Streak updated! 🔥");
+    toast.success("Quiz completed! Study session recorded. Finish today’s second required task to earn streak credit.");
 
     if (kind === "quiz" && set?.id) {
       try {

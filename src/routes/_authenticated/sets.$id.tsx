@@ -211,7 +211,7 @@ function SetPage() {
             </h1>
           </div>
           <div className="flex items-center gap-2 mt-4 shrink-0">
-            <Levels percentage={stats.readiness} />
+            <Levels percentage={stats.readiness} scope="set" />
             <DailyStreak />
             <span className="eyebrow text-cool2 hidden sm:inline-block">{set.subject || "General"}</span>
           </div>

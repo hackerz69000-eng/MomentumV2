@@ -107,7 +107,7 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
     // If reached end of cards, log completed study session
     if (i + 1 >= ids.length) {
       recordStudySessionCompletion(15, `Flashcards (${cards.length} cards)`);
-      toast.success("Completed flashcard study session! Daily streak updated! 🔥");
+      toast.success("Flashcard review completed. Finish today’s other required task to earn streak credit.");
     }
 
     try {

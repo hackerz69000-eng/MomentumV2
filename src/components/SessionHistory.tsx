@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { History, Clock, BookOpen, Sparkles, Plus, Calendar, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
-import { recordStudySessionCompletion } from "./DailyStreak";
 
 export interface StudySessionRecord {
   id: string;
@@ -99,12 +98,9 @@ export function SessionHistory({ className = "" }: SessionHistoryProps) {
       type: logType,
     });
 
-    // Also update daily streak
-    recordStudySessionCompletion(mins, logTopic.trim());
-
     setLogTopic("");
     setShowLogModal(false);
-    toast.success(`Logged ${mins}m focus session! Daily streak updated! 🔥`);
+    toast.success(`Logged ${mins}m focus session. Manual entries do not count toward streaks.`);
   };
 
   const formatTimestamp = (iso: string) => {

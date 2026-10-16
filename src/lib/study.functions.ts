@@ -370,12 +370,33 @@ ${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat these recently asked que
   const guidanceForReview = data.questionGuidance?.trim()
     ? `\nTEST EXPECTATIONS FROM THE STUDENT — preserve these requested question-style preferences when reviewing/fixing questions, as long as they remain supported by the material:\n${data.questionGuidance.trim().slice(0, 2000)}`
     : "";
-  const questions = await validateQuestions(
+  let questions = await validateQuestions(
     set.material_text,
     draft,
     `${guidanceForReview}${ci(set)}`,
   );
-  return questions.slice(0, data.count);
+  // Validation can discard weak/unsupported drafts. Top up instead of silently
+  // returning fewer questions than the count the student explicitly selected.
+  for (let attempt = 0; questions.length < data.count && attempt < 2; attempt++) {
+    const missing = data.count - questions.length;
+    const extraText = await aiText(
+      `Generate exactly ${missing} additional quiz questions from the material. Return ONLY the same JSON schema: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"...","explanation":"...","topic":"..."}]}. Allowed types: ${typeDesc}. Difficulty: ${data.difficulty}. Do not repeat or paraphrase any existing question listed below. Only use the source material. ${QUALITY_RULES}${ci(set)}`,
+      [{ role: "user", content: `MATERIAL:
+${clip(set.material_text, maxChars)}
+
+ALREADY GENERATED — DO NOT REPEAT:
+${questions.map((q) => q.question).join("\n")}` }],
+    );
+    const extraDraft = parseQuestions(extraText).filter((q) => !avoidSet.has(norm(q.question)) && !questions.some((old) => norm(old.question) === norm(q.question)));
+    if (!extraDraft.length) break;
+    const extraValid = await validateQuestions(set.material_text, extraDraft, `${guidanceForReview}${ci(set)}`);
+    const seenQuestions = new Set(questions.map((q) => norm(q.question)));
+    questions = [...questions, ...extraValid.filter((q) => !seenQuestions.has(norm(q.question)))].slice(0, data.count);
+  }
+  if (questions.length !== data.count) {
+    throw new Error(`I could verify only ${questions.length} of the ${data.count} requested questions from these materials. Add more course content or try again; Momentum won't silently shorten your quiz.`);
+  }
+  return questions;
 }
 
 export const generateQuiz = createServerFn({ method: "POST" })
@@ -451,7 +472,7 @@ export const generateComprehensive = createServerFn({ method: "POST" })
       }),
     );
     const questions = results.flat();
-    if (!questions.length) throw new Error("Could not generate questions. Please try again.");
+    if (questions.length !== data.count) throw new Error(`Momentum could generate ${questions.length} of ${data.count} requested questions across these sets. Try again or select fewer source sets with more material.`);
     return { questions };
   });
 

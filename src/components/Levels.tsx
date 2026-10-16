@@ -22,65 +22,65 @@ export const RPG_RANKS: RpgRank[] = [
     title: "Novice",
     subtitle: "Initiate of Knowledge",
     minPct: 0,
-    maxPct: 15,
+    maxPct: 19,
     color: "from-amber-700 to-amber-900",
     badgeBg: "bg-amber-950/40",
     borderColor: "border-amber-700/50",
     textColor: "text-amber-400",
     icon: Shield,
-    description: "Taking the first foundational steps into new subject materials.",
+    description: "Beginning mastery; consistent evidence of recall is still needed.",
   },
   {
     tier: 2,
     title: "Apprentice",
     subtitle: "Active Learner",
-    minPct: 16,
-    maxPct: 35,
+    minPct: 20,
+    maxPct: 39,
     color: "from-slate-500 to-cyan-600",
     badgeBg: "bg-cyan-950/40",
     borderColor: "border-cyan-700/50",
     textColor: "text-cyan-300",
     icon: Compass,
-    description: "Developing consistent study momentum and grasping key definitions.",
+    description: "Building reliable recall across multiple concepts and practice sessions.",
   },
   {
     tier: 3,
     title: "Adept",
     subtitle: "Applied Thinker",
-    minPct: 36,
-    maxPct: 55,
+    minPct: 40,
+    maxPct: 59,
     color: "from-emerald-600 to-teal-700",
     badgeBg: "bg-emerald-950/40",
     borderColor: "border-emerald-600/50",
     textColor: "text-emerald-300",
     icon: Award,
-    description: "Solid conceptual retention, regular flashcard recall, and steady practice.",
+    description: "Demonstrating applied understanding across a broad set of concepts.",
   },
   {
     tier: 4,
     title: "Scholar",
     subtitle: "High Comprehension",
-    minPct: 56,
-    maxPct: 75,
+    minPct: 60,
+    maxPct: 74,
     color: "from-blue-600 to-indigo-700",
     badgeBg: "bg-indigo-950/40",
     borderColor: "border-indigo-500/50",
     textColor: "text-indigo-300",
     icon: Sparkles,
-    description: "Deep understanding across multi-topic materials with high quiz accuracy.",
+    description: "Sustained understanding, strong quiz results, and broad retention.",
   },
   {
     tier: 5,
     title: "Sage",
     subtitle: "Analytical Master",
-    minPct: 76,
+    minPct: 75,
     maxPct: 89,
     color: "from-purple-600 to-violet-800",
     badgeBg: "bg-violet-950/40",
     borderColor: "border-violet-500/50",
     textColor: "text-violet-300",
     icon: Trophy,
-    description: "Venerable recall speed, near-flawless card mastery, and analytical sharpness.",
+    description: "Very strong retention with consistently high performance across topics.",
   },
   {
     tier: 6,
@@ -93,16 +93,17 @@ export const RPG_RANKS: RpgRank[] = [
     borderColor: "border-amber-400/60",
     textColor: "text-amber-300",
     icon: Crown,
-    description: "Peak subject mastery. Ready to ace comprehensive exams effortlessly.",
+    description: "Exceptional demonstrated mastery across practice and recall.",
   },
 ];
 
 interface LevelsProps {
   percentage: number;
   className?: string;
+  scope?: "overall" | "set";
 }
 
-export function Levels({ percentage, className = "" }: LevelsProps) {
+export function Levels({ percentage, className = "", scope = "overall" }: LevelsProps) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const clampedPct = Math.max(0, Math.min(100, Math.round(percentage)));
 
@@ -132,7 +133,7 @@ export function Levels({ percentage, className = "" }: LevelsProps) {
         <button
           type="button"
           className={`group inline-flex items-center gap-2.5 px-3 py-1.5 rounded-xl border ${currentRank.borderColor} ${currentRank.badgeBg} hover:scale-[1.02] active:scale-[0.98] transition-all text-left shadow-sm ${className}`}
-          title="Click to view RPG Level Rank Ladder"
+          title={`Click to view ${scope === "overall" ? "overall" : "this set's"} mastery rank ladder`}
         >
           <div
             className={`size-8 rounded-lg bg-gradient-to-br ${currentRank.color} flex items-center justify-center text-white shadow-md shrink-0`}
@@ -173,7 +174,7 @@ export function Levels({ percentage, className = "" }: LevelsProps) {
             RPG Academic Ranks
           </DialogTitle>
           <p className="text-xs text-soft mt-1">
-            Your level dynamically increases as you master flashcards and score higher on study quizzes.
+            Ranks use one shared mastery scale. Higher tiers require stronger demonstrated recall and quiz performance.
           </p>
         </DialogHeader>
 
