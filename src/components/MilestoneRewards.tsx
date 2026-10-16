@@ -6,7 +6,10 @@ import { getStreakData, STREAK_EVENT } from "./DailyStreak";
 const REWARDS_KEY = "momentum_rewards_theme";
 export const REWARDS_EVENT = "momentum_rewards_updated";
 
-type ThemeId = "default" | "aurora" | "sunset" | "forest";
+type ThemeId =
+  | "default" | "aurora" | "sunset" | "forest" | "ocean" | "lavender" | "rose" | "ember"
+  | "midnight" | "arctic" | "candy" | "monochrome" | "desert" | "nebula" | "jade" | "gold"
+  | "coral" | "glacier" | "orchid" | "cosmic";
 
 type Reward = {
   id: string;
@@ -18,23 +21,38 @@ type Reward = {
   theme?: ThemeId;
 };
 
-const REWARDS: Reward[] = [
-  { id: "streak-3", name: "Spark", description: "3-day study streak", icon: "🔥", type: "streak", threshold: 3 },
-  { id: "hours-5", name: "Focused", description: "5 total study hours", icon: "⏱️", type: "hours", threshold: 5 },
-  { id: "streak-7", name: "Momentum", description: "7-day study streak", icon: "⚡", type: "streak", threshold: 7, theme: "aurora" },
-  { id: "hours-10", name: "Deep Work", description: "10 total study hours", icon: "🧠", type: "hours", threshold: 10 },
-  { id: "streak-14", name: "Unstoppable", description: "14-day study streak", icon: "🏆", type: "streak", threshold: 14, theme: "sunset" },
-  { id: "hours-25", name: "Scholar", description: "25 total study hours", icon: "📚", type: "hours", threshold: 25 },
-  { id: "streak-30", name: "Legend", description: "30-day study streak", icon: "👑", type: "streak", threshold: 30, theme: "forest" },
-  { id: "hours-50", name: "Mastery", description: "50 total study hours", icon: "💎", type: "hours", threshold: 50 },
+const milestoneNames = [
+  "First Spark", "Getting Started", "Three-Day Flame", "Focused Mind", "Momentum Builder",
+  "One Week Strong", "Steady Learner", "Deep Focus", "Habit Former", "Ten-Hour Scholar",
+  "Curious Mind", "Consistency Keeper", "Two-Week Champion", "Knowledge Seeker", "Study Strategist",
+  "Quarter-Century", "Routine Master", "Persistent Thinker", "Thirty-Day Legend", "Deep Work Adept",
+  "Bright Mind", "Learning Machine", "Forty-Hour Focus", "Skill Builder", "Half-Century Scholar",
+  "Unshakable Habit", "Sharpener", "Streak Guardian", "Dedicated Scholar", "Sixty-Hour Sage",
+  "Peak Performer", "Relentless Learner", "Streak Virtuoso", "Master of Practice", "Eighty-Hour Expert",
+  "Insight Seeker", "Disciplined Mind", "Study Titan", "Century of Focus", "Knowledge Architect",
+  "Learning Luminary", "Unstoppable Force", "Habit Icon", "Mastery Pursuit", "Study Champion",
+  "Elite Scholar", "Legendary Focus", "Grand Strategist", "Mythic Learner", "Momentum Grandmaster",
 ];
+const milestoneIcons = ["✨", "📘", "🔥", "🎯", "⚡", "🗓️", "🧩", "🧠", "🌱", "📚", "🔎", "🛡️", "🏆", "💡", "🧭", "⏳", "🔁", "💭", "👑", "🎓", "🌟", "🤖", "⌛", "🛠️", "💎", "🔒", "✏️", "🦉", "📖", "🧙", "🚀", "♾️", "🎼", "🏅", "🌋", "🔭", "🧘", "🐉", "💯", "🏛️", "☀️", "🦾", "🏵️", "🗝️", "🥇", "🌠", "🦁", "♟️", "🌌", "👑"];
+const themeIds: ThemeId[] = ["default", "aurora", "sunset", "forest", "ocean", "lavender", "rose", "ember", "midnight", "arctic", "candy", "monochrome", "desert", "nebula", "jade", "gold", "coral", "glacier", "orchid", "cosmic"];
+const themeNames = ["Momentum", "Aurora", "Sunset", "Forest", "Ocean", "Lavender", "Rose", "Ember", "Midnight", "Arctic", "Candy", "Monochrome", "Desert", "Nebula", "Jade", "Gold", "Coral", "Glacier", "Orchid", "Cosmic"];
+const themeDescriptions = ["The original Momentum look", "Northern-light teal", "Warm sunset glow", "Deep woodland green", "Calm deep-blue waters", "Soft violet focus", "Blush-pink accents", "Warm ember orange", "Night-sky blue", "Cool icy tones", "Playful pastel pink", "Minimal grayscale", "Warm sand and clay", "Space-inspired purple", "Rich jade green", "Premium golden accents", "Bright tropical coral", "Glacial blue-white", "Orchid purple", "Cosmic indigo"];
+const THEMES: { id: ThemeId; name: string; description: string }[] = themeIds.map((id, i) => ({ id, name: themeNames[i], description: themeDescriptions[i] }));
 
-const THEMES: { id: ThemeId; name: string; description: string }[] = [
-  { id: "default", name: "Momentum", description: "The original Momentum look" },
-  { id: "aurora", name: "Aurora", description: "Cool blue-green focus theme" },
-  { id: "sunset", name: "Sunset", description: "Warm evening study theme" },
-  { id: "forest", name: "Forest", description: "Deep green long-session theme" },
-];
+// Fifty milestones alternate between longest streak and accumulated study time.
+// Every milestone from #3 onward also unlocks one of the twenty cosmetic themes at spaced intervals.
+const REWARDS: Reward[] = milestoneNames.map((name, i) => {
+  const number = i + 1;
+  const type = i % 2 === 0 ? "streak" : "hours";
+  const threshold = type === "streak" ? Math.max(1, Math.ceil(number / 2) * 3) : Math.ceil(number / 2) * 5;
+  const theme = number === 1 ? undefined : (number % 2 === 0 && number / 2 <= 19 ? themeIds[number / 2] : undefined);
+  return {
+    id: `milestone-${number}`,
+    name,
+    description: type === "streak" ? `${threshold}-day longest study streak` : `${threshold} total study hours`,
+    icon: milestoneIcons[i], type, threshold, theme,
+  };
+});
 
 function unlocked(reward: Reward, streak: ReturnType<typeof getStreakData>) {
   return reward.type === "streak" ? streak.longestStreak >= reward.threshold : (streak.totalStudyMinutes ?? 0) >= reward.threshold * 60;
@@ -97,7 +115,7 @@ export function MilestoneRewards({ className = "" }: { className?: string }) {
         <Sparkles className="size-4 text-amber-300 shrink-0" />
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
         {REWARDS.map((reward) => {
           const isUnlocked = unlocked(reward, streak);
           return (
@@ -119,7 +137,7 @@ export function MilestoneRewards({ className = "" }: { className?: string }) {
           <Palette className="size-3.5 text-cool2" />
           <p className="text-xs font-semibold">Cosmetic theme</p>
         </div>
-        <div className="grid sm:grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
           {THEMES.map((t) => {
             const canUse = availableThemes.some((x) => x.id === t.id);
             return (
