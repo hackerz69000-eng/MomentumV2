@@ -55,6 +55,8 @@ export function ActiveRecall({
   const hintFn = useServerFn(recallHint);
   const [count, setCount] = useState(preset?.count ?? 10);
   const [qs, setQs] = useState<RecallQuestion[] | null>(null);
+  const [draftReady, setDraftReady] = useState(false);
+  const draftKey = `momentum:recall-draft:v1:${user?.id ?? "guest"}:${setId}:${lectureId ?? ""}`;
   const [i, setI] = useState(0);
   const [answer, setAnswer] = useState("");
   const [hint, setHint] = useState<string | null>(null);
@@ -68,6 +70,35 @@ export function ActiveRecall({
   const [error, setError] = useState<string | null>(null);
   const [tally, setTally] = useState({ done: 0, good: 0 });
 
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(draftKey);
+      if (raw) {
+        const draft = JSON.parse(raw) as {
+          qs?: RecallQuestion[]; i?: number; answer?: string; hint?: string | null;
+          result?: { grade: RecallGrade; feedback: string; model: string } | null;
+          showModel?: boolean; tally?: { done: number; good: number };
+        };
+        if (Array.isArray(draft.qs) && draft.qs.length) {
+          setQs(draft.qs); setI(Math.max(0, Math.min(draft.i ?? 0, draft.qs.length)));
+          setAnswer(draft.answer ?? ""); setHint(draft.hint ?? null); setResult(draft.result ?? null);
+          setShowModel(!!draft.showModel); setTally(draft.tally ?? { done: 0, good: 0 });
+          toast.info("Resumed your saved Active Recall session.");
+        }
+      }
+    } catch { /* Ignore invalid or unavailable local drafts. */ }
+    setDraftReady(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!draftReady || !qs) return;
+    try {
+      if (i >= qs.length) window.localStorage.removeItem(draftKey);
+      else window.localStorage.setItem(draftKey, JSON.stringify({ qs, i, answer, hint, result, showModel, tally }));
+    } catch { /* Storage can be unavailable or full; session remains usable. */ }
+  }, [draftReady, draftKey, qs, i, answer, hint, result, showModel, tally]);
+
   const weak = preset?.focus.length
     ? preset.focus
     : topics
@@ -76,12 +107,12 @@ export function ActiveRecall({
         .slice(0, 6);
   const auto = useRef(false);
   useEffect(() => {
-    if (preset && !auto.current) {
+    if (draftReady && preset && !qs && !auto.current) {
       auto.current = true;
       void start();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [draftReady, qs]);
   const q = qs?.[i];
   const recordedRef = useRef(false);
 

@@ -106,6 +106,8 @@ export function QuizRunner({
         },
   );
   const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
+  const [draftReady, setDraftReady] = useState(false);
+  const draftKey = `momentum:quiz-draft:v1:${user?.id ?? "guest"}:${kind}:${comprehensive ? (sets ?? []).map((s) => s.id).sort().join(",") : set?.id ?? "no-set"}:${lectureId ?? ""}`;
   const [answers, setAnswers] = useState<Answer[]>([]);
   const [current, setCurrent] = useState(0);
   const [graded, setGraded] = useState<Graded[] | null>(null);
@@ -115,6 +117,43 @@ export function QuizRunner({
   const startedAt = useRef(0);
   const submitting = useRef(false);
   const [flagged, setFlagged] = useState<Set<number>>(new Set());
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(draftKey);
+      if (raw) {
+        const draft = JSON.parse(raw) as {
+          questions?: QuizQuestion[]; answers?: Answer[]; current?: number;
+          remaining?: number | null; startedAt?: number; flagged?: number[];
+          usedAdaptive?: boolean; settings?: Settings;
+        };
+        if (Array.isArray(draft.questions) && draft.questions.length) {
+          setQuestions(draft.questions);
+          setAnswers(Array.isArray(draft.answers) ? draft.answers : draft.questions.map(() => null));
+          setCurrent(Math.max(0, Math.min(draft.current ?? 0, draft.questions.length - 1)));
+          setRemaining(draft.remaining ?? null);
+          startedAt.current = draft.startedAt ?? Date.now();
+          setFlagged(new Set(draft.flagged ?? []));
+          setUsedAdaptive(!!draft.usedAdaptive);
+          if (draft.settings) setSettings((old) => ({ ...old, ...draft.settings }));
+          toast.info("Resumed your saved in-progress session.");
+        }
+      }
+    } catch { /* Ignore an invalid or unavailable local draft. */ }
+    setDraftReady(true);
+  // The key defines the exact session; restore only when it changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!draftReady || !questions || graded) return;
+    try {
+      window.localStorage.setItem(draftKey, JSON.stringify({
+        questions, answers, current, remaining, startedAt: startedAt.current,
+        flagged: [...flagged], usedAdaptive, settings,
+      }));
+    } catch { /* Storage can be unavailable or full; the session remains usable. */ }
+  }, [draftReady, draftKey, questions, answers, current, remaining, flagged, usedAdaptive, settings, graded]);
+
   const toggleFlag = (k: number) =>
     setFlagged((f) => {
       const n = new Set(f);
@@ -256,6 +295,7 @@ export function QuizRunner({
       );
       return;
     }
+    try { window.localStorage.removeItem(draftKey); } catch { /* ignore */ }
     const ansText = (q: QuizQuestion, a: Answer) =>
       a == null || a === "" ? "" : q.type === "short" ? String(a) : (q.options[Number(a)] ?? "");
     void recordResults(
@@ -315,12 +355,12 @@ export function QuizRunner({
 
   const auto = useRef(false);
   useEffect(() => {
-    if (autoStart && !auto.current) {
+    if (draftReady && autoStart && !questions && !auto.current) {
       auto.current = true;
       void start();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoStart]);
+  }, [autoStart, draftReady, questions]);
 
   // Exam timer
   useEffect(() => {
@@ -505,7 +545,7 @@ export function QuizRunner({
           )}
           {error && <ErrorBox msg={error} />}
           <div className="flex gap-2">
-            <button onClick={start} className={btnPrimary}>
+            <button onClick={start} disabled={!draftReady} className={btnPrimary}>
               {exam ? "Start exam" : settings.adaptive ? "Start adaptive quiz" : "Start quiz"}
             </button>
             {onExit && (
