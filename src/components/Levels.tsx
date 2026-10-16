@@ -101,14 +101,28 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
   const Icon = currentRank.icon;
   const previousTier = useRef<number | null>(null);
   useEffect(() => {
-    if (previousTier.current !== null && currentRank.tier > previousTier.current) {
+    const storageKey = scope === "overall" ? "momentum_last_seen_overall_tier_v1" : null;
+    let knownTier: number | null = previousTier.current;
+    if (knownTier === null && storageKey) {
+      try {
+        const stored = localStorage.getItem(storageKey);
+        knownTier = stored === null ? null : Number(stored);
+      } catch { knownTier = null; }
+    }
+
+    // First render establishes the baseline; opening Progress or refreshing must not
+    // replay tiers that were already reached before this component mounted.
+    if (knownTier !== null && Number.isFinite(knownTier) && currentRank.tier > knownTier) {
       window.dispatchEvent(new CustomEvent("momentum_celebration", { detail: {
         kind: "tier", tier: currentRank.tier, title: `Tier ${currentRank.tier}: ${currentRank.title}!`,
         subtitle: currentRank.subtitle,
       }}));
     }
     previousTier.current = currentRank.tier;
-  }, [currentRank]);
+    if (storageKey) {
+      try { localStorage.setItem(storageKey, String(Math.max(knownTier ?? currentRank.tier, currentRank.tier))); } catch { /* optional persistence */ }
+    }
+  }, [currentRank, scope]);
 
   return (
     <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>

@@ -3,6 +3,33 @@ import { Sparkles, X } from "lucide-react";
 
 type Celebration = { kind: string; title?: string; subtitle?: string; level?: number; tier?: number; badge?: string; id?: string; };
 const EVENT = "momentum_celebration";
+const SEEN_CELEBRATIONS_KEY = "momentum_seen_celebrations_v1";
+
+function celebrationKey(event: Celebration): string | null {
+  if (event.kind === "level") return `level:${event.level ?? 0}`;
+  if (event.kind === "level-milestone") return `level-milestone:${event.level ?? 0}`;
+  if (event.kind === "tier") return `tier:${event.tier ?? 0}`;
+  if (event.kind === "reward") return `reward:${event.id ?? event.title ?? "unknown"}`;
+  if (event.kind === "streak") return `streak:${new Date().toLocaleDateString("en-CA")}`;
+  return event.id ? `${event.kind}:${event.id}` : null;
+}
+
+function hasSeenCelebration(key: string): boolean {
+  try {
+    const stored = JSON.parse(localStorage.getItem(SEEN_CELEBRATIONS_KEY) ?? "[]");
+    return Array.isArray(stored) && stored.includes(key);
+  } catch { return false; }
+}
+
+function markCelebrationSeen(key: string): void {
+  try {
+    const stored = JSON.parse(localStorage.getItem(SEEN_CELEBRATIONS_KEY) ?? "[]");
+    const keys: string[] = Array.isArray(stored) ? stored.filter((x): x is string => typeof x === "string") : [];
+    if (!keys.includes(key)) keys.push(key);
+    // Keep storage bounded while retaining plenty of history to suppress repeat animations.
+    localStorage.setItem(SEEN_CELEBRATIONS_KEY, JSON.stringify(keys.slice(-500)));
+  } catch { /* Storage may be unavailable; the celebration can still be shown. */ }
+}
 const tierEmojis = ["🌱","⚡","📚","🔨","🧭","🛡️","🌩️","🔐","🗡️","🏅","🏹","🔮","📜","🪐","🧙","🛡️","🛠️","👻","🥷","🧠","🦅","💥","🧵","⚗️","♟️","🛡️","🥋","🗿","👑","🌪️","📖","⚔️","🎖️","🐺","💡","👑","🚀","🐉","♟️","🌋","🌌","🪐","💫","🌠","🪽","💎","♾️","🌟","🤖","👑"];
 const levelEmojis = ["✨","🧭","📘","⚒️","🔎","🛡️","🌠","🔐","🏹","🏆"];
 function playSound(kind: string, level = 1) {
@@ -49,6 +76,11 @@ export function CelebrationOverlay() {
       if (!detail) return;
       // A milestone level replaces its ordinary level-up animation, rather than playing two back-to-back.
       if (detail.kind === "level" && detail.milestone) return;
+      // Celebration events can be re-emitted during route changes or component hydration.
+      // Persist the event key before queuing it so each achievement animates only once.
+      const key = celebrationKey(detail);
+      if (key && hasSeenCelebration(key)) return;
+      if (key) markCelebrationSeen(key);
       queue.current.push(detail);
       if (!timer.current) showNext();
     };
