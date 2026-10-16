@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Award, Check, Lock, Palette, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { getStreakData, STREAK_EVENT } from "./DailyStreak";
+import { getXp, levelFromXp } from "@/lib/gamification";
 
 const REWARDS_KEY = "momentum_rewards_theme";
 export const REWARDS_EVENT = "momentum_rewards_updated";
@@ -81,14 +82,41 @@ export function applyRewardTheme(theme: ThemeId) {
 export function MilestoneRewards({ className = "" }: { className?: string }) {
   const [streak, setStreak] = useState(getStreakData());
   const [theme, setTheme] = useState<ThemeId>(getSelectedTheme);
+  const [xp, setXp] = useState(getXp);
+  const level = levelFromXp(xp);
+  const levelRewards = [
+    [10,"First Decade","🔟","The first ten levels of momentum"],[20,"Bronze Scholar","🏅","Two decades of growth"],[30,"Crystal Mind","💠","Clearer thinking through practice"],[40,"Guardian of Focus","🛡️","Forty levels of consistency"],[50,"Golden Scholar","👑","Halfway to the summit"],[60,"Cosmic Learner","🌌","Study beyond the ordinary"],[70,"Dragon Mind","🐉","Powerful recall, earned"],[80,"Lightning Intellect","⚡","Fast, focused mastery"],[90,"Diamond Sage","💎","Rare dedication and skill"],[100,"Momentum Legend","🌟","The ultimate level achievement"],
+  ] as const;
 
   useEffect(() => {
     applyRewardTheme(theme);
-    const update = () => setStreak(getStreakData());
+    const announceNewRewards = () => {
+      const currentStreak = getStreakData();
+      const nowUnlocked = REWARDS.filter((reward) => unlocked(reward, currentStreak));
+      const ids = nowUnlocked.map((reward) => reward.id);
+      const snapshotKey = "momentum_announced_reward_ids_v1";
+      const rawPrevious = localStorage.getItem(snapshotKey);
+      if (rawPrevious === null) {
+        localStorage.setItem(snapshotKey, JSON.stringify(ids));
+      } else {
+        let previous: string[] = [];
+        try { previous = JSON.parse(rawPrevious) as string[]; } catch { previous = []; }
+        const newlyUnlocked = nowUnlocked.filter((reward) => !previous.includes(reward.id));
+        newlyUnlocked.forEach((newReward) => window.dispatchEvent(new CustomEvent("momentum_celebration", { detail: {
+          kind: "reward", id: newReward.id, badge: newReward.icon,
+          title: `${newReward.name} unlocked!`, subtitle: newReward.description,
+        }})));
+        localStorage.setItem(snapshotKey, JSON.stringify(ids));
+      }
+    };
+    const update = () => { setStreak(getStreakData()); setXp(getXp()); announceNewRewards(); };
+    window.addEventListener("momentum_xp_updated", update);
+    announceNewRewards();
     window.addEventListener(STREAK_EVENT, update);
     window.addEventListener(REWARDS_EVENT, update);
     return () => {
       window.removeEventListener(STREAK_EVENT, update);
+      window.removeEventListener("momentum_xp_updated", update);
       window.removeEventListener(REWARDS_EVENT, update);
     };
   }, [theme]);
@@ -140,6 +168,13 @@ export function MilestoneRewards({ className = "" }: { className?: string }) {
             </div>
           );
         })}
+      </div>
+
+      <div className="mt-5 pt-4 border-t border-line/70">
+        <div className="flex items-center justify-between gap-3 mb-3"><div><p className="text-xs font-semibold">Level milestone badges</p><p className="text-[10px] text-soft">A new badge every 10 levels · Level {level}/100</p></div><span className="text-xs font-bold text-cool2">{levelRewards.filter(([n]) => level >= n).length}/10</span></div>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+          {levelRewards.map(([at, name, icon, description]) => { const earned = level >= at; return <div key={at} className={`rounded-xl border p-3 ${earned ? "border-amber-400/40 bg-amber-400/10" : "border-line bg-foreground/[0.03] opacity-65"}`}><div className="flex items-center justify-between"><span className="text-xl">{icon}</span>{earned ? <Check className="size-3.5 text-mint"/> : <Lock className="size-3 text-soft"/>}</div><p className="font-semibold text-xs mt-2">{name}</p><p className="text-[10px] text-soft mt-0.5">Level {at}</p><p className="text-[10px] text-soft mt-1 leading-relaxed">{description}</p></div>; })}
+        </div>
       </div>
 
       <div className="mt-5 pt-4 border-t border-line/70">

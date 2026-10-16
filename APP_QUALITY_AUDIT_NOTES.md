@@ -1,37 +1,46 @@
 # Momentum app-wide quality audit
 
-This pass focused on concrete correctness, readability, and data-integrity problems visible in the supplied repository. It is not a claim that every feature has been runtime-tested.
+This is a living audit, not a claim that every workflow has passed runtime QA. The repository contains a broad study suite; source inspection and static checks are useful, but Supabase, NVIDIA NIM, browser, and mobile behavior still require an environment with dependencies and test credentials.
 
-## Changes in this pass
+## Fixes retained from previous passes
 
-- Added a shared `MarkdownContent` renderer and routed AI-generated explanations, chats, study guides, reading briefs, lecture notes, feedback, and search answers through it. Flattened/escaped Markdown tables are converted to labeled lists; links open safely in a new tab; raw HTML remains disabled.
-- Protected fenced code blocks from table normalization so examples containing pipes remain intact.
-- Made Assignment Helper source permissions fail closed. Page ranges require reliable page markers and unambiguous document pagination; `first N pages` only includes extracted pages 1–N; chapter and named-section limits are isolated when their boundaries are detectable; unknown limits no longer send the whole source with only a warning.
-- Applied a supplied usage limit to any uploaded assignment attachment that has one, rather than silently skipping limits on supporting material.
-- Checked Assignment Helper saves and the pre-generation flush so the UI no longer reports success when a response or latest edits failed to persist.
-- Scoped legacy local Study Set/card fallback reads to the active Supabase account, and prevented migration of a local set owned by another account.
-- Fixed the streak starting state so opening the app no longer grants a fake first session. Streak dates now use the student's local calendar date rather than UTC, which can otherwise shift the day in Canada and other time zones.
-- Checked file metadata persistence after uploading originals; failed metadata writes now attempt to remove the untracked storage object.
-- Made study-set processing and flashcard regeneration back up existing cards before replacement and check the database writes. Made notes regeneration preserve old notes before overwriting them.
-- Made essay grading save the latest edits successfully before invoking the grader.
-- Hardened Recently Deleted restoration/permanent deletion so child-row, storage, and backup errors are surfaced instead of silently clearing the recovery item.
-- Removed an unused local-only authentication helper that stored a weak, reversible password hash in `localStorage`; the app's active sign-in flow uses Supabase Auth.
-- Corrected the Study Guide date input's minimum date to use local time and improved word-count parsing for assignment-aware time estimates.
+- Shared `MarkdownContent` rendering for generated explanations, chats, study guides, reading briefs, lecture notes, feedback, and search answers; raw HTML remains disabled and links open safely.
+- Assignment Helper source restrictions fail closed when page/section boundaries cannot be proven, and saves are checked before reporting success.
+- Private upload metadata writes are checked and failed metadata writes attempt storage cleanup.
+- Reading Companion AI context has aggregate size limits and explicit truncation markers.
+- Study-set/card replacement and note regeneration back up existing data and check writes.
+- Autosave reports failures rather than claiming the newest content is saved; long-form editors display save status.
+- Recent deletion restoration and permanent deletion surface errors rather than silently discarding recovery records.
+- Local fallback data is checked against the active Supabase account; the legacy local-auth password helper was removed.
+- Streak dates use the student's local calendar day and opening the app alone does not grant a session.
+- Study Guide date handling and assignment time-estimate parsing were improved.
+- Progression includes 100 levels, milestone rewards, and differentiated celebrations.
 
-## Verification
+## Additional confirmed fixes in this pass
 
-- ZIP archive integrity checked after packaging.
-- TypeScript/TSX transpile syntax checks run across the source tree.
-- Markdown formatter and source-scope functions were exercised directly with Node against the flattened table and restricted-page examples.
-- Added Vitest coverage for flattened table formatting, fenced code preservation, assignment source limits, and local fallback account ownership.
-- `npm install` could not complete in this environment and no dependencies are available locally. Therefore `npm test`, `npm run build`, full TypeScript type checking, linting, and browser end-to-end tests remain unverified and must be run in the user's project environment before deployment.
+- **Local fallback ownership leak:** local records without `user_id` were included in every signed-in account's fallback list and could be migrated into whichever account was currently active. Signed-in queries now only return records explicitly owned by that account. Unowned legacy records remain in the anonymous legacy context rather than being exposed cross-account.
+- **Local fallback overwrite guard:** saving a local set now rejects an ID already owned by another account, and card replacement no longer removes another account's cards sharing that set ID.
+- **XP input hardening:** malformed, negative, or non-finite XP values now normalize safely rather than producing `NaN`/infinite progression states.
+- Added/updated regression tests for local ownership isolation and invalid XP handling.
 
+## Findings that still need runtime or integration verification
 
-## Turnitin submission-prep feature (Oct 2026)
+### Release blockers / high priority
 
-- Added authenticated `/turnitin` page and desktop/mobile navigation entry.
-- Supports local selection of PDF, DOC/DOCX, RTF, ODT, and TXT files up to 40 MB, or pasted essay text with live word/character count and TXT export.
-- Collects paper title, course, assignment, instructor, due date, and optional validated official portal URL.
-- Requires final-version and citations/requirements confirmations; shows readiness checklist and clearly labels prepared status.
-- Does not pretend to submit to Turnitin: official submission, similarity report, and receipt require the institution's licensed integration. Files/text remain client-side in this feature and are not uploaded by this page.
-- Full build/tests were not run because dependency installation timed out in this workspace.
+1. Install dependencies and run `npm test`, `npm run lint`, and `npm run build`; the current execution environment has no installed Vitest dependencies, so these commands cannot currently validate the project.
+2. Test authentication and account isolation against a staging Supabase project, including RLS, local fallback migration, trash restore/permanent delete, uploads, and source linking.
+3. Add authenticated per-user AI quotas/rate limits and request-level timeouts before broad public launch; source review did not establish that a global quota exists.
+4. Verify private storage policies and environment variables in deployment without exposing service-role credentials.
+5. Exercise upload/extraction with large, corrupt, scanned, table-heavy, equation-heavy, DOCX, and PPTX fixtures; extraction behavior depends on actual file content and configured services.
+
+### Product/UX review still required
+
+- Browser-driven desktop, tablet, and mobile walkthroughs for all study tabs and long-form workflows.
+- Keyboard-only navigation, focus order, reduced-motion behavior, contrast, screen-reader labels, and modal focus restoration.
+- End-to-end save/reload/resume tests for quizzes, exams, Active Recall, audio sessions, notes, assignments, essays, and lecture transcripts.
+- Educational quality review of generated questions, grading, explanations, source-grounded tutor responses, and citations using representative course materials.
+- Performance measurements for initial bundle, large study sets, long source documents, repeated AI requests, and history pages.
+
+## Scope note
+
+The previous ZIP focused on progression/rewards. This audit identifies and fixes specific correctness/privacy issues but is **not yet a completed, end-to-end revamp of every study feature**. Avoid calling the app release-ready until the remaining checks above have been run and their failures resolved.

@@ -45,15 +45,15 @@ export function ProgressionHub() {
   const freezes = earnFreezeIfNeeded(streak.totalStudyMinutes);
   const days = useMemo(()=>Array.from({length:28},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()-(27-i)); const key=dayKey(d.toISOString()); return {key,count:rows.filter(r=>dayKey(r.created_at)===key).reduce((n,r)=>n+r.count,0)} }),[rows]);
   const records = useMemo(()=>({hours:Math.round((streak.totalStudyMinutes/60)*10)/10, sessions:streak.totalSessionsCompleted, streak:streak.longestStreak, cards:rows.filter(r=>r.kind==='flashcard').reduce((n,r)=>n+r.count,0)}),[rows,streak]);
-  const upcomingXp = Math.max(0, bar.needed-bar.current);
+  const upcomingXp = bar.maxed ? 0 : Math.max(0, bar.needed-bar.current);
   const completeMission = (m: Mission) => { if (!m.done) return; const key=`momentum_mission_${today}_${m.id}`; if (!localStorage.getItem(key)) { localStorage.setItem(key,"1"); addXp(m.xp); } };
   ms.forEach(m=>completeMission(m));
 
   return <section className="px-5 md:px-8 pt-6">
     <div className="grid xl:grid-cols-[1.15fr_1fr_1fr] gap-5">
       <div className="rounded-2xl p-5 bg-panel border border-line">
-        <div className="flex justify-between gap-4"><div><p className="eyebrow text-cool2 flex items-center gap-2"><Zap className="size-3.5"/> Progression</p><h3 className="font-display text-2xl font-bold mt-1">Level {lvl}</h3></div><div className="size-11 rounded-xl bg-cool/10 grid place-items-center"><Trophy className="size-5 text-cool2"/></div></div>
-        <p className="text-xs text-soft mt-1">{xp} XP earned · {upcomingXp} XP to Level {lvl+1}</p><div className="h-2 rounded-full bg-foreground/10 mt-4 overflow-hidden"><div className="h-full bg-progress rounded-full" style={{width:`${Math.round(bar.current/bar.needed*100)}%`}}/></div>
+        <div className="flex justify-between gap-4"><div><p className="eyebrow text-cool2 flex items-center gap-2"><Zap className="size-3.5"/> Progression</p><h3 className="font-display text-2xl font-bold mt-1">Level {lvl}{bar.maxed ? " · MAX" : ""}</h3></div><div className="size-11 rounded-xl bg-cool/10 grid place-items-center"><Trophy className="size-5 text-cool2"/></div></div>
+        <p className="text-xs text-soft mt-1">{xp} XP earned · {bar.maxed ? "Maximum level reached — all level rewards earned" : `${upcomingXp} XP to Level ${lvl+1}`}</p><div className="h-2 rounded-full bg-foreground/10 mt-4 overflow-hidden"><div className="h-full bg-progress rounded-full" style={{width:`${bar.maxed ? 100 : Math.round(bar.current/bar.needed*100)}%`}}/></div>
         <div className="grid grid-cols-2 gap-2 mt-4"><Stat icon={Flame} label="Best streak" value={`${records.streak}d`}/><Stat icon={Trophy} label="Study hours" value={`${records.hours}h`}/><Stat icon={Medal} label="Sessions" value={String(records.sessions)}/><Stat icon={Sparkles} label="Cards" value={String(records.cards)}/></div>
       </div>
       <div className="rounded-2xl p-5 bg-panel border border-line"><div className="flex items-center justify-between"><p className="eyebrow text-cool2 flex gap-2 items-center"><Target className="size-3.5"/> Daily missions</p><span className="text-xs font-semibold">{completed}/{ms.length}</span></div><div className="space-y-3 mt-4">{ms.map(m=><div key={m.id}><div className="flex justify-between gap-3 text-xs"><span className={m.done?"text-mint font-semibold":""}>{m.done?"✓ ":""}{m.label}</span><span className="text-soft">+{m.xp} XP</span></div><div className="h-1.5 rounded-full bg-foreground/10 mt-1.5 overflow-hidden"><div className="h-full bg-progress rounded-full" style={{width:`${Math.min(100,m.progress/m.target*100)}%`}}/></div></div>)}</div></div>

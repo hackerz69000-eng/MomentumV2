@@ -136,6 +136,9 @@ export function recordStudySessionCompletion(durationMinutes = 15, topicName = "
 
   localStorage.setItem(STREAK_KEY, JSON.stringify(updated));
   window.dispatchEvent(new CustomEvent(STREAK_EVENT, { detail: { streak: updated, isNewDay } }));
+  if (isNewDay && nextStreak > prev.currentStreak) {
+    window.dispatchEvent(new CustomEvent("momentum_celebration", { detail: { kind: "streak", title: `+1 Streak! ${nextStreak} day${nextStreak === 1 ? "" : "s"}`, subtitle: "Consistency is becoming a habit." } }));
+  }
 
   // Also auto-record into Session History
   try {

@@ -15,8 +15,11 @@ export function getLocalSets(userId?: string): SetWithCards[] {
     const currentUserId = userId;
 
     // Legacy local-auth records use usr_* IDs and cannot be sent to Supabase.
+    // Unowned legacy records are not exposed to signed-in accounts: on shared
+    // devices that would leak one student's material into every account.
+    // They remain available only in the unauthenticated legacy context.
     const filteredSets = currentUserId
-      ? sets.filter((s) => s.user_id === currentUserId || !s.user_id)
+      ? sets.filter((s) => s.user_id === currentUserId)
       : sets.filter((s) => !s.user_id);
 
     return filteredSets.map((s) => {
@@ -37,7 +40,7 @@ export function getLocalSet(id: string, userId?: string): StudySet | null {
   try {
     const raw = localStorage.getItem(SETS_KEY);
     const sets: StudySet[] = raw ? JSON.parse(raw) : [];
-    return sets.find((s) => s.id === id && (userId ? (!s.user_id || s.user_id === userId) : !s.user_id)) ?? null;
+    return sets.find((s) => s.id === id && (userId ? s.user_id === userId : !s.user_id)) ?? null;
   } catch {
     return null;
   }
@@ -49,7 +52,7 @@ export function getLocalCards(setId: string, userId?: string): Flashcard[] {
     const raw = localStorage.getItem(CARDS_KEY);
     const cards: Flashcard[] = raw ? JSON.parse(raw) : [];
     return cards
-      .filter((c) => c.set_id === setId && (userId ? (!c.user_id || c.user_id === userId) : !c.user_id))
+      .filter((c) => c.set_id === setId && (userId ? c.user_id === userId : !c.user_id))
       .sort((a, b) => a.position - b.position);
   } catch {
     return [];
@@ -94,6 +97,9 @@ export function saveLocalSet(
   };
 
   const existingIdx = sets.findIndex((s) => s.id === set.id);
+  if (existingIdx >= 0 && sets[existingIdx].user_id !== userId) {
+    throw new Error("This study set belongs to a different account.");
+  }
   if (existingIdx >= 0) {
     sets[existingIdx] = fullSet;
   } else {
@@ -102,7 +108,7 @@ export function saveLocalSet(
   localStorage.setItem(SETS_KEY, JSON.stringify(sets));
 
   // Replace cards for this set
-  const otherCards = allCards.filter((c) => c.set_id !== set.id);
+  const otherCards = allCards.filter((c) => c.set_id !== set.id || c.user_id !== userId);
   const newCards: Flashcard[] = cards.map((c, idx) => ({
     id: `card_${set.id}_${idx}_${Date.now()}`,
     set_id: set.id,
@@ -164,17 +170,17 @@ export function updateLocalSetProgress(setId: string, score: number, total: numb
   }
 }
 
-export function deleteLocalSet(setId: string) {
+export function deleteLocalSet(setId: string, userId?: string) {
   if (typeof window === "undefined") return;
   try {
     const rawSets = localStorage.getItem(SETS_KEY);
     const sets: StudySet[] = rawSets ? JSON.parse(rawSets) : [];
-    const filteredSets = sets.filter((s) => s.id !== setId);
+    const filteredSets = sets.filter((s) => s.id !== setId || (userId ? s.user_id !== userId : !!s.user_id));
     localStorage.setItem(SETS_KEY, JSON.stringify(filteredSets));
 
     const rawCards = localStorage.getItem(CARDS_KEY);
     const cards: Flashcard[] = rawCards ? JSON.parse(rawCards) : [];
-    const filteredCards = cards.filter((c) => c.set_id !== setId);
+    const filteredCards = cards.filter((c) => c.set_id !== setId || (userId ? c.user_id !== userId : !!c.user_id));
     localStorage.setItem(CARDS_KEY, JSON.stringify(filteredCards));
   } catch (err) {
     console.error("Failed to delete local set:", err);

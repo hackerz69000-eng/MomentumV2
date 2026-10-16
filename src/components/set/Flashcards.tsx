@@ -93,19 +93,23 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
     if (!card) return;
     const patch = schedule(card, r);
     const ids = order ?? deckIds;
-    // "Again" cards come back at the end of this session.
-    setOrder(r === "again" ? [...ids, card.id] : ids);
+    // "Again" cards come back at the end of this session, so the session is
+    // not complete until the re-queued cards have also been reviewed.
+    const nextOrder = r === "again" ? [...ids, card.id] : ids;
+    const nextIndex = i + 1;
+    setOrder(nextOrder);
     qc.setQueryData<Flashcard[]>(["cards", setId], (old) =>
       old?.map((c) => (c.id === card.id ? { ...c, ...patch } : c)),
     );
     setFlipped(false);
-    setI((x) => x + 1);
+    setI(nextIndex);
 
     // Save full SRS patch in local store
     updateLocalCardStatus(card.id, patch);
 
-    // If reached end of cards, log completed study session
-    if (i + 1 >= ids.length) {
+    // Only log completion after the full review queue (including Again cards)
+    // has been exhausted.
+    if (nextIndex >= nextOrder.length) {
       recordStudySessionCompletion(15, `Flashcards (${cards.length} cards)`);
       toast.success("Flashcard review completed. Finish today’s other required task to earn streak credit.");
     }

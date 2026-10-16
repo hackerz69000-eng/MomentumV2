@@ -3,10 +3,46 @@ export type FreezeData = { available: number; used: number };
 const XP_KEY = "momentum_xp_v1";
 const FREEZE_KEY = "momentum_streak_freezes_v1";
 
-export function getXp() { try { return Number(localStorage.getItem(XP_KEY) ?? 0) || 0; } catch { return 0; } }
-export function levelFromXp(xp: number) { return Math.max(1, Math.floor(Math.sqrt(Math.max(0, xp) / 50)) + 1); }
-export function xpIntoLevel(xp: number) { const level = levelFromXp(xp); const prev = (level - 1) ** 2 * 50; const next = level ** 2 * 50; return { level, current: xp - prev, needed: Math.max(1, next - prev), total: xp }; }
-export function addXp(amount: number) { const next = getXp() + Math.max(0, Math.round(amount)); try { localStorage.setItem(XP_KEY, String(next)); window.dispatchEvent(new Event("momentum_xp_updated")); } catch {} return next; }
+export function getXp() {
+  try {
+    const value = Number(localStorage.getItem(XP_KEY) ?? 0);
+    return Number.isFinite(value) ? Math.max(0, value) : 0;
+  } catch {
+    return 0;
+  }
+}
+export const MAX_LEVEL = 100;
+export const XP_LEVEL_EVENT = "momentum_celebration";
+export function levelFromXp(xp: number) {
+  const safeXp = Number.isFinite(xp) ? Math.max(0, xp) : 0;
+  return Math.min(MAX_LEVEL, Math.max(1, Math.floor(Math.sqrt(safeXp / 50)) + 1));
+}
+export function xpIntoLevel(xp: number) {
+  const level = levelFromXp(xp);
+  const prev = (level - 1) ** 2 * 50;
+  const next = level >= MAX_LEVEL ? prev : level ** 2 * 50;
+  return { level, current: level >= MAX_LEVEL ? 0 : Math.max(0, xp - prev), needed: level >= MAX_LEVEL ? 1 : Math.max(1, next - prev), total: xp, maxed: level >= MAX_LEVEL };
+}
+export function addXp(amount: number) {
+  const previousXp = getXp();
+  const safeAmount = Number.isFinite(amount) ? Math.max(0, Math.round(amount)) : 0;
+  const next = previousXp + safeAmount;
+  try {
+    localStorage.setItem(XP_KEY, String(next));
+    window.dispatchEvent(new Event("momentum_xp_updated"));
+    const before = levelFromXp(previousXp), after = levelFromXp(next);
+    if (after > before) {
+      for (let level = before + 1; level <= after; level++) {
+        window.dispatchEvent(new CustomEvent(XP_LEVEL_EVENT, { detail: { kind: "level", level, milestone: level % 10 === 0 } }));
+        if (level % 10 === 0) {
+          window.dispatchEvent(new CustomEvent(XP_LEVEL_EVENT, { detail: { kind: "level-milestone", level, milestone: true } }));
+          window.dispatchEvent(new CustomEvent(XP_LEVEL_EVENT, { detail: { kind: "reward", id: `level-reward-${level}`, level, badge: ["🔟","🏅","💠","🛡️","👑","🌌","🐉","⚡","💎","🌟"][level / 10 - 1], title: `Level ${level} reward unlocked!`, subtitle: `Milestone badge: ${["First Decade","Bronze Scholar","Crystal Mind","Guardian of Focus","Golden Scholar","Cosmic Learner","Dragon Mind","Lightning Intellect","Diamond Sage","Momentum Legend"][level / 10 - 1]}` } }));
+        }
+      }
+    }
+  } catch {}
+  return next;
+}
 export function getFreezes(): FreezeData { try { const x = JSON.parse(localStorage.getItem(FREEZE_KEY) ?? "{}"); return { available: Number(x.available) || 0, used: Number(x.used) || 0 }; } catch { return { available: 0, used: 0 }; } }
 export function setFreezes(data: FreezeData) { try { localStorage.setItem(FREEZE_KEY, JSON.stringify(data)); window.dispatchEvent(new Event("momentum_freeze_updated")); } catch {} }
 export function earnFreezeIfNeeded(totalStudyMinutes: number) { const earned = Math.floor(totalStudyMinutes / 420); const current = getFreezes(); const totalOwned = current.available + current.used; if (earned > totalOwned) setFreezes({ ...current, available: current.available + (earned - totalOwned) }); return getFreezes(); }

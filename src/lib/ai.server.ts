@@ -68,23 +68,33 @@ async function callNim(system: string, messages: ModelMessage[]): Promise<string
     );
   }
 
-  const response = await fetch(NIM_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      model: NIM_MODEL,
-      temperature: 0.2,
-      stream: false,
-      messages: [
-        { role: "system", content: system },
-        ...messages.map((message) => ({ role: message.role, content: message.content })),
-      ],
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(NIM_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        model: NIM_MODEL,
+        temperature: 0.2,
+        stream: false,
+        messages: [
+          { role: "system", content: system },
+          ...messages.map((message) => ({ role: message.role, content: message.content })),
+        ],
+      }),
+      // Prevent a stalled provider request from leaving a study action loading forever.
+      signal: AbortSignal.timeout(90_000),
+    });
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw new NimError("The AI request took too long. Try again, or ask for a shorter response.", 408);
+    }
+    throw error;
+  }
 
   const body = await response.text();
   if (!response.ok) {

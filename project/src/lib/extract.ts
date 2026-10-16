@@ -1,0 +1,237 @@
+// Browser-only text extraction for uploaded study files.
+import { supabase } from "@/integrations/supabase/client";
+
+export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
+const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+export const ACCEPT = [
+  "application/pdf", ".pdf",
+  DOCX, ".docx",
+  PPTX, ".pptx",
+  "text/plain", ".txt", ".md", ".markdown",
+  ...IMAGE_TYPES, ".png", ".jpg", ".jpeg", ".webp",
+].join(",");
+// Per-file client-side reading upload cap. Keep UI copy and validation aligned.
+export const MAX_BYTES = 100 * 1024 * 1024;
+
+export function fileKind(f: File): "pdf" | "docx" | "pptx" | "txt" | "image" | null {
+  // Prefer the filename extension as browser MIME types are sometimes blank or incorrect,
+  // especially for PDFs downloaded from school portals and Markdown files.
+  const n = f.name.trim().toLowerCase();
+  if (n.endsWith(".pdf") || f.type.toLowerCase() === "application/pdf") return "pdf";
+  if (n.endsWith(".docx") || f.type.toLowerCase() === DOCX) return "docx";
+  if (n.endsWith(".pptx") || f.type.toLowerCase() === PPTX) return "pptx";
+  if ([".txt", ".md", ".markdown"].some((ext) => n.endsWith(ext)) || f.type.toLowerCase().startsWith("text/")) return "txt";
+  if ([".png", ".jpg", ".jpeg", ".webp"].some((ext) => n.endsWith(ext)) || IMAGE_TYPES.includes(f.type.toLowerCase())) return "image";
+  return null;
+}
+
+function readDataUrl(blob: Blob) {
+  return new Promise<string>((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result as string);
+    r.onerror = () => rej(new Error("Couldn't read file"));
+    r.readAsDataURL(blob);
+  });
+}
+
+async function shrinkImage(file: File): Promise<string> {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, 2000 / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bmp.width * scale);
+  canvas.height = Math.round(bmp.height * scale);
+  canvas.getContext("2d")!.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.85);
+}
+
+function meaningfulWordCount(text: string): number {
+  return (text.match(/[\p{L}\p{N}]{2,}/gu) ?? []).length;
+}
+
+function looksLikePdfHeadingsOnly(text: string): boolean {
+  const cleaned = text.replace(/^\s*##\s*(?:Page|পৃষ্ঠা)\s+\d+\s*$/gim, "").trim();
+  const words = meaningfulWordCount(cleaned);
+  if (words < 35) return true;
+  const lines = cleaned.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const shortLines = lines.filter((line) => meaningfulWordCount(line) <= 5).length;
+  return lines.length >= 8 && shortLines / lines.length > 0.82 && words < lines.length * 5;
+}
+
+async function extractPdf(file: File): Promise<string> {
+  try {
+    const { extractText, getDocumentProxy } = await import("unpdf");
+    const pdf = await getDocumentProxy(new Uint8Array(await file.arrayBuffer()));
+    const { text } = await extractText(pdf, { mergePages: false });
+    let result = Array.isArray(text)
+      ? text.map((page, i) => `## Page ${i + 1}\n${page}`).join("\n\n")
+      : text;
+
+    // Some selectable-text PDFs use unusual font encodings or text-item ordering.
+    // The convenience extractor can then return only running headers/page labels
+    // even though the PDF contains body text. Re-read each page directly before
+    // concluding that the file has no usable text.
+    if (!result || looksLikePdfHeadingsOnly(result)) {
+      const pages: string[] = [];
+      for (let pageNo = 1; pageNo <= pdf.numPages; pageNo += 1) {
+        const page = await pdf.getPage(pageNo);
+        const content = await page.getTextContent();
+        const items = content.items as Array<{ str?: string; hasEOL?: boolean }>;
+        let pageText = "";
+        for (const item of items) {
+          const value = item.str ?? "";
+          if (!value) continue;
+          pageText += value;
+          pageText += item.hasEOL ? "\n" : " ";
+        }
+        pages.push(`## Page ${pageNo}\n${pageText.trim()}`);
+      }
+      const directResult = pages.join("\n\n").trim();
+      if (directResult && (!result || meaningfulWordCount(directResult) > meaningfulWordCount(result))) {
+        result = directResult;
+      }
+    }
+    if (result && result.trim().length > 10) return result.trim();
+  } catch (err) {
+    console.warn("unpdf extraction failed, attempting raw text stream recovery:", err);
+  }
+
+  // Fallback: extract plain text strings from PDF binary stream
+  try {
+    const buffer = await file.arrayBuffer();
+    const decoder = new TextDecoder("latin1");
+    const content = decoder.decode(buffer);
+    const matches = content.match(/\(([^()]{3,})\)Tj/g) || content.match(/BT[\s\S]*?ET/g);
+    if (matches && matches.length > 0) {
+      const extracted = matches
+        .map((m) => m.replace(/[()Tj]|BT|ET/g, " ").trim())
+        .filter((s) => s.length > 2)
+        .join(" ");
+      if (extracted.length > 20) return extracted;
+    }
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+async function extractDocx(file: File) {
+  const mammoth = await import("mammoth");
+  const { value } = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+  return value;
+}
+
+async function extractPptx(file: File) {
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const slides = Object.keys(zip.files)
+    .filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p))
+    .sort((a, b) => Number(a.match(/\d+/)![0]) - Number(b.match(/\d+/)![0]));
+  const out: string[] = [];
+  for (const [i, p] of slides.entries()) {
+    const xml = await zip.file(p)!.async("string");
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const paras = Array.from(doc.getElementsByTagName("a:p"))
+      .map((para) =>
+        Array.from(para.getElementsByTagName("a:t"))
+          .map((t) => t.textContent ?? "")
+          .join(""),
+      )
+      .filter((t) => t.trim());
+    const notesPath = `ppt/notesSlides/notesSlide${p.match(/\d+/)![0]}.xml`;
+    let notes = "";
+    if (zip.file(notesPath)) {
+      const nd = new DOMParser().parseFromString(
+        await zip.file(notesPath)!.async("string"),
+        "application/xml",
+      );
+      notes = Array.from(nd.getElementsByTagName("a:t"))
+        .map((t) => t.textContent ?? "")
+        .join(" ")
+        .trim();
+    }
+    if (paras.length || notes)
+      out.push(`## Slide ${i + 1}\n${paras.join("\n")}${notes ? `\nSpeaker notes: ${notes}` : ""}`);
+  }
+  return out.join("\n\n");
+}
+
+type Ocr = (args: {
+  data: { data: string; mediaType: "application/pdf" | "image/jpeg"; filename: string };
+}) => Promise<{ text: string }>;
+
+export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void): Promise<string> {
+  const kind = fileKind(f);
+  if (kind === "pdf") {
+    onMsg(`Reading ${f.name}…`);
+    let text = (await extractPdf(f)).trim();
+    // A PDF can contain page labels/headings but no body text. Treat that as a
+    // failed extraction and try OCR instead of saving misleadingly empty context.
+    if (text.length < 30 || looksLikePdfHeadingsOnly(text)) {
+      if (f.size > MAX_BYTES) {
+        throw new Error(`${f.name} is too large for OCR processing. Try a text-searchable PDF or split it into smaller parts before uploading.`);
+      }
+      try {
+        onMsg(`Text extraction was sparse. Trying text recognition for ${f.name}…`);
+        const ocrResult = await ocr({
+          data: { data: await readDataUrl(f), mediaType: "application/pdf", filename: f.name },
+        });
+        const ocrText = ocrResult?.text?.trim() ?? "";
+        // A short but complete OCR result is better than a larger extraction made
+        // up of repeated headers. Never replace usable text with a heading-only OCR result.
+        if (ocrText && !looksLikePdfHeadingsOnly(ocrText) &&
+            (looksLikePdfHeadingsOnly(text) || meaningfulWordCount(ocrText) > meaningfulWordCount(text))) {
+          text = ocrText;
+        }
+      } catch (err) {
+        console.warn("OCR fallback was unavailable for scanned or image-based PDF.", err);
+      }
+    }
+    if (looksLikePdfHeadingsOnly(text)) {
+      throw new Error(`${f.name}: Momentum could only read page headings, not the actual page text. Try downloading an OCR/text-searchable version of the PDF, or split the file into smaller parts and retry.`);
+    }
+    return text.trim();
+  }
+  if (kind === "docx") {
+    onMsg(`Reading ${f.name}…`);
+    return (await extractDocx(f)).trim();
+  }
+  if (kind === "pptx") {
+    onMsg(`Reading slides in ${f.name}…`);
+    return (await extractPptx(f)).trim();
+  }
+  if (kind === "txt") return (await f.text()).trim();
+  if (kind === "image") {
+    onMsg(`Running OCR on ${f.name}…`);
+    return (
+      await ocr({ data: { data: await shrinkImage(f), mediaType: "image/jpeg", filename: f.name } })
+    ).text.trim();
+  }
+  throw new Error(`${f.name} isn't a supported file type.`);
+}
+
+/** Keeps the original file attached to the study set (private storage). Failures are reported but non-fatal. */
+export async function storeOriginal(userId: string, setId: string, f: File, chars: number) {
+  const path = `${userId}/${setId}/${Date.now()}-${f.name.replace(/[^\w.-]+/g, "_")}`;
+  const { error } = await supabase.storage
+    .from("study-files")
+    .upload(path, f, { contentType: f.type || "application/octet-stream" });
+  if (error) return false;
+  const { error: metadataError } = await supabase
+    .from("study_files")
+    .insert({
+      set_id: setId,
+      user_id: userId,
+      path,
+      name: f.name,
+      mime: f.type,
+      size: f.size,
+      chars,
+    });
+  if (metadataError) {
+    // Avoid leaving an untracked private-storage object if metadata persistence fails.
+    await supabase.storage.from("study-files").remove([path]);
+    return false;
+  }
+  return true;
+}

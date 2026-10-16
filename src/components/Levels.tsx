@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Shield, Sparkles, Trophy, Award, Crown, Compass, Info, CheckCircle2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
@@ -99,6 +99,16 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
     : 100;
 
   const Icon = currentRank.icon;
+  const previousTier = useRef<number | null>(null);
+  useEffect(() => {
+    if (previousTier.current !== null && currentRank.tier > previousTier.current) {
+      window.dispatchEvent(new CustomEvent("momentum_celebration", { detail: {
+        kind: "tier", tier: currentRank.tier, title: `Tier ${currentRank.tier}: ${currentRank.title}!`,
+        subtitle: currentRank.subtitle,
+      }}));
+    }
+    previousTier.current = currentRank.tier;
+  }, [currentRank]);
 
   return (
     <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
