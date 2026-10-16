@@ -16,6 +16,7 @@ function AdminProgressionPage() {
   const [email, setEmail] = useState("");
   const [xp, setXp] = useState("0");
   const [tier, setTier] = useState("auto");
+  const [rewardOverrides, setRewardOverrides] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
@@ -27,8 +28,8 @@ function AdminProgressionPage() {
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
       if (!row) throw new Error("No matching account was found.");
-      const record = row as { email?: string; xp?: number; tier_override?: number | null };
-      setEmail(record.email ?? "Email unavailable"); setXp(String(record.xp ?? 0)); setTier(record.tier_override == null ? "auto" : String(record.tier_override)); setLoaded(true);
+      const record = row as { email?: string; xp?: number; tier_override?: number | null; reward_overrides?: string[] };
+      setEmail(record.email ?? "Email unavailable"); setXp(String(record.xp ?? 0)); setTier(record.tier_override == null ? "auto" : String(record.tier_override)); setRewardOverrides(record.reward_overrides ?? []); setLoaded(true);
     } catch (error) { toast.error(error instanceof Error ? error.message : "Could not load progression. Apply the admin migration and confirm admin role."); }
     finally { setBusy(false); }
   }
@@ -38,7 +39,7 @@ function AdminProgressionPage() {
     if (!Number.isSafeInteger(xpValue) || xpValue < 0 || xpValue > 1_000_000_000) { toast.error("XP must be a whole number from 0 to 1,000,000,000."); return; }
     setBusy(true);
     try {
-      const { error } = await supabase.rpc("admin_set_progression", { target_user_id: userId.trim(), new_xp: xpValue, new_tier_override: tierValue } as never);
+      const { error } = await supabase.rpc("admin_set_progression", { target_user_id: userId.trim(), new_xp: xpValue, new_tier_override: tierValue, new_reward_overrides: rewardOverrides } as never);
       if (error) throw error;
       toast.success("Progression saved. The user will see the changes after their next sync or refresh.");
       setLoaded(true);
@@ -58,7 +59,13 @@ function AdminProgressionPage() {
       <div><p className="text-xs uppercase tracking-wider text-soft">Account</p><p className="font-semibold mt-1">{email}</p><p className="font-mono text-xs text-soft break-all mt-1">{userId}</p></div>
       <div className="grid md:grid-cols-2 gap-4">
         <label className="text-sm font-medium">Total XP<input type="number" min="0" max="1000000000" step="1" value={xp} onChange={e=>setXp(e.target.value)} className="mt-2 w-full rounded-xl border border-line bg-ink px-3 py-3 outline-none focus:border-cool2"/><span className="block text-xs text-soft mt-1">Calculated level: {levelFromXp(Number(xp) || 0)} / 100</span></label>
-        <label className="text-sm font-medium">Overall tier<select value={tier} onChange={e=>setTier(e.target.value)} className="mt-2 w-full rounded-xl border border-line bg-ink px-3 py-3 outline-none focus:border-cool2"><option value="auto">Automatic (based on mastery)</option>{RPG_RANKS.map(rank=><option key={rank.tier} value={rank.tier}>Tier {rank.tier} — {rank.title}</option>)}</select><span className="block text-xs text-soft mt-1">Override affects overall tier badges, not set-specific tiers.</span></label>
+        <label className="text-sm font-medium">Overall tier<select value={tier} onChange={e=>setTier(e.target.value)} className="mt-2 w-full rounded-xl border border-line bg-ink px-3 py-3 outline-none focus:border-cool2"><option value="auto">Automatic (based on mastery)</option>{RPG_RANKS.map(rank=><option key={rank.tier} value={rank.tier}>Tier {rank.tier} — {rank.title}</option>)}</select><span className="block text-xs text-soft mt-1">The selected tier is the maximum tier shown as unlocked in the overall tier ladder.</span></label>
+      </div>
+      <div className="rounded-xl border border-line p-4 space-y-3">
+        <div><h2 className="font-semibold">Milestone reward controls</h2><p className="text-xs text-soft mt-1">Manually grant rewards or remove them. These overrides are saved for this user.</p></div>
+        <div className="grid sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto">
+          {[...Array.from({length:50},(_,i)=>({id:`milestone-${i+1}`,label:`Milestone ${i+1}`})),{id:"milestone-study-fiend",label:"Study Fiend"},...Array.from({length:10},(_,i)=>({id:`level-reward-${(i+1)*10}`,label:`Level ${(i+1)*10} reward`}))].map(reward => <label key={reward.id} className="flex items-center gap-2 rounded-lg border border-line/70 p-2 text-xs"><input type="checkbox" checked={rewardOverrides.includes(reward.id)} onChange={e=>setRewardOverrides(old=>e.target.checked?[...new Set([...old,reward.id])]:old.filter(id=>id!==reward.id))}/><span>{reward.label}</span><code className="ml-auto text-[10px] text-soft">{reward.id}</code></label>)}
+        </div>
       </div>
       <button onClick={save} disabled={busy} className="inline-flex items-center gap-2 rounded-xl bg-brand text-ink px-5 py-3 font-bold disabled:opacity-50">{busy ? <Loader2 className="size-4 animate-spin"/> : <Save className="size-4"/>} Save progression</button>
     </section>}

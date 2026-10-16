@@ -65,6 +65,7 @@ const REWARDS: Reward[] = [...BASE_REWARDS, {
 }];
 
 function unlocked(reward: Reward, streak: ReturnType<typeof getStreakData>) {
+  try { if ((JSON.parse(localStorage.getItem("momentum_admin_reward_overrides_v1") ?? "[]") as string[]).includes(reward.id)) return true; } catch {}
   if (reward.type === "all") return BASE_REWARDS.every((item) => unlocked(item, streak));
   return reward.type === "streak" ? streak.longestStreak >= reward.threshold : (streak.totalStudyMinutes ?? 0) >= reward.threshold * 60;
 }
@@ -110,6 +111,7 @@ export function MilestoneRewards({ className = "" }: { className?: string }) {
       }
     };
     const update = () => { setStreak(getStreakData()); setXp(getXp()); announceNewRewards(); };
+    window.addEventListener("momentum_admin_reward_overrides_updated", update);
     window.addEventListener("momentum_xp_updated", update);
     announceNewRewards();
     window.addEventListener(STREAK_EVENT, update);
@@ -118,6 +120,7 @@ export function MilestoneRewards({ className = "" }: { className?: string }) {
       window.removeEventListener(STREAK_EVENT, update);
       window.removeEventListener("momentum_xp_updated", update);
       window.removeEventListener(REWARDS_EVENT, update);
+      window.removeEventListener("momentum_admin_reward_overrides_updated", update);
     };
   }, [theme]);
 

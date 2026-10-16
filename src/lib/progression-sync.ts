@@ -7,6 +7,7 @@ const REWARD_ANNOUNCEMENTS_KEY = "momentum_announced_reward_ids_v1";
 const REWARDS_THEME_KEY = "momentum_rewards_theme";
 const ACTIVITY_IDS_KEY = "momentum_xp_activity_ids_v1";
 const TIER_OVERRIDE_KEY = "momentum_tier_override_v1";
+const ADMIN_REWARD_OVERRIDES_KEY = "momentum_admin_reward_overrides_v1";
 const LAST_SYNC_KEY = "momentum_progression_last_sync_v1";
 const TABLE = "user_progression";
 
@@ -54,7 +55,7 @@ function mergeStreak(local: JsonRecord, remote: JsonRecord): JsonRecord {
 export async function initializeProgressionSync(userId: string): Promise<() => void> {
   if (typeof window === "undefined" || !userId) return () => {};
   const table = (supabase as any).from(TABLE);
-  const { data, error } = await table.select("user_id,xp,streak_data,freeze_data,reward_announcements,reward_theme,activity_ids,tier_override,updated_at").eq("user_id", userId).maybeSingle();
+  const { data, error } = await table.select("user_id,xp,streak_data,freeze_data,reward_announcements,reward_theme,activity_ids,tier_override,reward_overrides,updated_at").eq("user_id", userId).maybeSingle();
   if (error) {
     console.error("[progression] Could not load cloud progression. Apply the user_progression migration and verify RLS.", error.message);
     return () => {};
@@ -80,6 +81,7 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
     reward_theme: typeof remote.reward_theme === "string" ? remote.reward_theme : local.reward_theme,
     activity_ids: [...new Set([...local.activity_ids, ...parseArray(remote.activity_ids)])].slice(-5000),
     tier_override: data ? (remote.tier_override == null ? null : String(remote.tier_override)) : local.tier_override,
+    reward_overrides: parseArray(remote.reward_overrides),
   };
   setXpFromCloud(merged.xp);
   localStorage.setItem(STREAK_KEY, JSON.stringify(merged.streak_data));
@@ -89,6 +91,8 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
   localStorage.setItem(ACTIVITY_IDS_KEY, JSON.stringify(merged.activity_ids));
   if (merged.tier_override == null) localStorage.removeItem(TIER_OVERRIDE_KEY); else localStorage.setItem(TIER_OVERRIDE_KEY, String(merged.tier_override));
   localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
+  localStorage.setItem(ADMIN_REWARD_OVERRIDES_KEY, JSON.stringify(merged.reward_overrides));
+  window.dispatchEvent(new Event("momentum_admin_reward_overrides_updated"));
   window.dispatchEvent(new Event("momentum_tier_override_updated"));
   window.dispatchEvent(new Event("momentum_streak_updated"));
   window.dispatchEvent(new Event("momentum_freeze_updated"));

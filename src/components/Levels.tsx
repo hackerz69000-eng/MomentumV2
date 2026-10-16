@@ -213,7 +213,7 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
           <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
             {RPG_RANKS.map((r) => {
               const isCurrent = r.tier === currentRank.tier;
-              const isUnlocked = clampedPct >= r.minPct;
+              const isUnlocked = r.tier <= currentRank.tier;
               const RankIcon = r.icon;
 
               return (
