@@ -79,42 +79,80 @@ interface LevelsProps {
 export function Levels({ percentage, className = "", scope = "overall" }: LevelsProps) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [tierOverride, setTierOverride] = useState<number | null>(null);
+  const [overrideLoaded, setOverrideLoaded] = useState(false);
+  const clampedPct = Math.max(0, Math.min(100, Math.round(percentage)));
+  const BASE_PCT_KEY = "momentum_tier_override_mastery_base_v1";
+  const LAST_OVERRIDE_KEY = "momentum_tier_override_last_seen_v1";
+
   useEffect(() => {
     const readOverride = () => {
-      try { const raw = localStorage.getItem("momentum_tier_override_v1"); const value = raw == null ? null : Number(raw); setTierOverride(value !== null && Number.isInteger(value) && value >= 1 && value <= 50 ? value : null); } catch { setTierOverride(null); }
+      try {
+        const raw = localStorage.getItem("momentum_tier_override_v1");
+        const value = raw == null ? null : Number(raw);
+        const nextOverride = value !== null && Number.isInteger(value) && value >= 1 && value <= 50 ? value : null;
+        const previousRaw = localStorage.getItem(LAST_OVERRIDE_KEY);
+        // A manual edit establishes a new starting point. Capture mastery at the
+        // moment the override is received so an old high percentage cannot skip tiers.
+        if (previousRaw !== (nextOverride == null ? "auto" : String(nextOverride))) {
+          localStorage.setItem(BASE_PCT_KEY, String(clampedPct));
+          localStorage.setItem(LAST_OVERRIDE_KEY, nextOverride == null ? "auto" : String(nextOverride));
+        } else if (localStorage.getItem(BASE_PCT_KEY) == null) {
+          localStorage.setItem(BASE_PCT_KEY, String(clampedPct));
+        }
+        setTierOverride(nextOverride);
+        setOverrideLoaded(true);
+      } catch { setTierOverride(null); setOverrideLoaded(true); }
     };
-    readOverride(); window.addEventListener("momentum_tier_override_updated", readOverride); window.addEventListener("storage", readOverride);
-    return () => { window.removeEventListener("momentum_tier_override_updated", readOverride); window.removeEventListener("storage", readOverride); };
-  }, []);
-  const clampedPct = Math.max(0, Math.min(100, Math.round(percentage)));
+    readOverride();
+    window.addEventListener("momentum_tier_override_updated", readOverride);
+    window.addEventListener("storage", readOverride);
+    return () => {
+      window.removeEventListener("momentum_tier_override_updated", readOverride);
+      window.removeEventListener("storage", readOverride);
+    };
+  }, [clampedPct]);
 
-  // An explicit admin override is the current overall tier. Automatic mode
-  // always derives the tier from mastery, so switching back to Automatic
-  // immediately restores percentage-based tiering. Per-set tiers stay mastery-based.
+  const masterySinceManualStart = useMemo(() => {
+    if (scope !== "overall" || tierOverride === null) return clampedPct;
+    try {
+      const baseline = Number(localStorage.getItem(BASE_PCT_KEY));
+      return Math.max(0, clampedPct - (Number.isFinite(baseline) ? baseline : clampedPct));
+    } catch { return 0; }
+  }, [clampedPct, scope, tierOverride]);
+
+  // A manual tier is the true progression starting point. Only mastery gained
+  // after that edit advances it; pre-existing mastery cannot jump it to Tier 15.
   const currentRank = useMemo(() => {
     if (scope === "overall" && tierOverride !== null) {
-      return RPG_RANKS.find((r) => r.tier === tierOverride) ?? RPG_RANKS[0]!;
+      const tiersEarned = Math.floor(masterySinceManualStart / 2);
+      const effectiveTier = Math.min(50, tierOverride + tiersEarned);
+      return RPG_RANKS.find((r) => r.tier === effectiveTier) ?? RPG_RANKS[0]!;
     }
     return RPG_RANKS.find((r) => clampedPct >= r.minPct && clampedPct <= r.maxPct) || RPG_RANKS[0]!;
-  }, [clampedPct, scope, tierOverride]);
+  }, [clampedPct, scope, tierOverride, masterySinceManualStart]);
 
   const nextRank = useMemo(() => {
     const nextIdx = RPG_RANKS.findIndex((r) => r.tier === currentRank.tier) + 1;
     return RPG_RANKS[nextIdx] ?? null;
   }, [currentRank]);
 
+  const progressWithinManualTier = masterySinceManualStart % 2;
   const effectivePct = scope === "overall" && tierOverride !== null
-    ? Math.max(clampedPct, currentRank.minPct)
+    ? currentRank.minPct + progressWithinManualTier
     : clampedPct;
-  const pctToNext = nextRank ? Math.max(0, nextRank.minPct - effectivePct) : 0;
+  const pctToNext = nextRank ? Math.max(0, Math.ceil(2 - progressWithinManualTier)) : 0;
   const currentTierProgress = nextRank
-    ? Math.round(Math.min(1, Math.max(0, (effectivePct - currentRank.minPct) / Math.max(1, nextRank.minPct - currentRank.minPct))) * 100)
+    ? Math.round(Math.min(1, Math.max(0, progressWithinManualTier / 2)) * 100)
     : 100;
 
   const Icon = currentRank.icon;
   const previousTier = useRef<number | null>(null);
+  const celebrationBaselineEstablished = useRef(false);
+  const previousOverride = useRef<number | null | undefined>(undefined);
   useEffect(() => {
+    if (!overrideLoaded) return;
     const storageKey = scope === "overall" ? "momentum_last_seen_overall_tier_v1" : null;
+    const overrideChanged = previousOverride.current !== undefined && previousOverride.current !== tierOverride;
     let knownTier: number | null = previousTier.current;
     if (knownTier === null && storageKey) {
       try {
@@ -123,19 +161,24 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
       } catch { knownTier = null; }
     }
 
-    // First render establishes the baseline; opening Progress or refreshing must not
-    // replay tiers that were already reached before this component mounted.
-    if (knownTier !== null && Number.isFinite(knownTier) && currentRank.tier > knownTier) {
+    // First resolved render establishes a baseline: hydration, refreshes, and admin
+    // edits must never replay a celebration for a tier that was already selected.
+    const firstResolvedRender = !celebrationBaselineEstablished.current;
+    celebrationBaselineEstablished.current = true;
+    // Editing the starting tier is an administrative action, not a tier-up.
+    // Suppress celebration on override changes; celebrate only later earned tiers.
+    if (!firstResolvedRender && !overrideChanged && knownTier !== null && Number.isFinite(knownTier) && currentRank.tier > knownTier) {
       window.dispatchEvent(new CustomEvent("momentum_celebration", { detail: {
         kind: "tier", tier: currentRank.tier, title: `Tier ${currentRank.tier}: ${currentRank.title}!`,
         subtitle: currentRank.subtitle,
       }}));
     }
+    previousOverride.current = tierOverride;
     previousTier.current = currentRank.tier;
     if (storageKey) {
-      try { localStorage.setItem(storageKey, String(Math.max(knownTier ?? currentRank.tier, currentRank.tier))); } catch { /* optional persistence */ }
+      try { localStorage.setItem(storageKey, String(currentRank.tier)); } catch { /* optional persistence */ }
     }
-  }, [currentRank, scope]);
+  }, [currentRank, scope, tierOverride, overrideLoaded]);
 
   return (
     <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
@@ -168,7 +211,7 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
                 />
               </div>
               <span className="text-[10px] font-semibold text-soft">
-                {clampedPct}% mastery
+                {Math.round(effectivePct)}% mastery
               </span>
             </div>
           </div>

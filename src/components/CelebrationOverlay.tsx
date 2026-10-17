@@ -8,6 +8,7 @@ const SEEN_CELEBRATIONS_KEY = "momentum_seen_celebrations_v1";
 function celebrationKey(event: Celebration): string | null {
   if (event.kind === "level") return `level:${event.level ?? 0}`;
   if (event.kind === "level-milestone") return `level-milestone:${event.level ?? 0}`;
+  if (event.kind === "level" && (event.level ?? 0) % 10 === 0) return `level-milestone:${event.level ?? 0}`;
   if (event.kind === "tier") return `tier:${event.tier ?? 0}`;
   if (event.kind === "reward") return `reward:${event.id ?? event.title ?? "unknown"}`;
   if (event.kind === "streak") return `streak:${new Date().toLocaleDateString("en-CA")}`;
@@ -32,31 +33,47 @@ function markCelebrationSeen(key: string): void {
 }
 const tierEmojis = ["🌱","⚡","📚","🔨","🧭","🛡️","🌩️","🔐","🗡️","🏅","🏹","🔮","📜","🪐","🧙","🛡️","🛠️","👻","🥷","🧠","🦅","💥","🧵","⚗️","♟️","🛡️","🥋","🗿","👑","🌪️","📖","⚔️","🎖️","🐺","💡","👑","🚀","🐉","♟️","🌋","🌌","🪐","💫","🌠","🪽","💎","♾️","🌟","🤖","👑"];
 const levelEmojis = ["✨","🧭","📘","⚒️","🔎","🛡️","🌠","🔐","🏹","🏆"];
-function playSound(kind: string, level = 1) {
+function playSound(kind: string, level = 1, tier = 1, id = "") {
   try {
     const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) return;
     const ctx = new AudioCtx();
+    if (ctx.state === "suspended") void ctx.resume();
     const now = ctx.currentTime;
-    const notes = kind === "streak" ? [523, 659, 784] : kind === "reward" ? [392, 523, 659, 784] : kind === "tier" ? [330, 440, 554, 740] : kind.includes("milestone") ? [392, 523, 659, 784, 1046] : [440, 554, 659];
-    const baseGain = kind.includes("milestone") || (level % 10 === 0) ? 0.28 : 0.2;
+    // Each tier, decade level, and reward ID gets its own deterministic motif.
+    // This avoids the same generic chime playing for every achievement.
+    const seedText = `${kind}:${kind === "tier" ? tier : level}:${id}`;
+    const seed = Array.from(seedText).reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 7);
+    const root = kind === "tier" ? 220 + ((Math.max(1, tier) * 17) % 18) * 11
+      : (kind.includes("milestone") || (kind === "level" && level % 10 === 0)) ? 330 + ((Math.max(1, level / 10) * 23) % 12) * 13
+      : kind === "reward" ? 392 + (seed % 9) * 19
+      : kind === "streak" ? 440 : 349;
+    const intervals = [0, 2 + (seed % 3), 5 + ((seed >>> 3) % 3), 7 + ((seed >>> 5) % 5)];
+    const notes = kind === "tier" || kind.includes("milestone") || kind === "reward"
+      ? intervals.map((step, i) => root * Math.pow(2, step / 12) * (i === 3 && seed % 2 ? 2 : 1))
+      : [root, root * 1.25, root * 1.5];
+    const waveform: OscillatorType = kind === "streak" ? "triangle" : kind === "reward" ? "sine" : (seed % 2 ? "triangle" : "sawtooth");
+    const baseGain = kind.includes("milestone") || (kind === "level" && level % 10 === 0) ? 0.22 : 0.14;
     notes.forEach((frequency, i) => {
+      const at = now + i * (0.075 + (seed % 4) * 0.012);
       const osc = ctx.createOscillator(); const gain = ctx.createGain();
-      osc.type = kind === "streak" ? "triangle" : kind === "reward" ? "sine" : "sawtooth";
-      osc.frequency.setValueAtTime(frequency, now + i * 0.105);
-      gain.gain.setValueAtTime(0.0001, now + i * 0.105);
-      gain.gain.exponentialRampToValueAtTime(baseGain, now + i * 0.105 + 0.025);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.105 + 0.28);
-      osc.connect(gain); gain.connect(ctx.destination); osc.start(now + i * 0.105); osc.stop(now + i * 0.105 + 0.3);
+      osc.type = waveform;
+      osc.frequency.setValueAtTime(frequency, at);
+      osc.detune.setValueAtTime(((seed % 13) - 6) * (i + 1), at);
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(baseGain, at + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.24 + (seed % 5) * 0.025);
+      osc.connect(gain); gain.connect(ctx.destination); osc.start(at); osc.stop(at + 0.3 + (seed % 5) * 0.025);
     });
     window.setTimeout(() => void ctx.close(), 1800);
   } catch { /* Audio may be blocked until the user interacts; visual celebration still works. */ }
 }
+
 function getVisual(event: Celebration) {
-  if (event.kind === "tier") return { icon: tierEmojis[Math.max(0, (event.tier ?? 1) - 1) % tierEmojis.length], title: event.title ?? `Tier ${event.tier} reached!`, subtitle: event.subtitle ?? "Your mastery is growing.", className: "celebrate-tier" };
+  if (event.kind === "tier") return { icon: tierEmojis[Math.max(0, (event.tier ?? 1) - 1) % tierEmojis.length], title: event.title ?? `Tier ${event.tier} reached!`, subtitle: event.subtitle ?? "Your mastery is growing.", className: `celebrate-tier celebrate-tier-${Math.max(1, Math.min(50, event.tier ?? 1))}` };
   if (event.kind === "streak") return { icon: "🔥", title: event.title ?? "+1 Streak!", subtitle: event.subtitle ?? "Another day of showing up.", className: "celebrate-streak" };
   if (event.kind === "reward") return { icon: event.badge ?? "🏅", title: event.title ?? "New reward unlocked!", subtitle: event.subtitle ?? "A new badge is yours.", className: "celebrate-reward" };
-  if (event.kind === "level-milestone" || ((event.level ?? 0) % 10 === 0 && event.kind === "level")) return { icon: ({10:"🔟",20:"🏅",30:"💠",40:"🛡️",50:"👑",60:"🌌",70:"🐉",80:"⚡",90:"💎",100:"🌟"} as Record<number,string>)[event.level ?? 10] ?? "🌟", title: `LEVEL ${event.level} — MILESTONE!`, subtitle: `You reached a major Momentum milestone.`, className: "celebrate-milestone" };
+  if (event.kind === "level-milestone" || ((event.level ?? 0) % 10 === 0 && event.kind === "level")) return { icon: ({10:"🔟",20:"🏅",30:"💠",40:"🛡️",50:"👑",60:"🌌",70:"🐉",80:"⚡",90:"💎",100:"🌟"} as Record<number,string>)[event.level ?? 10] ?? "🌟", title: `LEVEL ${event.level} — MILESTONE!`, subtitle: ({10:"Your first decade of progress.",20:"Bronze Scholar milestone achieved.",30:"Crystal Mind awakened.",40:"Guardian of Focus stands tall.",50:"Golden Scholar — halfway to the summit.",60:"Cosmic Learner unlocked.",70:"Dragon Mind unleashed.",80:"Lightning Intellect strikes.",90:"Diamond Sage ascends.",100:"Momentum Legend — the final form."} as Record<number,string>)[event.level ?? 10] ?? "A major Momentum milestone.", className: `celebrate-milestone celebrate-milestone-${event.level ?? 10}` };
   return { icon: levelEmojis[((event.level ?? 1) - 1) % levelEmojis.length], title: `Level ${event.level}!`, subtitle: "Progress earned through real study.", className: "celebrate-level" };
 }
 export function CelebrationOverlay() {
@@ -67,7 +84,7 @@ export function CelebrationOverlay() {
       timer.current = undefined;
       const next = queue.current.shift();
       if (!next) { setActive(null); return; }
-      setActive(next); playSound(next.kind, next.level ?? next.tier);
+      setActive(next); playSound(next.kind, next.level ?? 1, next.tier ?? 1, next.id ?? next.title ?? "");
       timer.current = window.setTimeout(showNext, next.kind === "level-milestone" ? 4800 : next.kind === "tier" ? 4200 : 3400);
     };
     advanceRef.current = showNext;
@@ -87,12 +104,12 @@ export function CelebrationOverlay() {
     window.addEventListener(EVENT, onEvent);
     return () => { window.removeEventListener(EVENT, onEvent); if (timer.current) window.clearTimeout(timer.current); };
   }, []);
-  if (!active) return <style>{styles}</style>;
+  if (!active) return <style>{styles}{uniqueAnimationStyles}</style>;
   const visual = getVisual(active);
-  const tierClass = active.kind === "tier" ? ` celebrate-tier-${active.tier ?? 1}` : "";
+  const tierClass = "";
   const rewardClass = active.kind === "reward" && active.id ? ` celebrate-reward-${active.id.replace(/[^a-zA-Z0-9_-]/g, "-")}` : "";
   const dismiss = () => { if (timer.current) window.clearTimeout(timer.current); timer.current = undefined; setActive(null); advanceRef.current(); };
-  return <><style>{styles}</style><div className={`celebration-backdrop ${visual.className}${tierClass}${rewardClass}`} role="status" aria-live="polite">
+  return <><style>{styles}{uniqueAnimationStyles}</style><div className={`celebration-backdrop ${visual.className}${tierClass}${rewardClass}`} role="status" aria-live="polite">
     <div className="celebration-rays" aria-hidden="true" />
     <button className="celebration-close" onClick={dismiss} aria-label="Dismiss celebration"><X size={18}/></button>
     <div className="celebration-card"><div className="celebration-kicker"><Sparkles size={15}/> MOMENTUM UNLOCKED <Sparkles size={15}/></div>
@@ -113,3 +130,53 @@ const styles = `
 .celebrate-reward-milestone-1 .celebration-emblem{animation:reward-badge-1 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-1{0%{transform:scale(0) rotate(-240deg)}65%{transform:scale(1.2) rotate(18deg)}100%{transform:scale(1) rotate(0)}}.celebrate-reward-milestone-2 .celebration-emblem{animation:reward-badge-2 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-2{0%{transform:translateY(-70px) scale(.2);opacity:0}70%{transform:translateY(10px) scale(1.12)}100%{transform:translateY(0) scale(1);opacity:1}}.celebrate-reward-milestone-3 .celebration-emblem{animation:reward-badge-3 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-3{0%{transform:rotateY(180deg) scale(.4)}70%{transform:rotateY(-15deg) scale(1.15)}100%{transform:rotateY(0) scale(1)}}.celebrate-reward-milestone-4 .celebration-emblem{animation:reward-badge-4 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-4{0%{transform:scale(.1);filter:brightness(3)}50%{transform:scale(1.25)}75%{transform:scale(.9)}100%{transform:scale(1)}}.celebrate-reward-milestone-5 .celebration-emblem{animation:reward-badge-5 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-5{0%{transform:translateX(100px) rotate(35deg);opacity:0}65%{transform:translateX(-8px) rotate(-8deg)}100%{transform:translateX(0) rotate(0);opacity:1}}.celebrate-reward-milestone-6 .celebration-emblem{animation:reward-badge-6 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-6{0%{transform:scale(0) rotate(-240deg)}65%{transform:scale(1.2) rotate(18deg)}100%{transform:scale(1) rotate(0)}}.celebrate-reward-milestone-7 .celebration-emblem{animation:reward-badge-7 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-7{0%{transform:translateY(-70px) scale(.2);opacity:0}70%{transform:translateY(10px) scale(1.12)}100%{transform:translateY(0) scale(1);opacity:1}}.celebrate-reward-milestone-8 .celebration-emblem{animation:reward-badge-8 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-8{0%{transform:rotateY(180deg) scale(.4)}70%{transform:rotateY(-15deg) scale(1.15)}100%{transform:rotateY(0) scale(1)}}.celebrate-reward-milestone-9 .celebration-emblem{animation:reward-badge-9 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-9{0%{transform:scale(.1);filter:brightness(3)}50%{transform:scale(1.25)}75%{transform:scale(.9)}100%{transform:scale(1)}}.celebrate-reward-milestone-10 .celebration-emblem{animation:reward-badge-10 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-10{0%{transform:translateX(100px) rotate(35deg);opacity:0}65%{transform:translateX(-8px) rotate(-8deg)}100%{transform:translateX(0) rotate(0);opacity:1}}.celebrate-reward-milestone-11 .celebration-emblem{animation:reward-badge-11 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-11{0%{transform:scale(0) rotate(-240deg)}65%{transform:scale(1.2) rotate(18deg)}100%{transform:scale(1) rotate(0)}}.celebrate-reward-milestone-12 .celebration-emblem{animation:reward-badge-12 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-12{0%{transform:translateY(-70px) scale(.2);opacity:0}70%{transform:translateY(10px) scale(1.12)}100%{transform:translateY(0) scale(1);opacity:1}}.celebrate-reward-milestone-13 .celebration-emblem{animation:reward-badge-13 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-13{0%{transform:rotateY(180deg) scale(.4)}70%{transform:rotateY(-15deg) scale(1.15)}100%{transform:rotateY(0) scale(1)}}.celebrate-reward-milestone-14 .celebration-emblem{animation:reward-badge-14 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-14{0%{transform:scale(.1);filter:brightness(3)}50%{transform:scale(1.25)}75%{transform:scale(.9)}100%{transform:scale(1)}}.celebrate-reward-milestone-15 .celebration-emblem{animation:reward-badge-15 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-15{0%{transform:translateX(100px) rotate(35deg);opacity:0}65%{transform:translateX(-8px) rotate(-8deg)}100%{transform:translateX(0) rotate(0);opacity:1}}.celebrate-reward-milestone-16 .celebration-emblem{animation:reward-badge-16 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-16{0%{transform:scale(0) rotate(-240deg)}65%{transform:scale(1.2) rotate(18deg)}100%{transform:scale(1) rotate(0)}}.celebrate-reward-milestone-17 .celebration-emblem{animation:reward-badge-17 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-17{0%{transform:translateY(-70px) scale(.2);opacity:0}70%{transform:translateY(10px) scale(1.12)}100%{transform:translateY(0) scale(1);opacity:1}}.celebrate-reward-milestone-18 .celebration-emblem{animation:reward-badge-18 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-18{0%{transform:rotateY(180deg) scale(.4)}70%{transform:rotateY(-15deg) scale(1.15)}100%{transform:rotateY(0) scale(1)}}.celebrate-reward-milestone-19 .celebration-emblem{animation:reward-badge-19 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-19{0%{transform:scale(.1);filter:brightness(3)}50%{transform:scale(1.25)}75%{transform:scale(.9)}100%{transform:scale(1)}}.celebrate-reward-milestone-20 .celebration-emblem{animation:reward-badge-20 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-20{0%{transform:translateX(100px) rotate(35deg);opacity:0}65%{transform:translateX(-8px) rotate(-8deg)}100%{transform:translateX(0) rotate(0);opacity:1}}.celebrate-reward-milestone-21 .celebration-emblem{animation:reward-badge-21 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-21{0%{transform:scale(0) rotate(-240deg)}65%{transform:scale(1.2) rotate(18deg)}100%{transform:scale(1) rotate(0)}}.celebrate-reward-milestone-22 .celebration-emblem{animation:reward-badge-22 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-22{0%{transform:translateY(-70px) scale(.2);opacity:0}70%{transform:translateY(10px) scale(1.12)}100%{transform:translateY(0) scale(1);opacity:1}}.celebrate-reward-milestone-23 .celebration-emblem{animation:reward-badge-23 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-23{0%{transform:rotateY(180deg) scale(.4)}70%{transform:rotateY(-15deg) scale(1.15)}100%{transform:rotateY(0) scale(1)}}.celebrate-reward-milestone-24 .celebration-emblem{animation:reward-badge-24 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-24{0%{transform:scale(.1);filter:brightness(3)}50%{transform:scale(1.25)}75%{transform:scale(.9)}100%{transform:scale(1)}}.celebrate-reward-milestone-25 .celebration-emblem{animation:reward-badge-25 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-25{0%{transform:translateX(100px) rotate(35deg);opacity:0}65%{transform:translateX(-8px) rotate(-8deg)}100%{transform:translateX(0) rotate(0);opacity:1}}.celebrate-reward-milestone-26 .celebration-emblem{animation:reward-badge-26 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-26{0%{transform:scale(0) rotate(-240deg)}65%{transform:scale(1.2) rotate(18deg)}100%{transform:scale(1) rotate(0)}}.celebrate-reward-milestone-27 .celebration-emblem{animation:reward-badge-27 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-27{0%{transform:translateY(-70px) scale(.2);opacity:0}70%{transform:translateY(10px) scale(1.12)}100%{transform:translateY(0) scale(1);opacity:1}}.celebrate-reward-milestone-28 .celebration-emblem{animation:reward-badge-28 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-28{0%{transform:rotateY(180deg) scale(.4)}70%{transform:rotateY(-15deg) scale(1.15)}100%{transform:rotateY(0) scale(1)}}.celebrate-reward-milestone-29 .celebration-emblem{animation:reward-badge-29 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-29{0%{transform:scale(.1);filter:brightness(3)}50%{transform:scale(1.25)}75%{transform:scale(.9)}100%{transform:scale(1)}}.celebrate-reward-milestone-30 .celebration-emblem{animation:reward-badge-30 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-30{0%{transform:translateX(100px) rotate(35deg);opacity:0}65%{transform:translateX(-8px) rotate(-8deg)}100%{transform:translateX(0) rotate(0);opacity:1}}.celebrate-reward-milestone-31 .celebration-emblem{animation:reward-badge-31 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-31{0%{transform:scale(0) rotate(-240deg)}65%{transform:scale(1.2) rotate(18deg)}100%{transform:scale(1) rotate(0)}}.celebrate-reward-milestone-32 .celebration-emblem{animation:reward-badge-32 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-32{0%{transform:translateY(-70px) scale(.2);opacity:0}70%{transform:translateY(10px) scale(1.12)}100%{transform:translateY(0) scale(1);opacity:1}}.celebrate-reward-milestone-33 .celebration-emblem{animation:reward-badge-33 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-33{0%{transform:rotateY(180deg) scale(.4)}70%{transform:rotateY(-15deg) scale(1.15)}100%{transform:rotateY(0) scale(1)}}.celebrate-reward-milestone-34 .celebration-emblem{animation:reward-badge-34 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-34{0%{transform:scale(.1);filter:brightness(3)}50%{transform:scale(1.25)}75%{transform:scale(.9)}100%{transform:scale(1)}}.celebrate-reward-milestone-35 .celebration-emblem{animation:reward-badge-35 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-35{0%{transform:translateX(100px) rotate(35deg);opacity:0}65%{transform:translateX(-8px) rotate(-8deg)}100%{transform:translateX(0) rotate(0);opacity:1}}.celebrate-reward-milestone-36 .celebration-emblem{animation:reward-badge-36 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-36{0%{transform:scale(0) rotate(-240deg)}65%{transform:scale(1.2) rotate(18deg)}100%{transform:scale(1) rotate(0)}}.celebrate-reward-milestone-37 .celebration-emblem{animation:reward-badge-37 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-37{0%{transform:translateY(-70px) scale(.2);opacity:0}70%{transform:translateY(10px) scale(1.12)}100%{transform:translateY(0) scale(1);opacity:1}}.celebrate-reward-milestone-38 .celebration-emblem{animation:reward-badge-38 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-38{0%{transform:rotateY(180deg) scale(.4)}70%{transform:rotateY(-15deg) scale(1.15)}100%{transform:rotateY(0) scale(1)}}.celebrate-reward-milestone-39 .celebration-emblem{animation:reward-badge-39 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-39{0%{transform:scale(.1);filter:brightness(3)}50%{transform:scale(1.25)}75%{transform:scale(.9)}100%{transform:scale(1)}}.celebrate-reward-milestone-40 .celebration-emblem{animation:reward-badge-40 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-40{0%{transform:translateX(100px) rotate(35deg);opacity:0}65%{transform:translateX(-8px) rotate(-8deg)}100%{transform:translateX(0) rotate(0);opacity:1}}.celebrate-reward-milestone-41 .celebration-emblem{animation:reward-badge-41 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-41{0%{transform:scale(0) rotate(-240deg)}65%{transform:scale(1.2) rotate(18deg)}100%{transform:scale(1) rotate(0)}}.celebrate-reward-milestone-42 .celebration-emblem{animation:reward-badge-42 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-42{0%{transform:translateY(-70px) scale(.2);opacity:0}70%{transform:translateY(10px) scale(1.12)}100%{transform:translateY(0) scale(1);opacity:1}}.celebrate-reward-milestone-43 .celebration-emblem{animation:reward-badge-43 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-43{0%{transform:rotateY(180deg) scale(.4)}70%{transform:rotateY(-15deg) scale(1.15)}100%{transform:rotateY(0) scale(1)}}.celebrate-reward-milestone-44 .celebration-emblem{animation:reward-badge-44 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-44{0%{transform:scale(.1);filter:brightness(3)}50%{transform:scale(1.25)}75%{transform:scale(.9)}100%{transform:scale(1)}}.celebrate-reward-milestone-45 .celebration-emblem{animation:reward-badge-45 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-45{0%{transform:translateX(100px) rotate(35deg);opacity:0}65%{transform:translateX(-8px) rotate(-8deg)}100%{transform:translateX(0) rotate(0);opacity:1}}.celebrate-reward-milestone-46 .celebration-emblem{animation:reward-badge-46 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-46{0%{transform:scale(0) rotate(-240deg)}65%{transform:scale(1.2) rotate(18deg)}100%{transform:scale(1) rotate(0)}}.celebrate-reward-milestone-47 .celebration-emblem{animation:reward-badge-47 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-47{0%{transform:translateY(-70px) scale(.2);opacity:0}70%{transform:translateY(10px) scale(1.12)}100%{transform:translateY(0) scale(1);opacity:1}}.celebrate-reward-milestone-48 .celebration-emblem{animation:reward-badge-48 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-48{0%{transform:rotateY(180deg) scale(.4)}70%{transform:rotateY(-15deg) scale(1.15)}100%{transform:rotateY(0) scale(1)}}.celebrate-reward-milestone-49 .celebration-emblem{animation:reward-badge-49 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-49{0%{transform:scale(.1);filter:brightness(3)}50%{transform:scale(1.25)}75%{transform:scale(.9)}100%{transform:scale(1)}}.celebrate-reward-milestone-50 .celebration-emblem{animation:reward-badge-50 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-50{0%{transform:translateX(100px) rotate(35deg);opacity:0}65%{transform:translateX(-8px) rotate(-8deg)}100%{transform:translateX(0) rotate(0);opacity:1}}.celebrate-reward-milestone-study-fiend .celebration-emblem{animation:reward-badge-51 .9s cubic-bezier(.2,1.3,.3,1) both}@keyframes reward-badge-51{0%{transform:scale(0) rotate(-240deg)}65%{transform:scale(1.2) rotate(18deg)}100%{transform:scale(1) rotate(0)}}.celebrate-reward-level-reward-10 .celebration-emblem{animation:reward-badge-1 .9s cubic-bezier(.2,1.3,.3,1) both}.celebrate-reward-level-reward-20 .celebration-emblem{animation:reward-badge-2 .9s cubic-bezier(.2,1.3,.3,1) both}.celebrate-reward-level-reward-30 .celebration-emblem{animation:reward-badge-3 .9s cubic-bezier(.2,1.3,.3,1) both}.celebrate-reward-level-reward-40 .celebration-emblem{animation:reward-badge-4 .9s cubic-bezier(.2,1.3,.3,1) both}.celebrate-reward-level-reward-50 .celebration-emblem{animation:reward-badge-5 .9s cubic-bezier(.2,1.3,.3,1) both}.celebrate-reward-level-reward-60 .celebration-emblem{animation:reward-badge-6 .9s cubic-bezier(.2,1.3,.3,1) both}.celebrate-reward-level-reward-70 .celebration-emblem{animation:reward-badge-7 .9s cubic-bezier(.2,1.3,.3,1) both}.celebrate-reward-level-reward-80 .celebration-emblem{animation:reward-badge-8 .9s cubic-bezier(.2,1.3,.3,1) both}.celebrate-reward-level-reward-90 .celebration-emblem{animation:reward-badge-9 .9s cubic-bezier(.2,1.3,.3,1) both}.celebrate-reward-level-reward-100 .celebration-emblem{animation:reward-badge-10 .9s cubic-bezier(.2,1.3,.3,1) both}
 @media(prefers-reduced-motion:reduce){.celebration-backdrop,.celebration-card,.celebration-emblem,.celebration-rays,.celebration-sparks,.celebration-confetti i{animation-duration:.01ms!important;animation-iteration-count:1!important}}
 `;
+
+// Every tier and each decade milestone receives its own keyframe and timing profile.
+// This makes tier 15 visibly different from tier 14, and level 20 different from level 10.
+const uniqueAnimationStyles = `
+${Array.from({ length: 50 }, (_, i) => {
+  const n = i + 1;
+  const angle = ((n * 47) % 300) - 150;
+  const x = ((n * 29) % 220) - 110;
+  const y = ((n * 41) % 240) - 120;
+  const scale = (0.12 + ((n * 13) % 90) / 100).toFixed(2);
+  const start = [
+    `translate(${x}px,${y}px) scale(${scale}) rotate(${angle}deg)`,
+    `rotateY(${90 + (n * 31) % 270}deg) scale(${scale}) translateX(${x / 2}px)`,
+    `rotateX(${80 + (n * 23) % 260}deg) scale(${scale}) translateY(${y / 2}px)`,
+    `scale(${scale}) skew(${(n * 7) % 50 - 25}deg,${(n * 11) % 40 - 20}deg) rotate(${angle}deg)`,
+    `translateX(${x}px) rotate(${angle}deg) scale(${scale}) blur(0px)`,
+  ][(n - 1) % 5];
+  const overshoot = (1.05 + ((n * 7) % 38) / 100).toFixed(2);
+  const duration = (0.65 + ((n * 17) % 75) / 100).toFixed(2);
+  const hue = (n * 37) % 360;
+  const midpoint = 40 + (n * 7) % 26;
+  return `.celebrate-tier-${n} .celebration-emblem{animation:tier-reveal-${n} ${duration}s cubic-bezier(.2,1.3,.3,1) both;filter:hue-rotate(${hue}deg)}@keyframes tier-reveal-${n}{0%{transform:${start};opacity:0;filter:brightness(${1.5 + (n % 4)}) hue-rotate(${hue}deg)}${midpoint}%{transform:scale(${overshoot}) rotate(${angle / 3}deg);opacity:1}82%{transform:scale(${(0.88 + (n % 9) / 100).toFixed(2)}) rotate(${-angle / 7}deg)}100%{transform:scale(1) rotate(0);opacity:1;filter:hue-rotate(${hue}deg)}}`;
+}).join("\n")}
+${Array.from({ length: 10 }, (_, i) => {
+  const level = (i + 1) * 10;
+  const variants = [
+    "scale(0) rotate(-360deg)", "translateY(-140px) scale(.1)", "rotateY(180deg) scale(.2)",
+    "translateX(-160px) rotate(-60deg)", "scale(2.2) rotate(25deg)", "translateY(120px) rotate(180deg) scale(.2)",
+    "rotateX(200deg) scale(.1)", "translateX(160px) rotate(90deg) scale(.2)", "scale(.05) skew(35deg)", "translateY(-100px) rotate(-240deg) scale(.2)"
+  ];
+  const hue = (level * 11) % 360;
+  return `.celebrate-milestone-${level} .celebration-emblem{animation:decade-reveal-${level} .98s cubic-bezier(.16,1.4,.3,1) both;filter:hue-rotate(${hue}deg) drop-shadow(0 0 20px hsla(${hue},95%,65%,.7))}@keyframes decade-reveal-${level}{0%{transform:${variants[i]};opacity:0;filter:brightness(3) hue-rotate(${hue}deg)}55%{transform:scale(1.25) rotate(${(i + 1) * 9}deg);opacity:1}78%{transform:scale(.92) rotate(-${(i + 1) * 3}deg)}100%{transform:scale(1) rotate(0);opacity:1;filter:hue-rotate(${hue}deg)}}`;
+}).join("\n")}
+${Array.from({ length: 51 }, (_, i) => {
+  const n = i === 50 ? "study-fiend" : String(i + 1);
+  const index = i + 1;
+  const start = ["scale(0) rotate(-240deg)", "rotateY(180deg) scale(.2)", "translateY(-80px) scale(.3)", "translateX(100px) rotate(35deg)", "scale(.1) brightness(3)", "rotateX(180deg) scale(.4)"][i % 6];
+  const hue = (index * 29) % 360;
+  const selector = i === 50 ? ".celebrate-reward-milestone-study-fiend" : `.celebrate-reward-milestone-${n}`;
+  return `${selector} .celebration-emblem{animation:reward-specific-${index} .9s cubic-bezier(.2,1.3,.3,1) both;filter:hue-rotate(${hue}deg)}@keyframes reward-specific-${index}{0%{transform:${start};opacity:0;filter:brightness(3) hue-rotate(${hue}deg)}68%{transform:scale(1.2) rotate(${index % 2 ? 12 : -12}deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1;filter:hue-rotate(${hue}deg)}}`;
+}).join("\n")}
+${Array.from({ length: 10 }, (_, i) => {
+  const level = (i + 1) * 10;
+  const hue = (level * 17) % 360;
+  const start = ["scale(0) rotate(-360deg)", "translateY(-120px) scale(.1)", "rotateY(180deg) scale(.2)", "translateX(-140px) rotate(-70deg)", "scale(2) rotate(30deg)"][i % 5];
+  return `.celebrate-reward-level-reward-${level} .celebration-emblem{animation:level-reward-${level} 1s cubic-bezier(.16,1.4,.3,1) both;filter:hue-rotate(${hue}deg) drop-shadow(0 0 18px hsla(${hue},95%,65%,.7))}@keyframes level-reward-${level}{0%{transform:${start};opacity:0}60%{transform:scale(1.28) rotate(${(i + 1) * 7}deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1}}`;
+}).join("\n")}
+@media(prefers-reduced-motion:reduce){.celebrate-tier-1 .celebration-emblem,.celebrate-tier-2 .celebration-emblem,.celebrate-tier-3 .celebration-emblem,.celebrate-milestone-10 .celebration-emblem,.celebrate-milestone-20 .celebration-emblem{animation-duration:.01ms!important}}
+`;
+
