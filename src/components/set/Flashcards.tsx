@@ -114,16 +114,28 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
       toast.success("Flashcard review completed. Complete all five distinct daily tasks to earn streak credit.");
     }
 
+    let savedRemotely = false;
     try {
       const { error } = await supabase.from("flashcards").update(patch).eq("id", card.id);
-      if (!error) {
+      if (error) {
+        // Keep the optimistic/local update visible. Refetching immediately after
+        // a failed write used to replace it with stale server data (e.g. 1/35 -> 0/35).
+        console.error("[flashcards] Review rating could not be saved remotely:", error.message);
+        toast.error("Review saved locally, but cloud sync failed. Your progress will stay visible; check your connection.");
+      } else {
+        savedRemotely = true;
         void logActivity("flashcard", setId, 1, qc);
       }
-    } catch {
-      // offline/local is safe
+    } catch (error) {
+      console.error("[flashcards] Review save failed:", error);
+      toast.error("Review saved locally, but cloud sync failed. Your progress will stay visible; check your connection.");
     }
-    qc.invalidateQueries({ queryKey: ["cards", setId] });
-    qc.invalidateQueries({ queryKey: ["sets"] });
+    // Refetch only after the write has succeeded; otherwise a stale server read
+    // can immediately overwrite the optimistic review state.
+    if (savedRemotely) {
+      await qc.invalidateQueries({ queryKey: ["cards", setId] });
+      await qc.invalidateQueries({ queryKey: ["sets"] });
+    }
   };
 
   const del = async (c: Flashcard) => {
