@@ -98,7 +98,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
     if (result) {
       setNotesAdditions(result.additions);
       if (!result.additions) toast.success(result.message);
-      else toast.success("Review the proposed additions before applying them.");
+      else toast.success(result.message || "Review the proposed additions before applying them.");
     }
   };
   const applyNotesAdditions = async () => {
