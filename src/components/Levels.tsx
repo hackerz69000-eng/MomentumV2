@@ -70,6 +70,15 @@ export const RPG_RANKS: RpgRank[] = TIER_NAMES.map((title, i) => ({
       : `Tier ${i + 1}: ${title} — build durable recall, apply ideas, and demonstrate consistent mastery to advance.`,
 }));
 
+/** Calculate a manual tier from only mastery earned after its reset point. */
+export function tierFromManualStart(startTier: number, masteryAtStart: number, currentMastery: number): number {
+  const safeTier = Math.max(1, Math.min(50, Math.trunc(Number.isFinite(startTier) ? startTier : 1)));
+  const start = Math.max(0, Math.min(100, Number.isFinite(masteryAtStart) ? masteryAtStart : 0));
+  const current = Math.max(0, Math.min(100, Number.isFinite(currentMastery) ? currentMastery : start));
+  const newlyEarnedMastery = Math.max(0, current - start);
+  return Math.min(50, safeTier + Math.floor(newlyEarnedMastery / 2));
+}
+
 interface LevelsProps {
   percentage: number;
   className?: string;
@@ -129,8 +138,16 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
   // after that edit advances it; pre-existing mastery cannot jump it to Tier 15.
   const currentRank = useMemo(() => {
     if (scope === "overall" && tierOverride !== null) {
-      const tiersEarned = Math.floor(masterySinceManualStart / 2);
-      const effectiveTier = Math.min(50, tierOverride + tiersEarned);
+      // The admin-selected tier is the base tier itself (not a delta from the
+      // learner's former tier). Only mastery gained after the latest cloud
+      // revision may advance it. This also makes re-selecting Tier 1 or Tier 2
+      // deterministic instead of accumulating the previous manual selection.
+      let baseline = clampedPct;
+      try {
+        const storedBaseline = Number(localStorage.getItem(BASE_PCT_KEY));
+        if (Number.isFinite(storedBaseline)) baseline = storedBaseline;
+      } catch { /* use current mastery as a safe baseline */ }
+      const effectiveTier = tierFromManualStart(tierOverride, baseline, clampedPct);
       return RPG_RANKS.find((r) => r.tier === effectiveTier) ?? RPG_RANKS[0]!;
     }
     return RPG_RANKS.find((r) => clampedPct >= r.minPct && clampedPct <= r.maxPct) || RPG_RANKS[0]!;
