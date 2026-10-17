@@ -88,11 +88,12 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
   }, []);
   const clampedPct = Math.max(0, Math.min(100, Math.round(percentage)));
 
+  // The displayed/current tier always follows the actual mastery percentage.
+  // Admin overrides only affect which rows are marked unlocked in the ladder;
+  // they must not pair a forced tier with an unrelated mastery percentage.
   const currentRank = useMemo(() => {
-    return (
-      (scope === "overall" && tierOverride ? RPG_RANKS[tierOverride - 1] : undefined) || RPG_RANKS.find((r) => clampedPct >= r.minPct && clampedPct <= r.maxPct) || RPG_RANKS[0]!
-    );
-  }, [clampedPct, scope, tierOverride]);
+    return RPG_RANKS.find((r) => clampedPct >= r.minPct && clampedPct <= r.maxPct) || RPG_RANKS[0]!;
+  }, [clampedPct]);
 
   const nextRank = useMemo(() => {
     const nextIdx = RPG_RANKS.findIndex((r) => r.tier === currentRank.tier) + 1;
@@ -213,7 +214,8 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
           <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
             {RPG_RANKS.map((r) => {
               const isCurrent = r.tier === currentRank.tier;
-              const isUnlocked = r.tier <= currentRank.tier;
+              const unlockedThrough = scope === "overall" ? Math.max(currentRank.tier, tierOverride ?? 0) : currentRank.tier;
+              const isUnlocked = r.tier <= unlockedThrough;
               const RankIcon = r.icon;
 
               return (
