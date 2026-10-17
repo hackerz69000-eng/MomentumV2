@@ -5,7 +5,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { BookOpen, FileText, GraduationCap, Loader2, MessageCircle, Sparkles, Layers, RefreshCw, Send, Link2, Unlink, BookMarked, LibraryBig, AlertTriangle, Trash2, Copy, Check, ChevronDown, ChevronUp } from "lucide-react";
 import type { StudySet } from "@/lib/queries";
-import { readingAddDocument, readingDeleteDocument, readingAsk, readingGenerateCards, readingListSources, readingLinkSource, readingSaveCards, readingSummary, readingUnlinkSource } from "@/lib/reading.functions";
+import { readingAddDocument, readingDeleteDocument, readingAsk, readingGenerateCards, readingListSources, readingLinkSource, readingSaveCards, readingSummary, readingUnlinkSource, readingImplementIntoNotes, readingApplyNotesAdditions } from "@/lib/reading.functions";
 import { btnGhost, btnPrimary, inputCls } from "./ui";
 import { ACCEPT, MAX_BYTES, extractFile, fileKind } from "@/lib/extract";
 import { ocrFile } from "@/lib/study.functions";
@@ -19,6 +19,8 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
   const qc = useQueryClient();
   const { user } = useAuth();
   const summaryFn = useServerFn(readingSummary);
+  const implementNotesFn = useServerFn(readingImplementIntoNotes);
+  const applyNotesFn = useServerFn(readingApplyNotesAdditions);
   const addReadingFn = useServerFn(readingAddDocument);
   const deleteReadingFn = useServerFn(readingDeleteDocument);
   const ocrFn = useServerFn(ocrFile);
@@ -30,6 +32,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
   const unlinkFn = useServerFn(readingUnlinkSource);
   const [busy, setBusy] = useState<"summary" | "ask" | "cards" | "save" | "link" | string | null>(null);
   const [summary, setSummary] = useState("");
+  const [notesAdditions, setNotesAdditions] = useState("");
   const [activeSummarySection, setActiveSummarySection] = useState(0);
   const [expandedSummarySections, setExpandedSummarySections] = useState<number[]>([]);
   const [copiedSummary, setCopiedSummary] = useState(false);
@@ -89,6 +92,23 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
   };
   const refreshSources = async () => {
     await qc.invalidateQueries({ queryKey: ["reading-companion-sources", set.id] });
+  };
+  const implementIntoNotes = async () => {
+    const result = await run("implement-notes", () => implementNotesFn({ data: { setId: set.id } }));
+    if (result) {
+      setNotesAdditions(result.additions);
+      if (!result.additions) toast.success(result.message);
+      else toast.success("Review the proposed additions before applying them.");
+    }
+  };
+  const applyNotesAdditions = async () => {
+    if (!notesAdditions.trim()) return;
+    const result = await run("apply-notes", () => applyNotesFn({ data: { setId: set.id, additions: notesAdditions } }));
+    if (result) {
+      toast.success(result.message);
+      setNotesAdditions("");
+      await qc.invalidateQueries({ queryKey: ["set", set.id] });
+    }
   };
   const makeSummary = async () => {
     const result = await run("summary", () => summaryFn({ data: { setId: set.id, sourceKey: selectedSourceKey } }));
@@ -181,6 +201,12 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
         <div className="grid sm:grid-cols-2 gap-3">
           <div className="rounded-xl border border-line/70 p-4 space-y-3"><div className="flex items-center gap-2 font-semibold"><FileText className="size-4 text-cool2"/> Assigned reading</div><p className="text-sm text-soft">{readingCount} reading source{readingCount === 1 ? "" : "s"} available</p><p className="text-xs text-soft">Upload the textbook chapter or assigned reading. Momentum checks for usable body text and tries OCR when a PDF contains only page headings, rather than silently saving a nearly empty source. Your original lecture material stays separate.</p><label className={btnPrimary + " cursor-pointer inline-flex"}><FileText className="size-4"/>{uploadingReading ? "Processing reading…" : "Upload reading"}<input type="file" accept={ACCEPT} multiple className="sr-only" disabled={uploadingReading} onChange={(e) => { void uploadReadingFiles(e.currentTarget.files); e.currentTarget.value = ""; }}/></label>{uploadingReading && <p className="text-xs text-soft" aria-live="polite">{uploadMessage || "Extracting text…"}</p>}</div>
           <div className="rounded-xl border border-line/70 p-4"><div className="flex items-center gap-2 font-semibold"><GraduationCap className="size-4 text-mint"/> Lecture / primary material</div><p className="text-sm text-soft mt-2">{lectureCount} lecture source{lectureCount === 1 ? "" : "s"} available</p><p className="text-xs text-soft mt-1">The material uploaded when you created this Study Set is treated as the primary course source, alongside any lecture transcripts or connected lectures. If a file has only headings, re-upload a searchable/OCR PDF or a DOCX/TXT version for better results.</p></div>
+        </div>
+        <div className="rounded-xl border border-mint/30 bg-mint/[0.04] p-4 space-y-3">
+          <div className="flex items-center gap-2 font-semibold"><Sparkles className="size-4 text-mint"/> Implement into Notes</div>
+          <p className="text-sm text-soft">Compare your reading PDFs with the existing notes and prepare only useful missing information. Existing notes are never replaced or deleted. Review the additions before saving.</p>
+          <button type="button" className={btnPrimary} disabled={!!busy || !readingCount || sourcesQ.isError} onClick={() => void implementIntoNotes()}>{busy === "implement-notes" ? <Loader2 className="size-4 animate-spin"/> : <Sparkles className="size-4"/>}Scan readings and prepare additions</button>
+          {notesAdditions && <div className="space-y-3 border-t border-line/60 pt-3"><p className="text-xs text-soft">Preview — these additions will be merged without removing existing notes.</p><div className="max-h-[28rem] overflow-auto rounded-xl border border-line/70 bg-background/40 p-4"><div className="prose prose-sm dark:prose-invert max-w-none"><MarkdownContent>{notesAdditions}</MarkdownContent></div></div><div className="flex flex-wrap gap-2"><button type="button" className={btnPrimary} disabled={!!busy} onClick={() => void applyNotesAdditions()}>{busy === "apply-notes" ? <Loader2 className="size-4 animate-spin"/> : <Check className="size-4"/>}Add to Notes</button><button type="button" className={btnGhost} disabled={!!busy} onClick={() => setNotesAdditions("")}>Discard preview</button></div></div>}
         </div>
         <div className="rounded-xl border border-line/70 p-4 space-y-3">
           <div className="flex items-center justify-between gap-3 flex-wrap"><div><h3 className="font-semibold flex items-center gap-2"><LibraryBig className="size-4 text-cool2"/> Connected sources</h3><p className="text-xs text-soft mt-1">A source can be reused across sets. Unlinking never deletes the original reading, lecture, cards, or progress.</p></div><button className={btnPrimary} onClick={() => setShowLinker(v => !v)}><Link2 className="size-4"/>{showLinker ? "Close" : "Connect source"}</button></div>

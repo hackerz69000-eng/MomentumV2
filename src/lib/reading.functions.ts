@@ -156,6 +156,70 @@ export const readingSummary = createServerFn({ method: "POST" })
     return { summary };
   });
 
+
+const implementInput = (data: unknown) => z.object({ setId: z.string().uuid(), additions: z.string().trim().min(10).max(30000) }).parse(data);
+
+function mergeNotesWithoutReplacing(existing: string, additions: string) {
+  const normalize = (value: string) => value.toLocaleLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
+  let merged = existing.trim();
+  const add = additions.trim();
+  if (!merged) return add;
+  const chunks = add.split(/(?=^#{1,3}\s+)/m).map((x) => x.trim()).filter(Boolean);
+  const unmatched: string[] = [];
+  for (const chunk of chunks) {
+    const match = chunk.match(/^(#{1,3})\s+([^\n]+)\n?([\s\S]*)$/);
+    const heading = match?.[2]?.trim() ?? "Additional concept";
+    const body = (match?.[3] ?? chunk).trim();
+    const bodyNorm = normalize(body);
+    if (!bodyNorm || bodyNorm.length < 12) continue;
+    const existingNorm = normalize(merged);
+    if (existingNorm.includes(bodyNorm) || existingNorm.includes(bodyNorm.slice(0, Math.min(100, bodyNorm.length)))) continue;
+    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const headingPattern = new RegExp(`^(#{1,3})\\s+${escaped}\\s*$`, "im");
+    const found = headingPattern.exec(merged);
+    if (found) {
+      const start = found.index + found[0].length;
+      const nextHeading = /\n#{1,3}\s+/g;
+      nextHeading.lastIndex = start;
+      const next = nextHeading.exec(merged);
+      const end = next ? next.index : merged.length;
+      const section = merged.slice(start, end);
+      if (!normalize(section).includes(bodyNorm.slice(0, Math.min(100, bodyNorm.length)))) {
+        merged = `${merged.slice(0, end).trimEnd()}\n\n${body}\n\n${merged.slice(end).trimStart()}`;
+      }
+    } else {
+      unmatched.push(`## ${heading}\n\n${body}`);
+    }
+  }
+  if (unmatched.length) merged += `\n\n## Additional insights from readings\n\n${unmatched.join("\n\n")}`;
+  return merged;
+}
+
+export const readingImplementIntoNotes = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth]).inputValidator(setIdInput)
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId);
+    const sources = (await collectSources(context.supabase, set)).filter((source) => source.kind === "reading" && source.key !== "current-notes");
+    if (!sources.length) throw new Error("Upload or connect a reading PDF first.");
+    const sourceText = sources.map((source) => `${source.title}\n${clip(source.text, 18000)}`).join("\n\n---\n\n");
+    const additions = await aiText(`You are an academic note editor. Compare the supplied reading PDFs with the student's existing notes. Return ONLY Markdown containing NEW useful information that is genuinely absent from the notes. Organize it under headings that match existing note headings as closely as possible, so the student can place it in the correct sections. If no existing heading fits, use a concise new topic heading. Preserve important definitions, explanations, conditions, examples, exceptions, and relationships. Do not repeat information already covered, do not include source references/citations, and do not rewrite, summarize, or reproduce the existing notes. Do not invent facts. If there is no meaningful new information, return exactly: NO_NEW_INFORMATION. ${ci(set)}`,
+      [{ role: "user", content: `EXISTING NOTES (must remain intact):\n${clip(set.notes ?? "", 22000) || "(No notes yet)"}\n\nREADING PDF TEXT:\n${sourceText}` }]);
+    if (!additions.trim() || /NO_NEW_INFORMATION/i.test(additions.trim())) return { additions: "", message: "Your notes already cover the useful information in these readings." };
+    return { additions: additions.trim() };
+  });
+
+export const readingApplyNotesAdditions = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth]).inputValidator(implementInput)
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId);
+    const current = set.notes ?? "";
+    const merged = mergeNotesWithoutReplacing(current, data.additions);
+    if (merged === current.trim()) return { added: false, message: "No new information needed to be added; your notes are unchanged." };
+    const { error } = await (context.supabase as any).from("study_sets").update({ notes: merged, updated_at: new Date().toISOString() }).eq("id", set.id).eq("user_id", context.userId);
+    if (error) throw new Error("Couldn't save the merged notes. Your existing notes were not changed.");
+    return { added: true, message: "New reading information added. Existing notes were preserved." };
+  });
+
 export const readingAsk = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth]).inputValidator(askInput)
   .handler(async ({ data, context }) => {
