@@ -9,6 +9,7 @@ const ACTIVITY_IDS_KEY = "momentum_xp_activity_ids_v1";
 const TIER_OVERRIDE_KEY = "momentum_tier_override_v1";
 const ADMIN_REWARD_OVERRIDES_KEY = "momentum_admin_reward_overrides_v1";
 const LAST_SYNC_KEY = "momentum_progression_last_sync_v1";
+const LAST_REMOTE_UPDATED_KEY = "momentum_progression_last_remote_updated_v1";
 const TABLE = "user_progression";
 
 type JsonRecord = Record<string, unknown>;
@@ -63,9 +64,12 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
 
   const local = localSnapshot();
   const remote = (data ?? {}) as JsonRecord;
-  const previousSync = Number(localStorage.getItem(LAST_SYNC_KEY) ?? 0);
+  // Compare cloud revisions to the last cloud revision we actually observed,
+  // not the browser clock. Client/server clock skew previously caused admin XP
+  // edits to be ignored or overwritten by stale local XP.
+  const previousRemoteUpdatedAt = Number(localStorage.getItem(LAST_REMOTE_UPDATED_KEY) ?? 0);
   const remoteUpdatedAt = Date.parse(String(remote.updated_at ?? "")) || 0;
-  const remoteWasEditedSinceSync = previousSync > 0 && remoteUpdatedAt > previousSync;
+  const remoteWasEditedSinceSync = previousRemoteUpdatedAt > 0 && remoteUpdatedAt > previousRemoteUpdatedAt;
   const streak = mergeStreak(local.streak_data, (remote.streak_data as JsonRecord | null) ?? {});
   const freezesLocal = local.freeze_data;
   const freezesRemote = (remote.freeze_data as JsonRecord | null) ?? {};
@@ -91,6 +95,7 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
   localStorage.setItem(ACTIVITY_IDS_KEY, JSON.stringify(merged.activity_ids));
   if (merged.tier_override == null) localStorage.removeItem(TIER_OVERRIDE_KEY); else localStorage.setItem(TIER_OVERRIDE_KEY, String(merged.tier_override));
   localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
+  if (remoteUpdatedAt > 0) localStorage.setItem(LAST_REMOTE_UPDATED_KEY, String(remoteUpdatedAt));
   localStorage.setItem(ADMIN_REWARD_OVERRIDES_KEY, JSON.stringify(merged.reward_overrides));
   window.dispatchEvent(new Event("momentum_admin_reward_overrides_updated"));
   window.dispatchEvent(new Event("momentum_tier_override_updated"));
@@ -116,9 +121,18 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
         tier_override: snapshot.tier_override == null || snapshot.tier_override === "" ? null : Number(snapshot.tier_override),
         updated_at: new Date().toISOString(),
       };
-      const { error: saveError } = await ((supabase as any).from(TABLE)).upsert(payload, { onConflict: "user_id" });
+      const { data: savedRow, error: saveError } = await ((supabase as any).from(TABLE))
+        .upsert(payload, { onConflict: "user_id" })
+        .select("updated_at")
+        .single();
       if (saveError) console.error("[progression] Cloud save failed:", saveError.message);
-      else localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
+      else {
+        localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
+        // Remember the database's timestamp, not the browser clock, so later
+        // admin edits are detected even when client/server clocks differ.
+        const savedUpdatedAt = Date.parse(String(savedRow?.updated_at ?? ""));
+        if (savedUpdatedAt > 0) localStorage.setItem(LAST_REMOTE_UPDATED_KEY, String(savedUpdatedAt));
+      }
     } finally { writing = false; }
   };
   const schedule = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { void persist(); }, 250); };

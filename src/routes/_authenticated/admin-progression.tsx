@@ -41,7 +41,7 @@ function AdminProgressionPage() {
     try {
       const { error } = await supabase.rpc("admin_set_progression", { target_user_id: userId.trim(), new_xp: xpValue, new_tier_override: tierValue, new_reward_overrides: rewardOverrides } as never);
       if (error) throw error;
-      toast.success("Progression saved. The user will see the changes after their next sync or refresh.");
+      toast.success("Progression saved. XP and tier changes apply on the learner's next sync or refresh.");
       setLoaded(true);
     } catch (error) { toast.error(error instanceof Error ? error.message : "Could not save progression."); }
     finally { setBusy(false); }

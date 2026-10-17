@@ -88,23 +88,27 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
   }, []);
   const clampedPct = Math.max(0, Math.min(100, Math.round(percentage)));
 
-  // The displayed/current tier always follows the actual mastery percentage.
-  // Admin overrides only affect which rows are marked unlocked in the ladder;
-  // they must not pair a forced tier with an unrelated mastery percentage.
+  // An explicit admin override is the current overall tier. Automatic mode
+  // always derives the tier from mastery, so switching back to Automatic
+  // immediately restores percentage-based tiering. Per-set tiers stay mastery-based.
   const currentRank = useMemo(() => {
+    if (scope === "overall" && tierOverride !== null) {
+      return RPG_RANKS.find((r) => r.tier === tierOverride) ?? RPG_RANKS[0]!;
+    }
     return RPG_RANKS.find((r) => clampedPct >= r.minPct && clampedPct <= r.maxPct) || RPG_RANKS[0]!;
-  }, [clampedPct]);
+  }, [clampedPct, scope, tierOverride]);
 
   const nextRank = useMemo(() => {
     const nextIdx = RPG_RANKS.findIndex((r) => r.tier === currentRank.tier) + 1;
     return RPG_RANKS[nextIdx] ?? null;
   }, [currentRank]);
 
-  const pctToNext = nextRank ? Math.max(0, nextRank.minPct - clampedPct) : 0;
+  const effectivePct = scope === "overall" && tierOverride !== null
+    ? Math.max(clampedPct, currentRank.minPct)
+    : clampedPct;
+  const pctToNext = nextRank ? Math.max(0, nextRank.minPct - effectivePct) : 0;
   const currentTierProgress = nextRank
-    ? Math.round(
-        ((clampedPct - currentRank.minPct) / (currentRank.maxPct - currentRank.minPct + 1)) * 100,
-      )
+    ? Math.round(Math.min(1, Math.max(0, (effectivePct - currentRank.minPct) / Math.max(1, nextRank.minPct - currentRank.minPct))) * 100)
     : 100;
 
   const Icon = currentRank.icon;
@@ -164,7 +168,7 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
                 />
               </div>
               <span className="text-[10px] font-semibold text-soft">
-                {clampedPct}% XP
+                {clampedPct}% mastery
               </span>
             </div>
           </div>
@@ -180,7 +184,7 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
             Momentum Mastery Tiers
           </DialogTitle>
           <p className="text-xs text-soft mt-1">
-            Your tier is based on the mastery percentage shown here. Overall rank summarizes all study progress; a study-set rank reflects that set only, so the two can differ.
+            Overall tier follows the admin override when one is set; Automatic uses mastery percentage. Study-set tiers always use that set's mastery, so they can differ from your overall rank.
           </p>
         </DialogHeader>
 
@@ -203,7 +207,7 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
             <p className="text-xs text-soft/90 mt-1 leading-snug">{currentRank.description}</p>
             {nextRank && (
               <p className="text-[11px] font-medium text-cool2 mt-2">
-                ⚡ Only {pctToNext}% more mastery needed to reach {nextRank.title}!
+                ⚡ {scope === "overall" && tierOverride !== null ? `Tier manually set. ${pctToNext}% mastery to the next tier threshold (${nextRank.title}).` : `Only ${pctToNext}% more mastery needed to reach ${nextRank.title}!`}
               </p>
             )}
           </div>
