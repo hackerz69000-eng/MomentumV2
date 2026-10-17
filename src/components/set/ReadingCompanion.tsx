@@ -94,11 +94,31 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
     await qc.invalidateQueries({ queryKey: ["reading-companion-sources", set.id] });
   };
   const implementIntoNotes = async () => {
-    const result = await run("implement-notes", () => implementNotesFn({ data: { setId: set.id } }));
+    const result = await run("implement-notes", async () => {
+      const proposals: string[] = [];
+      let totalChunks = 1;
+      let sourceCount = 0;
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        const part = await implementNotesFn({ data: { setId: set.id, chunkIndex } });
+        totalChunks = part.totalChunks;
+        sourceCount = part.sourceCount;
+        if (part.additions.trim()) proposals.push(part.additions.trim());
+      }
+      // Deduplicate identical paragraphs only; similar-but-distinct details survive.
+      const seen = new Set<string>();
+      const additions = proposals.flatMap((proposal) => proposal.split(/\n\s*\n/)).filter((paragraph) => {
+        const key = paragraph.toLocaleLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).join("\n\n").trim();
+      if (additions.length > 500000) throw new Error(`All ${totalChunks} reading sections were analyzed, but the proposed notes exceed the safe preview size. No source text was skipped; process a smaller group of readings at a time.`);
+      return { additions, message: additions ? `Checked all ${totalChunks} reading sections across ${sourceCount} readings. Review the proposed additions before applying them.` : `Checked all ${totalChunks} reading sections across ${sourceCount} readings. Your notes already cover the useful information.` };
+    });
     if (result) {
       setNotesAdditions(result.additions);
       if (!result.additions) toast.success(result.message);
-      else toast.success(result.message || "Review the proposed additions before applying them.");
+      else toast.success(result.message);
     }
   };
   const applyNotesAdditions = async () => {

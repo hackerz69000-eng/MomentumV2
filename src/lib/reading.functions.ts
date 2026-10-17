@@ -157,7 +157,7 @@ export const readingSummary = createServerFn({ method: "POST" })
   });
 
 
-const implementInput = (data: unknown) => z.object({ setId: z.string().uuid(), additions: z.string().trim().min(10).max(100000) }).parse(data);
+const implementInput = (data: unknown) => z.object({ setId: z.string().uuid(), additions: z.string().trim().min(10).max(500000) }).parse(data);
 
 function mergeNotesWithoutReplacing(existing: string, additions: string) {
   const normalize = (value: string) => value.toLocaleLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
@@ -237,39 +237,32 @@ function combineProposedAdditions(parts: string[]): string {
 }
 
 export const readingImplementIntoNotes = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth]).inputValidator(setIdInput)
+  .middleware([requireSupabaseAuth])
+  .inputValidator((data: unknown) => z.object({ setId: z.string().uuid(), chunkIndex: z.number().int().nonnegative().default(0) }).parse(data))
   .handler(async ({ data, context }) => {
     const set = await loadSet(context.supabase, data.setId);
     const sources = (await collectSources(context.supabase, set)).filter((source) => source.kind === "reading" && source.key !== "current-notes");
     if (!sources.length) throw new Error("Upload or connect a reading PDF first.");
 
-    const existingNotes = set.notes?.trim() || "(No notes yet)";
-    const proposals: string[] = [];
-    let chunkCount = 0;
-    // Process every source chunk independently. No source-text clip is used here.
-    for (const source of sources) {
-      const chunks = splitReadingIntoChunks(source.text);
-      if (!chunks.length) continue;
-      for (let index = 0; index < chunks.length; index++) {
-        chunkCount++;
-        const chunk = chunks[index];
-        const additions = await aiText(
-          `You are an academic note editor. Compare this ONE PART of a reading with the student's existing notes. Return ONLY Markdown containing useful information from this part that is genuinely absent from the notes. Organize under headings matching existing note headings as closely as possible; if none fits, create a concise topic heading. Preserve definitions, explanations, conditions, examples, exceptions, formulas, and relationships. Do not repeat covered information, add source references/citations, rewrite existing notes, or invent facts. If this part contains no meaningful new information, return exactly NO_NEW_INFORMATION. This is part ${index + 1} of ${chunks.length} from the reading; do not claim to have processed other parts. ${ci(set)}`,
-          [{ role: "user", content: `EXISTING NOTES (must remain intact):\n${clip(existingNotes, 22000)}\n\nREADING: ${source.title}\nPART ${index + 1}/${chunks.length} (all text in this part is supplied below):\n${chunk}` }],
-        );
-        if (additions.trim() && !/^NO_NEW_INFORMATION\s*$/i.test(additions.trim())) {
-          proposals.push(additions.trim());
-        }
-      }
-    }
-
-    if (!chunkCount) throw new Error("The selected readings contain no readable text to process.");
-    const combined = combineProposedAdditions(proposals);
-    if (!combined) return { additions: "", message: `All ${chunkCount} reading section${chunkCount === 1 ? "" : "s"} were checked. Your notes already cover the useful information.` };
-    if (combined.length > 100000) {
-      throw new Error(`All ${chunkCount} reading sections were analyzed, but the proposed additions are too large for one preview (${combined.length.toLocaleString()} characters). Select fewer readings and run Implement into Notes in batches; no source text was silently skipped.`);
-    }
-    return { additions: combined, message: `Checked all ${chunkCount} reading sections across ${sources.length} source${sources.length === 1 ? "" : "s"}. Review the proposed additions before applying them.` };
+    // Build a stable index of every chunk, then analyze exactly one chunk per HTTP
+    // request. This avoids one long serverless request timing out on large libraries.
+    const chunks = sources.flatMap((source) => splitReadingIntoChunks(source.text).map((text, partIndex, all) => ({
+      title: source.title, text, partIndex, partCount: all.length,
+    })));
+    if (!chunks.length) throw new Error("The selected readings contain no readable text to process.");
+    if (data.chunkIndex >= chunks.length) throw new Error("Reading processing index expired. Please start the scan again.");
+    const chunk = chunks[data.chunkIndex];
+    const additions = await aiText(
+      `You are an academic note editor. Compare this ONE PART of a reading with the student's existing notes. Return ONLY Markdown containing useful information from this part that is genuinely absent from the notes. Organize under headings matching existing note headings as closely as possible; if none fits, create a concise topic heading. Preserve definitions, explanations, conditions, examples, exceptions, formulas, and relationships. Do not repeat covered information, add source references/citations, rewrite existing notes, or invent facts. If this part contains no meaningful new information, return exactly NO_NEW_INFORMATION. This is part ${chunk.partIndex + 1} of ${chunk.partCount} of ${chunk.title}; do not claim to have processed other parts. ${ci(set)}`,
+      [{ role: "user", content: `EXISTING NOTES (must remain intact):\n${clip(set.notes?.trim() || "(No notes yet)", 22000)}\n\nREADING: ${chunk.title}\nPART ${chunk.partIndex + 1}/${chunk.partCount} (all text in this part is supplied below):\n${chunk.text}` }],
+    );
+    const cleaned = additions.trim();
+    return {
+      chunkIndex: data.chunkIndex,
+      totalChunks: chunks.length,
+      sourceCount: sources.length,
+      additions: !cleaned || /^NO_NEW_INFORMATION\s*$/i.test(cleaned) ? "" : cleaned,
+    };
   });
 
 export const readingApplyNotesAdditions = createServerFn({ method: "POST" })
