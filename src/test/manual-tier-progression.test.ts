@@ -5,6 +5,10 @@ describe("manual tier starting point", () => {
   it("uses the saved tier exactly and ignores mastery earned before the reset", () => {
     expect(tierFromManualStart(1, 30, 30)).toBe(1);
     expect(tierFromManualStart(2, 30, 30)).toBe(2);
+    // Regression: an admin-selected tier must not inherit the previous mastery delta.
+    expect(tierFromManualStart(11, 58, 58)).toBe(11);
+    expect(tierFromManualStart(1, 58, 58)).toBe(1);
+    expect(tierFromManualStart(2, 58, 58)).toBe(2);
     expect(tierFromManualStart(1, 30, 31)).toBe(1);
     expect(tierFromManualStart(1, 30, 32)).toBe(2);
   });

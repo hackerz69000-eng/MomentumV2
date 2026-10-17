@@ -89,6 +89,7 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [tierOverride, setTierOverride] = useState<number | null>(null);
   const [overrideLoaded, setOverrideLoaded] = useState(false);
+  const [overrideRevision, setOverrideRevision] = useState("0");
   const clampedPct = Math.max(0, Math.min(100, Math.round(percentage)));
   const BASE_PCT_KEY = "momentum_tier_override_mastery_base_v1";
   const LAST_OVERRIDE_KEY = "momentum_tier_override_last_seen_v1";
@@ -102,6 +103,7 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
         const nextOverride = value !== null && Number.isInteger(value) && value >= 1 && value <= 50 ? value : null;
         const previousRaw = localStorage.getItem(LAST_OVERRIDE_KEY);
         const revision = localStorage.getItem(REVISION_KEY) ?? "0";
+        setOverrideRevision(revision);
         const previousRevision = localStorage.getItem("momentum_tier_override_revision_seen_v1");
         // Every admin save gets a cloud revision, even when the same tier is selected again.
         // A new revision resets the mastery baseline so old mastery cannot skip the chosen tier.
@@ -151,7 +153,7 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
       return RPG_RANKS.find((r) => r.tier === effectiveTier) ?? RPG_RANKS[0]!;
     }
     return RPG_RANKS.find((r) => clampedPct >= r.minPct && clampedPct <= r.maxPct) || RPG_RANKS[0]!;
-  }, [clampedPct, scope, tierOverride, masterySinceManualStart]);
+  }, [clampedPct, scope, tierOverride, masterySinceManualStart, overrideRevision]);
 
   const nextRank = useMemo(() => {
     const nextIdx = RPG_RANKS.findIndex((r) => r.tier === currentRank.tier) + 1;
