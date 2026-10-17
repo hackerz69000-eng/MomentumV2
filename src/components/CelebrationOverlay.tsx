@@ -33,6 +33,21 @@ function markCelebrationSeen(key: string): void {
 }
 const tierEmojis = ["🌱","⚡","📚","🔨","🧭","🛡️","🌩️","🔐","🗡️","🏅","🏹","🔮","📜","🪐","🧙","🛡️","🛠️","👻","🥷","🧠","🦅","💥","🧵","⚗️","♟️","🛡️","🥋","🗿","👑","🌪️","📖","⚔️","🎖️","🐺","💡","👑","🚀","🐉","♟️","🌋","🌌","🪐","💫","🌠","🪽","💎","♾️","🌟","🤖","👑"];
 const levelEmojis = ["✨","🧭","📘","⚒️","🔎","🛡️","🌠","🔐","🏹","🏆"];
+function celebrationOrdinal(kind: string, level: number, tier: number, id: string): number {
+  // Reserve non-overlapping ranges so no tier, decade level, or named reward shares a sound motif.
+  if (kind === "tier") return Math.max(1, Math.min(50, tier));
+  if (kind.includes("milestone") || (kind === "level" && level % 10 === 0)) return 50 + Math.max(1, Math.min(10, Math.round(level / 10)));
+  if (kind === "reward") {
+    if (id === "milestone-study-fiend") return 111;
+    const reward = id.match(/^milestone-(\d+)$/);
+    if (reward) return 60 + Math.max(1, Math.min(50, Number(reward[1])));
+    const levelReward = id.match(/^level-reward-(\d+)$/);
+    if (levelReward) return 111 + Math.max(1, Math.min(10, Number(levelReward[1])));
+  }
+  const seedText = `${kind}:${level}:${tier}:${id}`;
+  return 122 + Array.from(seedText).reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 7) % 1000;
+}
+
 function playSound(kind: string, level = 1, tier = 1, id = "") {
   try {
     const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -40,30 +55,25 @@ function playSound(kind: string, level = 1, tier = 1, id = "") {
     const ctx = new AudioCtx();
     if (ctx.state === "suspended") void ctx.resume();
     const now = ctx.currentTime;
-    // Each tier, decade level, and reward ID gets its own deterministic motif.
-    // This avoids the same generic chime playing for every achievement.
-    const seedText = `${kind}:${kind === "tier" ? tier : level}:${id}`;
-    const seed = Array.from(seedText).reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 7);
-    const root = kind === "tier" ? 220 + ((Math.max(1, tier) * 17) % 18) * 11
-      : (kind.includes("milestone") || (kind === "level" && level % 10 === 0)) ? 330 + ((Math.max(1, level / 10) * 23) % 12) * 13
-      : kind === "reward" ? 392 + (seed % 9) * 19
-      : kind === "streak" ? 440 : 349;
-    const intervals = [0, 2 + (seed % 3), 5 + ((seed >>> 3) % 3), 7 + ((seed >>> 5) % 5)];
-    const notes = kind === "tier" || kind.includes("milestone") || kind === "reward"
-      ? intervals.map((step, i) => root * Math.pow(2, step / 12) * (i === 3 && seed % 2 ? 2 : 1))
-      : [root, root * 1.25, root * 1.5];
-    const waveform: OscillatorType = kind === "streak" ? "triangle" : kind === "reward" ? "sine" : (seed % 2 ? "triangle" : "sawtooth");
-    const baseGain = kind.includes("milestone") || (kind === "level" && level % 10 === 0) ? 0.22 : 0.14;
+    const ordinal = celebrationOrdinal(kind, level, tier, id);
+    // Each achievement gets a unique root pitch and a unique four-note interval signature.
+    // The ordinal ranges are disjoint for all 50 tiers, 10 decade levels, and 51 named rewards.
+    const root = 196 + ordinal * 2.73;
+    const intervals = [0, 1 + (ordinal % 11), 2 + ((ordinal * 3) % 13), 3 + ((ordinal * 7) % 17)];
+    const notes = intervals.map((step, i) => root * Math.pow(2, step / 12) * (i === 3 && ordinal % 3 === 0 ? 2 : 1));
+    const waveforms: OscillatorType[] = ["sine", "triangle", "sawtooth", "square"];
+    const waveform = waveforms[ordinal % waveforms.length];
+    const baseGain = kind.includes("milestone") || (kind === "level" && level % 10 === 0) ? 0.2 : 0.13;
     notes.forEach((frequency, i) => {
-      const at = now + i * (0.075 + (seed % 4) * 0.012);
+      const at = now + i * (0.062 + (ordinal % 9) * 0.009);
       const osc = ctx.createOscillator(); const gain = ctx.createGain();
       osc.type = waveform;
       osc.frequency.setValueAtTime(frequency, at);
-      osc.detune.setValueAtTime(((seed % 13) - 6) * (i + 1), at);
+      osc.detune.setValueAtTime(((ordinal % 19) - 9) * (i + 1), at);
       gain.gain.setValueAtTime(0.0001, at);
-      gain.gain.exponentialRampToValueAtTime(baseGain, at + 0.025);
-      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.24 + (seed % 5) * 0.025);
-      osc.connect(gain); gain.connect(ctx.destination); osc.start(at); osc.stop(at + 0.3 + (seed % 5) * 0.025);
+      gain.gain.exponentialRampToValueAtTime(baseGain, at + 0.018 + (ordinal % 5) * 0.004);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.19 + (ordinal % 11) * 0.013);
+      osc.connect(gain); gain.connect(ctx.destination); osc.start(at); osc.stop(at + 0.24 + (ordinal % 11) * 0.013);
     });
     window.setTimeout(() => void ctx.close(), 1800);
   } catch { /* Audio may be blocked until the user interacts; visual celebration still works. */ }
@@ -136,46 +146,50 @@ const styles = `
 const uniqueAnimationStyles = `
 ${Array.from({ length: 50 }, (_, i) => {
   const n = i + 1;
-  const angle = ((n * 47) % 300) - 150;
-  const x = ((n * 29) % 220) - 110;
-  const y = ((n * 41) % 240) - 120;
-  const scale = (0.12 + ((n * 13) % 90) / 100).toFixed(2);
-  const start = [
-    `translate(${x}px,${y}px) scale(${scale}) rotate(${angle}deg)`,
-    `rotateY(${90 + (n * 31) % 270}deg) scale(${scale}) translateX(${x / 2}px)`,
-    `rotateX(${80 + (n * 23) % 260}deg) scale(${scale}) translateY(${y / 2}px)`,
-    `scale(${scale}) skew(${(n * 7) % 50 - 25}deg,${(n * 11) % 40 - 20}deg) rotate(${angle}deg)`,
-    `translateX(${x}px) rotate(${angle}deg) scale(${scale}) blur(0px)`,
-  ][(n - 1) % 5];
-  const overshoot = (1.05 + ((n * 7) % 38) / 100).toFixed(2);
-  const duration = (0.65 + ((n * 17) % 75) / 100).toFixed(2);
-  const hue = (n * 37) % 360;
-  const midpoint = 40 + (n * 7) % 26;
-  return `.celebrate-tier-${n} .celebration-emblem{animation:tier-reveal-${n} ${duration}s cubic-bezier(.2,1.3,.3,1) both;filter:hue-rotate(${hue}deg)}@keyframes tier-reveal-${n}{0%{transform:${start};opacity:0;filter:brightness(${1.5 + (n % 4)}) hue-rotate(${hue}deg)}${midpoint}%{transform:scale(${overshoot}) rotate(${angle / 3}deg);opacity:1}82%{transform:scale(${(0.88 + (n % 9) / 100).toFixed(2)}) rotate(${-angle / 7}deg)}100%{transform:scale(1) rotate(0);opacity:1;filter:hue-rotate(${hue}deg)}}`;
+  const angle = n * 13.7 - 350;
+  const x = n * 3.1 - 80;
+  const y = ((n * 37) % 181) - 90;
+  const scale = (0.12 + n * 0.015).toFixed(3);
+  const overshoot = (1.02 + n * 0.006).toFixed(3);
+  const duration = (0.58 + n * 0.013).toFixed(3);
+  const hue = (n * 47) % 360;
+  const midpoint = 35 + (n % 27);
+  const twist = n * 9.3;
+  return `.celebrate-tier-${n} .celebration-emblem{animation:tier-oneoff-${n} ${duration}s cubic-bezier(.2,1.3,.3,1) both;filter:hue-rotate(${hue}deg)}@keyframes tier-oneoff-${n}{0%{transform:translate(${x}px,${y}px) rotate(${angle}deg) rotateY(${n * 7}deg) scale(${scale});opacity:0;filter:brightness(${1.2 + (n % 7) * .2}) hue-rotate(${hue}deg)}${midpoint}%{transform:translate(${x / -9}px,${y / -8}px) rotate(${twist}deg) scale(${overshoot});opacity:1}79%{transform:translate(${n * .7}px,${-n * .35}px) rotate(${-angle / 4}deg) scale(${(0.84 + n * .003).toFixed(3)})}100%{transform:translate(0,0) rotate(0) scale(1);opacity:1;filter:hue-rotate(${hue}deg)}}`;
 }).join("\n")}
 ${Array.from({ length: 10 }, (_, i) => {
   const level = (i + 1) * 10;
-  const variants = [
-    "scale(0) rotate(-360deg)", "translateY(-140px) scale(.1)", "rotateY(180deg) scale(.2)",
-    "translateX(-160px) rotate(-60deg)", "scale(2.2) rotate(25deg)", "translateY(120px) rotate(180deg) scale(.2)",
-    "rotateX(200deg) scale(.1)", "translateX(160px) rotate(90deg) scale(.2)", "scale(.05) skew(35deg)", "translateY(-100px) rotate(-240deg) scale(.2)"
-  ];
-  const hue = (level * 11) % 360;
-  return `.celebrate-milestone-${level} .celebration-emblem{animation:decade-reveal-${level} .98s cubic-bezier(.16,1.4,.3,1) both;filter:hue-rotate(${hue}deg) drop-shadow(0 0 20px hsla(${hue},95%,65%,.7))}@keyframes decade-reveal-${level}{0%{transform:${variants[i]};opacity:0;filter:brightness(3) hue-rotate(${hue}deg)}55%{transform:scale(1.25) rotate(${(i + 1) * 9}deg);opacity:1}78%{transform:scale(.92) rotate(-${(i + 1) * 3}deg)}100%{transform:scale(1) rotate(0);opacity:1;filter:hue-rotate(${hue}deg)}}`;
+  const n = i + 1;
+  const hue = (level * 11 + n * 19) % 360;
+  const x = (n * 23) - 115;
+  const y = 130 - n * 21;
+  const angle = n * 37 - 160;
+  const scale = (0.08 + n * .045).toFixed(3);
+  const overshoot = (1.12 + n * .025).toFixed(3);
+  const duration = (.86 + n * .047).toFixed(3);
+  return `.celebrate-milestone-${level} .celebration-emblem{animation:decade-oneoff-${level} ${duration}s cubic-bezier(.16,1.4,.3,1) both;filter:hue-rotate(${hue}deg) drop-shadow(0 0 ${10 + n * 3}px hsla(${hue},95%,65%,.7))}@keyframes decade-oneoff-${level}{0%{transform:translate(${x}px,${y}px) rotate(${angle}deg) rotateX(${n * 31}deg) scale(${scale});opacity:0;filter:brightness(${2 + n * .1}) hue-rotate(${hue}deg)}${38 + n * 2}%{transform:translate(${-x / 5}px,${-y / 7}px) rotate(${-angle / 3}deg) scale(${overshoot});opacity:1}76%{transform:translate(${n * 2}px,${-n}px) rotate(${n * 4}deg) scale(${(.9 + n * .009).toFixed(3)})}100%{transform:translate(0,0) rotate(0) scale(1);opacity:1;filter:hue-rotate(${hue}deg)}}`;
 }).join("\n")}
 ${Array.from({ length: 51 }, (_, i) => {
-  const n = i === 50 ? "study-fiend" : String(i + 1);
   const index = i + 1;
-  const start = ["scale(0) rotate(-240deg)", "rotateY(180deg) scale(.2)", "translateY(-80px) scale(.3)", "translateX(100px) rotate(35deg)", "scale(.1) brightness(3)", "rotateX(180deg) scale(.4)"][i % 6];
-  const hue = (index * 29) % 360;
-  const selector = i === 50 ? ".celebrate-reward-milestone-study-fiend" : `.celebrate-reward-milestone-${n}`;
-  return `${selector} .celebration-emblem{animation:reward-specific-${index} .9s cubic-bezier(.2,1.3,.3,1) both;filter:hue-rotate(${hue}deg)}@keyframes reward-specific-${index}{0%{transform:${start};opacity:0;filter:brightness(3) hue-rotate(${hue}deg)}68%{transform:scale(1.2) rotate(${index % 2 ? 12 : -12}deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1;filter:hue-rotate(${hue}deg)}}`;
+  const id = i === 50 ? "study-fiend" : String(index);
+  const n = index;
+  const hue = (n * 29 + n * n * 3) % 360;
+  const x = n * 2.9 - 74;
+  const y = ((n * 43) % 157) - 78;
+  const angle = n * 17.3 - 280;
+  const scale = (.1 + n * .012).toFixed(3);
+  const overshoot = (1.04 + n * .004).toFixed(3);
+  const duration = (.61 + n * .009).toFixed(3);
+  const midpoint = 40 + (n % 23);
+  const selector = i === 50 ? ".celebrate-reward-milestone-study-fiend" : `.celebrate-reward-milestone-${id}`;
+  return `${selector} .celebration-emblem{animation:reward-oneoff-${n} ${duration}s cubic-bezier(.2,1.3,.3,1) both;filter:hue-rotate(${hue}deg) drop-shadow(0 0 ${8 + n}px hsla(${hue},95%,65%,.55))}@keyframes reward-oneoff-${n}{0%{transform:translate(${x}px,${y}px) rotate(${angle}deg) rotateY(${n * 11}deg) scale(${scale});opacity:0;filter:brightness(${1.4 + (n % 8) * .2}) hue-rotate(${hue}deg)}${midpoint}%{transform:translate(${-x / 6}px,${-y / 5}px) rotate(${-angle / 3}deg) scale(${overshoot});opacity:1}81%{transform:translate(${n}px,${-n / 2}px) rotate(${angle / 9}deg) scale(${(.88 + n * .002).toFixed(3)})}100%{transform:translate(0,0) rotate(0) scale(1);opacity:1;filter:hue-rotate(${hue}deg)}}`;
 }).join("\n")}
 ${Array.from({ length: 10 }, (_, i) => {
   const level = (i + 1) * 10;
-  const hue = (level * 17) % 360;
-  const start = ["scale(0) rotate(-360deg)", "translateY(-120px) scale(.1)", "rotateY(180deg) scale(.2)", "translateX(-140px) rotate(-70deg)", "scale(2) rotate(30deg)"][i % 5];
-  return `.celebrate-reward-level-reward-${level} .celebration-emblem{animation:level-reward-${level} 1s cubic-bezier(.16,1.4,.3,1) both;filter:hue-rotate(${hue}deg) drop-shadow(0 0 18px hsla(${hue},95%,65%,.7))}@keyframes level-reward-${level}{0%{transform:${start};opacity:0}60%{transform:scale(1.28) rotate(${(i + 1) * 7}deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1}}`;
+  const n = i + 1;
+  const hue = (level * 17 + n * 13) % 360;
+  const start = `translate(${n * 17 - 90}px,${90 - n * 13}px) rotate(${n * 41}deg) rotateY(${n * 19}deg) scale(${(.12 + n * .04).toFixed(3)})`;
+  return `.celebrate-reward-level-reward-${level} .celebration-emblem{animation:level-badge-oneoff-${level} ${(0.72 + n * .051).toFixed(3)}s cubic-bezier(.16,1.4,.3,1) both;filter:hue-rotate(${hue}deg) drop-shadow(0 0 ${10 + n * 2}px hsla(${hue},95%,65%,.7))}@keyframes level-badge-oneoff-${level}{0%{transform:${start};opacity:0}42%{transform:translate(${-n * 3}px,${n * 2}px) rotate(${-n * 13}deg) scale(${(1.1 + n * .02).toFixed(3)});opacity:1}73%{transform:translate(${n}px,${-n}px) rotate(${n * 7}deg) scale(${(.91 + n * .008).toFixed(3)})}100%{transform:translate(0,0) rotate(0) scale(1);opacity:1}}`;
 }).join("\n")}
 @media(prefers-reduced-motion:reduce){.celebrate-tier-1 .celebration-emblem,.celebrate-tier-2 .celebration-emblem,.celebrate-tier-3 .celebration-emblem,.celebrate-milestone-10 .celebration-emblem,.celebrate-milestone-20 .celebration-emblem{animation-duration:.01ms!important}}
 `;
