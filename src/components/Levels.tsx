@@ -83,6 +83,7 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
   const clampedPct = Math.max(0, Math.min(100, Math.round(percentage)));
   const BASE_PCT_KEY = "momentum_tier_override_mastery_base_v1";
   const LAST_OVERRIDE_KEY = "momentum_tier_override_last_seen_v1";
+  const REVISION_KEY = "momentum_tier_override_revision_v1";
 
   useEffect(() => {
     const readOverride = () => {
@@ -91,13 +92,17 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
         const value = raw == null ? null : Number(raw);
         const nextOverride = value !== null && Number.isInteger(value) && value >= 1 && value <= 50 ? value : null;
         const previousRaw = localStorage.getItem(LAST_OVERRIDE_KEY);
-        // A manual edit establishes a new starting point. Capture mastery at the
-        // moment the override is received so an old high percentage cannot skip tiers.
-        if (previousRaw !== (nextOverride == null ? "auto" : String(nextOverride))) {
+        const revision = localStorage.getItem(REVISION_KEY) ?? "0";
+        const previousRevision = localStorage.getItem("momentum_tier_override_revision_seen_v1");
+        // Every admin save gets a cloud revision, even when the same tier is selected again.
+        // A new revision resets the mastery baseline so old mastery cannot skip the chosen tier.
+        if (previousRevision !== revision || previousRaw !== (nextOverride == null ? "auto" : String(nextOverride))) {
           localStorage.setItem(BASE_PCT_KEY, String(clampedPct));
           localStorage.setItem(LAST_OVERRIDE_KEY, nextOverride == null ? "auto" : String(nextOverride));
+          localStorage.setItem("momentum_tier_override_revision_seen_v1", revision);
         } else if (localStorage.getItem(BASE_PCT_KEY) == null) {
           localStorage.setItem(BASE_PCT_KEY, String(clampedPct));
+          localStorage.setItem("momentum_tier_override_revision_seen_v1", revision);
         }
         setTierOverride(nextOverride);
         setOverrideLoaded(true);

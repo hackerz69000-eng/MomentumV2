@@ -7,6 +7,7 @@ const REWARD_ANNOUNCEMENTS_KEY = "momentum_announced_reward_ids_v1";
 const REWARDS_THEME_KEY = "momentum_rewards_theme";
 const ACTIVITY_IDS_KEY = "momentum_xp_activity_ids_v1";
 const TIER_OVERRIDE_KEY = "momentum_tier_override_v1";
+const TIER_OVERRIDE_REVISION_KEY = "momentum_tier_override_revision_v1";
 const ADMIN_REWARD_OVERRIDES_KEY = "momentum_admin_reward_overrides_v1";
 const LAST_SYNC_KEY = "momentum_progression_last_sync_v1";
 const LAST_REMOTE_UPDATED_KEY = "momentum_progression_last_remote_updated_v1";
@@ -56,7 +57,7 @@ function mergeStreak(local: JsonRecord, remote: JsonRecord): JsonRecord {
 export async function initializeProgressionSync(userId: string): Promise<() => void> {
   if (typeof window === "undefined" || !userId) return () => {};
   const table = (supabase as any).from(TABLE);
-  const { data, error } = await table.select("user_id,xp,streak_data,freeze_data,reward_announcements,reward_theme,activity_ids,tier_override,reward_overrides,updated_at").eq("user_id", userId).maybeSingle();
+  const { data, error } = await table.select("user_id,xp,streak_data,freeze_data,reward_announcements,reward_theme,activity_ids,tier_override,tier_override_revision,reward_overrides,updated_at").eq("user_id", userId).maybeSingle();
   if (error) {
     console.error("[progression] Could not load cloud progression. Apply the user_progression migration and verify RLS.", error.message);
     return () => {};
@@ -85,6 +86,7 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
     reward_theme: typeof remote.reward_theme === "string" ? remote.reward_theme : local.reward_theme,
     activity_ids: [...new Set([...local.activity_ids, ...parseArray(remote.activity_ids)])].slice(-5000),
     tier_override: data ? (remote.tier_override == null ? null : String(remote.tier_override)) : local.tier_override,
+    tier_override_revision: data ? number(remote.tier_override_revision) : number(localStorage.getItem(TIER_OVERRIDE_REVISION_KEY)),
     reward_overrides: parseArray(remote.reward_overrides),
   };
   setXpFromCloud(merged.xp);
@@ -94,6 +96,7 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
   localStorage.setItem(REWARDS_THEME_KEY, merged.reward_theme);
   localStorage.setItem(ACTIVITY_IDS_KEY, JSON.stringify(merged.activity_ids));
   if (merged.tier_override == null) localStorage.removeItem(TIER_OVERRIDE_KEY); else localStorage.setItem(TIER_OVERRIDE_KEY, String(merged.tier_override));
+  localStorage.setItem(TIER_OVERRIDE_REVISION_KEY, String(merged.tier_override_revision));
   localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
   if (remoteUpdatedAt > 0) localStorage.setItem(LAST_REMOTE_UPDATED_KEY, String(remoteUpdatedAt));
   localStorage.setItem(ADMIN_REWARD_OVERRIDES_KEY, JSON.stringify(merged.reward_overrides));
@@ -136,7 +139,7 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
     } finally { writing = false; }
   };
   const schedule = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { void persist(); }, 250); };
-  const events = ["momentum_xp_updated", "momentum_streak_updated", "momentum_freeze_updated", "momentum_rewards_updated"];
+  const events = ["momentum_xp_updated", "momentum_streak_updated", "momentum_freeze_updated", "momentum_rewards_updated", "momentum_tier_override_updated"];
   events.forEach((event) => window.addEventListener(event, schedule));
   window.addEventListener("storage", schedule);
   void persist();
