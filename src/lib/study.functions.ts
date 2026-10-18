@@ -288,30 +288,32 @@ async function validateQuestions(
   qs: QuizQuestion[],
   extra: string,
 ): Promise<QuizQuestion[]> {
-  try {
-    const text = await aiText(
-      `You are a strict exam reviewer. For each question, check it against the MATERIAL: is it supported, can the answer actually be determined from the material, is the marked answer correct, is there exactly one correct option (no other option arguably correct), are distractors plausible but wrong, is the explanation accurate and consistent with the answer, is it unambiguous, is it a duplicate of another? Fix problems in place; if a question can't be supported, REPLACE it with a better question on the same topic that is supported, or DROP it if the material has nothing suitable. Keep the same JSON shape and type. Return ONLY JSON: {"questions":[...]}.
-${QUALITY_RULES}${extra}`,
-      [
-        {
-          role: "user",
-          content: `QUESTIONS:\n${JSON.stringify({ questions: qs })}\n\nMATERIAL:\n${clip(material, 45000)}`,
-        },
-      ],
-    );
-    const fixed = parseQuestions(text);
-    if (!fixed.length)
-      throw new Error(
-        "I couldn't find enough information in your study materials to create these questions. Try adding more material or fewer questions.",
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const retryInstruction = attempt === 0
+        ? ""
+        : "\nRETRY: The prior response was empty or invalid JSON. Return one complete JSON object only with a top-level questions array; no Markdown or commentary. Keep explanations concise so the response is not truncated.";
+      const text = await aiText(
+        `You are a strict exam reviewer. For each question, check it against the MATERIAL: is it supported, can the answer actually be determined from the material, is the marked answer correct, is there exactly one correct option (no other option arguably correct), are distractors plausible but wrong, is the explanation accurate and consistent with the answer, is it unambiguous, is it a duplicate of another? Fix problems in place; if a question can't be supported, REPLACE it with a better question on the same topic that is supported, or DROP it if the material has nothing suitable. Keep the same JSON shape and type. Return ONLY JSON: {"questions":[...]}.\n${QUALITY_RULES}${extra}${retryInstruction}`,
+        [
+          {
+            role: "user",
+            content: `QUESTIONS:\n${JSON.stringify({ questions: qs })}\n\nMATERIAL:\n${clip(material, 35000)}`,
+          },
+        ],
       );
-    return fixed;
-  } catch (e) {
-    // Never show unchecked questions: surface a clear, retryable message instead.
-    if (e instanceof Error && e.message.startsWith("I couldn't find")) throw e;
-    throw new Error(
-      "The questions couldn't be checked against your study materials. Please try again.",
-    );
+      const fixed = parseQuestions(text);
+      if (fixed.length) return fixed;
+      lastError = new Error("The AI reviewer returned no usable questions.");
+    } catch (error) {
+      lastError = error;
+    }
   }
+  // If the model consistently fails to return valid output, do not accept
+  // unchecked drafts; report a specific retryable validation failure.
+  const detail = lastError instanceof Error ? lastError.message : "Unknown validation error";
+  throw new Error(`The questions couldn't be checked against your study materials after 3 attempts: ${detail.slice(0, 220)}`);
 }
 
 function parseQuestions(text: string): QuizQuestion[] {
@@ -355,6 +357,32 @@ function parseQuestions(text: string): QuizQuestion[] {
   return out;
 }
 
+/** Retry malformed/empty model JSON at the generation boundary. A single bad
+ * response must not cause an entire source set to be discarded. */
+async function generateQuestionDraft(
+  systemPrompt: string,
+  messages: { role: "user" | "assistant"; content: string }[],
+): Promise<QuizQuestion[]> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const retryPrompt = attempt === 0
+        ? systemPrompt
+        : `${systemPrompt}
+
+IMPORTANT RETRY: Your previous response could not be parsed as complete JSON. Return one complete JSON object only, with a top-level "questions" array. Do not use Markdown fences or add commentary. Keep every question concise enough to fit the output limit.`;
+      const response = await aiText(retryPrompt, messages);
+      const questions = parseQuestions(response);
+      if (questions.length) return questions;
+      lastError = new Error("The AI returned JSON but no usable questions.");
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  const detail = lastError instanceof Error ? lastError.message : "Unknown AI response error";
+  throw new Error(`The AI response for this question batch was invalid after 3 attempts: ${detail.slice(0, 240)}`);
+}
+
 async function makeQuestionsSingle(
   set: { material_text: string; custom_instructions?: string },
   data: QOpts,
@@ -372,7 +400,7 @@ async function makeQuestionsSingle(
   const planText = data.plan?.length
     ? `\nADAPTIVE TOPIC PLAN — write this many questions per topic (use these exact topic names): ${data.plan.map((p) => `${p.topic}: ${p.count}`).join("; ")}. If a topic isn't in the material, use the closest topic.`
     : "";
-  const text = await aiText(
+  const draftResponse = await generateQuestionDraft(
     `You write ${data.exam ? "realistic practice exams" : "quizzes"} from study material. Return ONLY JSON:
 {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"2-4 sentences: why it's right, why the other options are wrong, concept tested","topic":"short topic name (2-4 words)"}]}
 Rules: exactly ${data.count} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}${data.difficulty === "mixed" ? " (blend easy, medium and hard)" : ""}.
@@ -383,15 +411,10 @@ ${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat these recently asked que
     [{ role: "user", content: `MATERIAL:\n${clip(set.material_text, maxChars)}` }],
   );
   const avoidSet = new Set((data.avoid ?? []).map(norm));
-  // Bound validation input to the requested batch size. Models sometimes over-generate;
-  // validating every extra item can itself exceed the provider output limit.
-  const draft = parseQuestions(text)
+  const draft = draftResponse
     .filter((q) => !avoidSet.has(norm(q.question)))
     .slice(0, data.count);
-  if (!draft.length)
-    throw new Error(
-      "I couldn't find enough information in your study materials to create this question set.",
-    );
+  if (!draft.length) throw new Error("I couldn't find enough information in your study materials to create this question set.");
   const guidanceForReview = data.questionGuidance?.trim()
     ? `\nTEST EXPECTATIONS FROM THE STUDENT — preserve these requested question-style preferences when reviewing/fixing questions, as long as they remain supported by the material:\n${data.questionGuidance.trim().slice(0, 2000)}`
     : "";
@@ -404,15 +427,11 @@ ${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat these recently asked que
   // returning fewer questions than the count the student explicitly selected.
   for (let attempt = 0; questions.length < data.count && attempt < 2; attempt++) {
     const missing = data.count - questions.length;
-    const extraText = await aiText(
+    const extraDraftRaw = await generateQuestionDraft(
       `Generate exactly ${missing} additional quiz questions from the material. Return ONLY the same JSON schema: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"...","explanation":"...","topic":"..."}]}. Allowed types: ${typeDesc}. Difficulty: ${data.difficulty}. Do not repeat or paraphrase any existing question listed below. Only use the source material. ${QUALITY_RULES}${ci(set)}`,
-      [{ role: "user", content: `MATERIAL:
-${clip(set.material_text, maxChars)}
-
-ALREADY GENERATED — DO NOT REPEAT:
-${questions.map((q) => q.question).join("\n")}` }],
+      [{ role: "user", content: `MATERIAL:\n${clip(set.material_text, maxChars)}\n\nALREADY GENERATED — DO NOT REPEAT:\n${questions.map((q) => q.question).join("\n")}` }],
     );
-    const extraDraft = parseQuestions(extraText).filter((q) => !avoidSet.has(norm(q.question)) && !questions.some((old) => norm(old.question) === norm(q.question)));
+    const extraDraft = extraDraftRaw.filter((q) => !avoidSet.has(norm(q.question)) && !questions.some((old) => norm(old.question) === norm(q.question)));
     if (!extraDraft.length) break;
     const extraValid = await validateQuestions(set.material_text, extraDraft, `${guidanceForReview}${ci(set)}`);
     const seenQuestions = new Set(questions.map((q) => norm(q.question)));
@@ -432,9 +451,8 @@ async function makeQuestions(
   maxChars = 60000,
 ): Promise<QuizQuestion[]> {
   const sourceParts = splitTextIntoChunks(set.material_text, 26000);
-  // Six questions per provider call balances completion-token headroom with the
-  // number of round trips needed for 30-, 40- and 60-question exams.
-  const batchSize = 6;
+  // Four questions per provider call reduces JSON truncation risk for exams with detailed explanations.
+  const batchSize = 4;
   if (data.count <= batchSize && sourceParts.length <= 1) return makeQuestionsSingle(set, data, Math.min(maxChars, 22000));
   const all: QuizQuestion[] = [];
   const globallySeen = new Set((data.avoid ?? []).map(norm));
