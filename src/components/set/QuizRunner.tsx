@@ -106,8 +106,6 @@ export function QuizRunner({
         },
   );
   const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
-  const [draftReady, setDraftReady] = useState(false);
-  const draftKey = `momentum:quiz-draft:v1:${user?.id ?? "guest"}:${kind}:${comprehensive ? (sets ?? []).map((s) => s.id).sort().join(",") : set?.id ?? "no-set"}:${lectureId ?? ""}`;
   const [answers, setAnswers] = useState<Answer[]>([]);
   const [current, setCurrent] = useState(0);
   const [graded, setGraded] = useState<Graded[] | null>(null);
@@ -117,43 +115,6 @@ export function QuizRunner({
   const startedAt = useRef(0);
   const submitting = useRef(false);
   const [flagged, setFlagged] = useState<Set<number>>(new Set());
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(draftKey);
-      if (raw) {
-        const draft = JSON.parse(raw) as {
-          questions?: QuizQuestion[]; answers?: Answer[]; current?: number;
-          remaining?: number | null; startedAt?: number; flagged?: number[];
-          usedAdaptive?: boolean; settings?: Settings;
-        };
-        if (Array.isArray(draft.questions) && draft.questions.length) {
-          setQuestions(draft.questions);
-          setAnswers(Array.isArray(draft.answers) ? draft.answers : draft.questions.map(() => null));
-          setCurrent(Math.max(0, Math.min(draft.current ?? 0, draft.questions.length - 1)));
-          setRemaining(draft.remaining ?? null);
-          startedAt.current = draft.startedAt ?? Date.now();
-          setFlagged(new Set(draft.flagged ?? []));
-          setUsedAdaptive(!!draft.usedAdaptive);
-          if (draft.settings) setSettings((old) => ({ ...old, ...draft.settings }));
-          toast.info("Resumed your saved in-progress session.");
-        }
-      }
-    } catch { /* Ignore an invalid or unavailable local draft. */ }
-    setDraftReady(true);
-  // The key defines the exact session; restore only when it changes.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftKey]);
-
-  useEffect(() => {
-    if (!draftReady || !questions || graded) return;
-    try {
-      window.localStorage.setItem(draftKey, JSON.stringify({
-        questions, answers, current, remaining, startedAt: startedAt.current,
-        flagged: [...flagged], usedAdaptive, settings,
-      }));
-    } catch { /* Storage can be unavailable or full; the session remains usable. */ }
-  }, [draftReady, draftKey, questions, answers, current, remaining, flagged, usedAdaptive, settings, graded]);
-
   const toggleFlag = (k: number) =>
     setFlagged((f) => {
       const n = new Set(f);
@@ -218,7 +179,17 @@ export function QuizRunner({
       submitting.current = false;
       setRemaining(exam && settings.minutes ? settings.minutes * 60 : null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to generate");
+      // Server-function errors may cross the serialization boundary as plain
+      // objects rather than native Error instances. Preserve the useful message.
+      const message =
+        e instanceof Error
+          ? e.message
+          : typeof e === "string"
+            ? e
+            : e && typeof e === "object" && "message" in e && typeof e.message === "string"
+              ? e.message
+              : "Momentum couldn't generate this quiz. Check your connection and try again.";
+      setError(message);
     }
     setLoading(null);
   };
@@ -270,23 +241,11 @@ export function QuizRunner({
       score: idx.filter((i) => results[i]!.correct).length,
       total: idx.length,
       duration_seconds: duration,
-      results: idx.map((i) => {
-        const q = questions[i]!;
-        const a = answers[i] ?? null;
-        const studentAnswer = a == null || String(a).trim() === "" ? "Not answered" : q.type === "short" ? String(a) : (q.options[Number(a)] ?? "");
-        const correctAnswer = q.type === "short" ? (q.answerText || "") : (q.options[q.answer] ?? "");
-        return {
-          topic: q.topic,
-          correct: results[i]!.correct,
-          q: q.question,
-          question: q.question,
-          questionType: q.type,
-          options: q.options,
-          studentAnswer,
-          correctAnswer,
-          explanation: q.explanation || results[i]!.feedback || "",
-        };
-      }),
+      results: idx.map((i) => ({
+        topic: questions[i]!.topic,
+        correct: results[i]!.correct,
+        q: questions[i]!.question.slice(0, 200),
+      })),
     }));
     const { error } = await supabase.from("quiz_attempts").insert(rows);
     if (error) {
@@ -295,7 +254,6 @@ export function QuizRunner({
       );
       return;
     }
-    try { window.localStorage.removeItem(draftKey); } catch { /* ignore */ }
     const ansText = (q: QuizQuestion, a: Answer) =>
       a == null || a === "" ? "" : q.type === "short" ? String(a) : (q.options[Number(a)] ?? "");
     void recordResults(
@@ -326,7 +284,7 @@ export function QuizRunner({
     }
     const mins = Math.max(5, Math.round(duration / 60) || 10);
     recordStudySessionCompletion(mins, set?.name ? `Quiz: ${set.name}` : "Study Quiz");
-    toast.success("Quiz completed! Study session recorded. Complete all five distinct daily tasks to earn streak credit.");
+    toast.success("Quiz completed! Study session recorded & Daily Streak updated! 🔥");
 
     if (kind === "quiz" && set?.id) {
       try {
@@ -355,12 +313,12 @@ export function QuizRunner({
 
   const auto = useRef(false);
   useEffect(() => {
-    if (draftReady && autoStart && !questions && !auto.current) {
+    if (autoStart && !auto.current) {
       auto.current = true;
       void start();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoStart, draftReady, questions]);
+  }, [autoStart]);
 
   // Exam timer
   useEffect(() => {
@@ -545,7 +503,7 @@ export function QuizRunner({
           )}
           {error && <ErrorBox msg={error} />}
           <div className="flex gap-2">
-            <button onClick={start} disabled={!draftReady} className={btnPrimary}>
+            <button onClick={start} className={btnPrimary}>
               {exam ? "Start exam" : settings.adaptive ? "Start adaptive quiz" : "Start quiz"}
             </button>
             {onExit && (

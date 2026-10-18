@@ -68,33 +68,27 @@ async function callNim(system: string, messages: ModelMessage[]): Promise<string
     );
   }
 
-  let response: Response;
-  try {
-    response = await fetch(NIM_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        model: NIM_MODEL,
-        temperature: 0.2,
-        stream: false,
-        messages: [
-          { role: "system", content: system },
-          ...messages.map((message) => ({ role: message.role, content: message.content })),
-        ],
-      }),
-      // Prevent a stalled provider request from leaving a study action loading forever.
-      signal: AbortSignal.timeout(150_000),
-    });
-  } catch (error) {
-    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-      throw new NimError("The AI request took too long. Try again, or ask for a shorter response.", 408);
-    }
-    throw error;
-  }
+  const response = await fetch(NIM_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    // Bound individual provider calls so a hung model request cannot consume the
+    // entire server-function execution window.
+    signal: AbortSignal.timeout(45_000),
+    body: JSON.stringify({
+      model: NIM_MODEL,
+      temperature: 0.2,
+      max_tokens: 5000,
+      stream: false,
+      messages: [
+        { role: "system", content: system },
+        ...messages.map((message) => ({ role: message.role, content: message.content })),
+      ],
+    }),
+  });
 
   const body = await response.text();
   if (!response.ok) {
@@ -162,28 +156,4 @@ export function parseJson<T>(text: string): T {
 
 export function clip(material: string, max = 60000) {
   return material.length > max ? material.slice(0, max) + "\n\n[...material truncated]" : material;
-}
-
-/** Split long extracted documents at paragraph/line boundaries without dropping later content. */
-export function splitTextIntoChunks(material: string, maxChars = 16000): string[] {
-  const text = material.replace(/\r\n/g, "\n").trim();
-  if (!text) return [];
-  const chunks: string[] = [];
-  let current = "";
-  const blocks = text.split(/\n\s*\n/); // prefer paragraph boundaries; further split oversized blocks below
-  for (const block of blocks) {
-    const part = block.trim();
-    if (!part) continue;
-    if (part.length > maxChars) {
-      if (current.trim()) { chunks.push(current.trim()); current = ""; }
-      for (let i = 0; i < part.length; i += maxChars) chunks.push(part.slice(i, i + maxChars));
-      continue;
-    }
-    if (current.length && current.length + part.length + 2 > maxChars) {
-      chunks.push(current.trim());
-      current = part;
-    } else current += `${current ? "\n\n" : ""}${part}`;
-  }
-  if (current.trim()) chunks.push(current.trim());
-  return chunks;
 }

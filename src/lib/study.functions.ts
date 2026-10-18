@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { aiText, parseJson, clip, splitTextIntoChunks } from "./ai.server";
+import { aiText, parseJson, clip } from "./ai.server";
 import { setStats, type Attempt, type AttemptResult, type Flashcard } from "./stats";
 import { activityStats } from "./activity";
 import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server";
@@ -75,21 +75,12 @@ async function makeNotes(set: {
   custom_instructions?: string;
 }) {
   try {
-    const sourceChunks = splitTextIntoChunks(set.material_text, 16000);
-    if (sourceChunks.length <= 1) {
-      return await aiText(NOTES_SYSTEM + ci(set), [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\n\nMATERIAL (complete source):\n${sourceChunks[0] ?? ""}` }]);
-    }
-    // Process every source chunk independently so a large reading never has its tail silently clipped.
-    const noteParts: string[] = [];
-    for (let i = 0; i < sourceChunks.length; i++) {
-      const part = await aiText(
-        `${NOTES_SYSTEM}${ci(set)}\n\nLONG-SOURCE MODE: This is part ${i + 1} of ${sourceChunks.length}. Make thorough notes ONLY for this part. Preserve its important definitions, explanations, examples, formulas, exceptions and relationships. Do not claim this is the whole course, do not add a Key Takeaways section, and do not refer to missing parts. Use meaningful headings so this part can be combined with the others.`,
-        [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\nSOURCE PART ${i + 1}/${sourceChunks.length}:\n${sourceChunks[i]}` }],
-      );
-      noteParts.push(part.trim());
-    }
-    // Preserve every chunk's output; avoid a second huge AI call that could time out again.
-    return `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${noteParts.join("\n\n---\n\n")}`;
+    return await aiText(NOTES_SYSTEM + ci(set), [
+      {
+        role: "user",
+        content: `Study set: ${set.name} (${set.subject || "general"})\n\nMATERIAL:\n${clip(set.material_text)}`,
+      },
+    ]);
   } catch (err) {
     console.warn("AI notes generation fallback active:", err);
     return generateNotesFromMaterial(set.material_text, set.name, set.subject);
@@ -304,9 +295,15 @@ ${QUALITY_RULES}${extra}`,
     return fixed;
   } catch (e) {
     // Never show unchecked questions: surface a clear, retryable message instead.
-    if (e instanceof Error && e.message.startsWith("I couldn't find")) throw e;
+    if (
+      e instanceof Error &&
+      (e.message.startsWith("I couldn't find") ||
+        e.message.startsWith("NVIDIA NIM") ||
+        e.name === "TimeoutError" ||
+        e.name === "AbortError")
+    ) throw e;
     throw new Error(
-      "The questions couldn't be checked against your study materials. Please try again.",
+      "The questions couldn't be checked against your study materials. Please try again. If this keeps happening, retry with fewer questions or more focused source material.",
     );
   }
 }
@@ -343,7 +340,7 @@ function parseQuestions(text: string): QuizQuestion[] {
   return out;
 }
 
-async function makeQuestionsSingle(
+async function makeQuestions(
   set: { material_text: string; custom_instructions?: string },
   data: QOpts,
   maxChars = 60000,
@@ -360,102 +357,83 @@ async function makeQuestionsSingle(
   const planText = data.plan?.length
     ? `\nADAPTIVE TOPIC PLAN — write this many questions per topic (use these exact topic names): ${data.plan.map((p) => `${p.topic}: ${p.count}`).join("; ")}. If a topic isn't in the material, use the closest topic.`
     : "";
-  const text = await aiText(
-    `You write ${data.exam ? "realistic practice exams" : "quizzes"} from study material. Return ONLY JSON:
-{"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"2-4 sentences: why it's right, why the other options are wrong, concept tested","topic":"short topic name (2-4 words)"}]}
-Rules: exactly ${data.count} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}${data.difficulty === "mixed" ? " (blend easy, medium and hard)" : ""}.
-For "mc"/"tf", "answer" is the 0-based index of the correct option. For "short", use "options": [] and "answer": -1, and put the model answer in "answerText".
-Reuse consistent topic names across questions. Test understanding, not trivia. Only use the material.
-${data.questionGuidance?.trim() ? `\nTEST EXPECTATIONS FROM THE STUDENT — use these preferences to shape the questions. Treat them as strong preferences, but never violate the material-grounding or quality rules. Do not invent facts just to satisfy the request. If the requested style cannot be supported by the material, use the closest supported version.\n${data.questionGuidance.trim().slice(0, 2000)}` : ""}
-${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat these recently asked questions (ask about different facts or angles):\n- ${data.avoid.slice(0, 40).join("\n- ")}` : ""}${planText}${data.retest?.length ? `\nMISTAKE BANK — the student got these concepts wrong before. Include about ${Math.min(data.retest.length, Math.ceil(data.count / 3))} questions that re-test the same concepts with NEW wording or a new angle (don't copy the question):\n- ${data.retest.join("\n- ")}` : ""}${ci(set)}`,
-    [{ role: "user", content: `MATERIAL:\n${clip(set.material_text, maxChars)}` }],
-  );
+  const material = clip(set.material_text, maxChars);
   const avoidSet = new Set((data.avoid ?? []).map(norm));
-  const draft = parseQuestions(text).filter((q) => !avoidSet.has(norm(q.question)));
-  if (!draft.length)
-    throw new Error(
-      "I couldn't find enough information in your study materials to create this question set.",
+  const drafts: QuizQuestion[] = [];
+  const seen = new Set<string>(avoidSet);
+  // Keep model responses small enough to avoid truncated JSON on large quizzes.
+  // Generate in bounded batches, then validate the complete set in one review pass.
+  const batchSize = 6;
+  for (let offset = 0; offset < data.count; offset += batchSize) {
+    const batchCount = Math.min(batchSize, data.count - offset);
+    const remaining = data.count - drafts.length;
+    const text = await aiText(
+      `You write ${data.exam ? "realistic practice exams" : "quizzes"} from study material. Return ONLY valid JSON with this exact shape: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"2-4 sentences explaining why the answer is right and the concept tested","topic":"short topic name"}]}. Generate exactly ${batchCount} NEW questions in this batch (at most ${remaining} questions remain to be drafted overall). Allowed types: ${typeDesc}; mix them roughly evenly across the full quiz. Difficulty: ${data.difficulty}${data.difficulty === "mixed" ? " (blend easy, medium and hard)" : ""}. For mc/tf, answer is the 0-based correct option index. For short, use options: [] and answer: -1, with the model answer in answerText. Use only facts supported by the material. ${QUALITY_RULES}${data.questionGuidance?.trim() ? `\nSTUDENT QUESTION STYLE PREFERENCES (up to 2000 chars):\n${data.questionGuidance.trim().slice(0, 2000)}` : ""}${data.avoid?.length ? `\nDo not repeat these recent questions:\n- ${data.avoid.slice(0, 40).join("\n- ")}` : ""}${planText}${data.retest?.length ? `\nRe-test some missed concepts using new wording:\n- ${data.retest.join("\n- ")}` : ""}${ci(set)}\nDo not repeat any question from the existing draft list.`,
+      [{ role: "user", content: `MATERIAL:\n${material}\n\nQUESTIONS ALREADY DRAFTED — DO NOT REPEAT:\n${drafts.map((q) => q.question).join("\n") || "(none)"}` }],
     );
+    let batch: QuizQuestion[];
+    try {
+      batch = parseQuestions(text);
+    } catch {
+      throw new Error(`Momentum's AI returned an incomplete response while drafting questions ${offset + 1}–${offset + batchCount}. Please retry; no partial quiz was started.`);
+    }
+    for (const q of batch) {
+      const key = norm(q.question);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      drafts.push(q);
+      if (drafts.length >= data.count) break;
+    }
+  }
+  if (!drafts.length)
+    throw new Error("I couldn't find enough information in your study materials to create this question set.");
+
   const guidanceForReview = data.questionGuidance?.trim()
     ? `\nTEST EXPECTATIONS FROM THE STUDENT — preserve these requested question-style preferences when reviewing/fixing questions, as long as they remain supported by the material:\n${data.questionGuidance.trim().slice(0, 2000)}`
     : "";
-  let questions = await validateQuestions(
-    set.material_text,
-    draft,
-    `${guidanceForReview}${ci(set)}`,
-  );
-  // Validation can discard weak/unsupported drafts. Top up instead of silently
-  // returning fewer questions than the count the student explicitly selected.
+  let questions: QuizQuestion[] = [];
+  // Validate in the same small batches: a 30–50 question review response can
+  // itself exceed model output limits even when drafting was chunked.
+  for (let offset = 0; offset < Math.min(drafts.length, data.count); offset += batchSize) {
+    const reviewed = await validateQuestions(
+      material,
+      drafts.slice(offset, Math.min(offset + batchSize, data.count)),
+      `${guidanceForReview}${ci(set)}`,
+    );
+    const seenReviewed = new Set(questions.map((q) => norm(q.question)));
+    questions.push(...reviewed.filter((q) => !seenReviewed.has(norm(q.question))));
+  }
+  questions = questions.slice(0, data.count);
+  const used = new Set([...avoidSet, ...questions.map((q) => norm(q.question))]);
+
+  // Validation may discard weak questions. Replace only the missing items, in
+  // small batches, rather than regenerating the entire quiz or silently shrinking it.
   for (let attempt = 0; questions.length < data.count && attempt < 2; attempt++) {
     const missing = data.count - questions.length;
     const extraText = await aiText(
-      `Generate exactly ${missing} additional quiz questions from the material. Return ONLY the same JSON schema: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"...","explanation":"...","topic":"..."}]}. Allowed types: ${typeDesc}. Difficulty: ${data.difficulty}. Do not repeat or paraphrase any existing question listed below. Only use the source material. ${QUALITY_RULES}${ci(set)}`,
-      [{ role: "user", content: `MATERIAL:
-${clip(set.material_text, maxChars)}
-
-ALREADY GENERATED — DO NOT REPEAT:
-${questions.map((q) => q.question).join("\n")}` }],
+      `Generate exactly ${missing} additional, distinct quiz questions from the material. Return ONLY JSON: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"...","explanation":"...","topic":"..."}]}. Allowed types: ${typeDesc}. Difficulty: ${data.difficulty}. Only use supported source facts. ${QUALITY_RULES}${ci(set)}`,
+      [{ role: "user", content: `MATERIAL:\n${material}\n\nDO NOT REPEAT THESE QUESTIONS:\n${[...used].join("\n")}` }],
     );
-    const extraDraft = parseQuestions(extraText).filter((q) => !avoidSet.has(norm(q.question)) && !questions.some((old) => norm(old.question) === norm(q.question)));
+    let extraDraft: QuizQuestion[];
+    try {
+      extraDraft = parseQuestions(extraText).filter((q) => !used.has(norm(q.question)));
+    } catch {
+      break;
+    }
     if (!extraDraft.length) break;
-    const extraValid = await validateQuestions(set.material_text, extraDraft, `${guidanceForReview}${ci(set)}`);
-    const seenQuestions = new Set(questions.map((q) => norm(q.question)));
-    questions = [...questions, ...extraValid.filter((q) => !seenQuestions.has(norm(q.question)))].slice(0, data.count);
+    const extraValid = await validateQuestions(material, extraDraft, `${guidanceForReview}${ci(set)}`);
+    for (const q of extraValid) {
+      const key = norm(q.question);
+      if (used.has(key)) continue;
+      used.add(key);
+      questions.push(q);
+      if (questions.length === data.count) break;
+    }
   }
   if (questions.length !== data.count) {
-    throw new Error(`I could verify only ${questions.length} of the ${data.count} requested questions from these materials. Add more course content or try again; Momentum won't silently shorten your quiz.`);
+    throw new Error(`I could verify only ${questions.length} of the ${data.count} requested questions from these materials. Add more course content or try fewer questions; Momentum won't silently shorten your quiz.`);
   }
   return questions;
-}
-
-
-/** Large quizzes are generated and validated in small batches to keep provider latency/output bounded. */
-async function makeQuestions(
-  set: { material_text: string; custom_instructions?: string },
-  data: QOpts,
-  maxChars = 60000,
-): Promise<QuizQuestion[]> {
-  const sourceParts = splitTextIntoChunks(set.material_text, 26000);
-  if (data.count <= 8 && sourceParts.length <= 1) return makeQuestionsSingle(set, data, Math.min(maxChars, 26000));
-  const all: QuizQuestion[] = [];
-  const globallySeen = new Set((data.avoid ?? []).map(norm));
-  // Allocate questions across every material chunk so later readings/chapters are not ignored.
-  for (let partIndex = 0; partIndex < Math.max(1, sourceParts.length) && all.length < data.count; partIndex++) {
-    const remainingParts = Math.max(1, sourceParts.length - partIndex);
-    const count = Math.min(8, Math.ceil((data.count - all.length) / remainingParts));
-    const partMaterial = sourceParts[partIndex] ?? set.material_text;
-    const partSet = { ...set, material_text: partMaterial };
-    const batch = await makeQuestionsSingle(
-      partSet,
-      {
-        ...data,
-        count,
-        avoid: [...globallySeen, ...all.map((q) => q.question)].slice(0, 100),
-        plan: data.plan?.filter((p) => p.count > 0),
-      },
-      Math.min(maxChars, 26000),
-    );
-    for (const question of batch) {
-      const key = norm(question.question);
-      if (!globallySeen.has(key)) {
-        globallySeen.add(key);
-        all.push(question);
-      }
-    }
-  }
-  // If small/empty chunks or duplicate filtering left a shortfall, fill it from the complete source in bounded batches.
-  for (let attempt = 0; all.length < data.count && attempt < 10; attempt++) {
-    const count = Math.min(6, data.count - all.length);
-    const batch = await makeQuestionsSingle(set, { ...data, count, avoid: [...globallySeen, ...all.map((q) => q.question)].slice(0, 100) }, Math.min(maxChars, 26000));
-    for (const question of batch) {
-      const key = norm(question.question);
-      if (!globallySeen.has(key)) { globallySeen.add(key); all.push(question); }
-    }
-  }
-  if (all.length !== data.count) {
-    throw new Error(`Momentum generated ${all.length} of ${data.count} unique verified questions. Your material is preserved; try again to fill the missing questions.`);
-  }
-  return all;
 }
 
 export const generateQuiz = createServerFn({ method: "POST" })
@@ -527,7 +505,10 @@ export const generateComprehensive = createServerFn({ method: "POST" })
             ),
           )
           .then((qs) => qs.map((q) => ({ ...q, setId: set.id })))
-          .catch(() => [] as QuizQuestion[]);
+          .catch((error: unknown) => {
+            console.error("Comprehensive quiz generation failed for a source set:", error);
+            throw error;
+          });
       }),
     );
     const questions = results.flat();
