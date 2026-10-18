@@ -383,7 +383,11 @@ ${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat these recently asked que
     [{ role: "user", content: `MATERIAL:\n${clip(set.material_text, maxChars)}` }],
   );
   const avoidSet = new Set((data.avoid ?? []).map(norm));
-  const draft = parseQuestions(text).filter((q) => !avoidSet.has(norm(q.question)));
+  // Bound validation input to the requested batch size. Models sometimes over-generate;
+  // validating every extra item can itself exceed the provider output limit.
+  const draft = parseQuestions(text)
+    .filter((q) => !avoidSet.has(norm(q.question)))
+    .slice(0, data.count);
   if (!draft.length)
     throw new Error(
       "I couldn't find enough information in your study materials to create this question set.",
@@ -428,13 +432,16 @@ async function makeQuestions(
   maxChars = 60000,
 ): Promise<QuizQuestion[]> {
   const sourceParts = splitTextIntoChunks(set.material_text, 26000);
-  if (data.count <= 8 && sourceParts.length <= 1) return makeQuestionsSingle(set, data, Math.min(maxChars, 26000));
+  // Six questions per provider call balances completion-token headroom with the
+  // number of round trips needed for 30-, 40- and 60-question exams.
+  const batchSize = 6;
+  if (data.count <= batchSize && sourceParts.length <= 1) return makeQuestionsSingle(set, data, Math.min(maxChars, 22000));
   const all: QuizQuestion[] = [];
   const globallySeen = new Set((data.avoid ?? []).map(norm));
   // Allocate questions across every material chunk so later readings/chapters are not ignored.
   for (let partIndex = 0; partIndex < Math.max(1, sourceParts.length) && all.length < data.count; partIndex++) {
     const remainingParts = Math.max(1, sourceParts.length - partIndex);
-    const count = Math.min(8, Math.ceil((data.count - all.length) / remainingParts));
+    const count = Math.min(batchSize, Math.ceil((data.count - all.length) / remainingParts));
     const partMaterial = sourceParts[partIndex] ?? set.material_text;
     const partSet = { ...set, material_text: partMaterial };
     const batch = await makeQuestionsSingle(
@@ -445,7 +452,7 @@ async function makeQuestions(
         avoid: [...globallySeen, ...all.map((q) => q.question)].slice(0, 100),
         plan: data.plan?.filter((p) => p.count > 0),
       },
-      Math.min(maxChars, 26000),
+      Math.min(maxChars, 22000),
     );
     for (const question of batch) {
       const key = norm(question.question);
@@ -457,8 +464,8 @@ async function makeQuestions(
   }
   // If small/empty chunks or duplicate filtering left a shortfall, fill it from the complete source in bounded batches.
   for (let attempt = 0; all.length < data.count && attempt < 10; attempt++) {
-    const count = Math.min(6, data.count - all.length);
-    const batch = await makeQuestionsSingle(set, { ...data, count, avoid: [...globallySeen, ...all.map((q) => q.question)].slice(0, 100) }, Math.min(maxChars, 26000));
+    const count = Math.min(batchSize, data.count - all.length);
+    const batch = await makeQuestionsSingle(set, { ...data, count, avoid: [...globallySeen, ...all.map((q) => q.question)].slice(0, 100) }, Math.min(maxChars, 22000));
     for (const question of batch) {
       const key = norm(question.question);
       if (!globallySeen.has(key)) { globallySeen.add(key); all.push(question); }
@@ -519,31 +526,44 @@ export const generateComprehensive = createServerFn({ method: "POST" })
     const base = Math.floor(data.count / sets.length);
     let extra = data.count - base * sets.length;
     const perChars = Math.max(12000, Math.floor(60000 / sets.length));
-    const results = await Promise.all(
-      sets.map((set) => {
-        const n = base + (extra-- > 0 ? 1 : 0);
-        if (n < 1) return Promise.resolve([] as QuizQuestion[]);
-        return recentQuestions(context.supabase, set.id)
-          .then((avoid) =>
-            makeQuestions(
-              set,
-              {
-                count: n,
-                difficulty: data.difficulty,
-                types: data.types,
-                exam: true,
-                avoid,
-                questionGuidance: data.questionGuidance,
-              },
-              perChars,
-            ),
-          )
-          .then((qs) => qs.map((q) => ({ ...q, setId: set.id })))
-          .catch(() => [] as QuizQuestion[]);
-      }),
-    );
-    const questions = results.flat();
-    if (questions.length !== data.count) throw new Error(`Momentum could generate ${questions.length} of ${data.count} requested questions across these sets. Try again or select fewer source sets with more material.`);
+    // Limit simultaneous set jobs. Firing all selected sets at once can trigger
+    // provider rate limits, especially for 40- and 60-question comprehensive exams.
+    const allocations = sets.map((set) => {
+      const count = base + (extra-- > 0 ? 1 : 0);
+      return { set, count };
+    });
+    const results: { setName: string; questions: QuizQuestion[]; error?: string }[] = [];
+    const concurrency = 2;
+    for (let offset = 0; offset < allocations.length; offset += concurrency) {
+      const group = allocations.slice(offset, offset + concurrency);
+      const groupResults = await Promise.all(group.map(async ({ set, count }) => {
+        if (count < 1) return { setName: set.name, questions: [] as QuizQuestion[] };
+        try {
+          const avoid = await recentQuestions(context.supabase, set.id);
+          const qs = await makeQuestions(set, {
+            count,
+            difficulty: data.difficulty,
+            types: data.types,
+            exam: true,
+            avoid,
+            questionGuidance: data.questionGuidance,
+          }, perChars);
+          return { setName: set.name, questions: qs.map((q) => ({ ...q, setId: set.id })) };
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Unknown generation error";
+          return { setName: set.name, questions: [] as QuizQuestion[], error: reason };
+        }
+      }));
+      results.push(...groupResults);
+    }
+    const questions = results.flatMap((result) => result.questions);
+    if (questions.length !== data.count) {
+      const failed = results.filter((result) => result.error);
+      const detail = failed.length
+        ? ` Failed source set(s): ${failed.map((result) => `“${result.setName}”: ${result.error}`).join("; ").slice(0, 1200)}`
+        : " Some source material produced too few unique, verifiable questions.";
+      throw new Error(`Momentum generated ${questions.length} of ${data.count} requested questions. The app will not silently create a shorter exam.${detail} Try again after checking that the affected set contains readable course material.`);
+    }
     return { questions };
   });
 

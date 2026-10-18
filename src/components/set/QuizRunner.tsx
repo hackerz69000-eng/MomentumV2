@@ -393,9 +393,11 @@ export function QuizRunner({
                 : "Writing your quiz"}
         </h2>
         <p className="text-soft text-sm mt-1">
-          {settings.count > 15
-            ? "Longer sets can take up to a minute."
-            : "Usually takes 10–30 seconds."}
+          {settings.count >= 40
+            ? "Large exams are generated and checked in batches. This can take a few minutes."
+            : settings.count > 15
+              ? "Longer exams are generated and checked in batches; this may take a minute or two."
+              : "Usually takes 10–30 seconds."}
         </p>
       </div>
     );
