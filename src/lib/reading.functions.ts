@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { aiText, parseJson, clip } from "./ai.server";
+import { aiText, parseJson, clip, splitTextIntoChunks } from "./ai.server";
 import { loadSet, ci } from "./set-helpers.server";
 
 const setIdInput = (data: unknown) => z.object({ setId: z.string().uuid() }).parse(data);
@@ -156,6 +156,82 @@ export const readingSummary = createServerFn({ method: "POST" })
     return { summary };
   });
 
+
+const implementInput = (data: unknown) => z.object({ setId: z.string().uuid(), additions: z.string().trim().min(10).max(30000) }).parse(data);
+
+function mergeNotesWithoutReplacing(existing: string, additions: string) {
+  const normalize = (value: string) => value.toLocaleLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
+  let merged = existing.trim();
+  const add = additions.trim();
+  if (!merged) return add;
+  const chunks = add.split(/(?=^#{1,3}\s+)/m).map((x) => x.trim()).filter(Boolean);
+  const unmatched: string[] = [];
+  for (const chunk of chunks) {
+    const match = chunk.match(/^(#{1,3})\s+([^\n]+)\n?([\s\S]*)$/);
+    const heading = match?.[2]?.trim() ?? "Additional concept";
+    const body = (match?.[3] ?? chunk).trim();
+    const bodyNorm = normalize(body);
+    if (!bodyNorm || bodyNorm.length < 12) continue;
+    const existingNorm = normalize(merged);
+    if (existingNorm.includes(bodyNorm) || existingNorm.includes(bodyNorm.slice(0, Math.min(100, bodyNorm.length)))) continue;
+    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const headingPattern = new RegExp(`^(#{1,3})\\s+${escaped}\\s*$`, "im");
+    const found = headingPattern.exec(merged);
+    if (found) {
+      const start = found.index + found[0].length;
+      const nextHeading = /\n#{1,3}\s+/g;
+      nextHeading.lastIndex = start;
+      const next = nextHeading.exec(merged);
+      const end = next ? next.index : merged.length;
+      const section = merged.slice(start, end);
+      if (!normalize(section).includes(bodyNorm.slice(0, Math.min(100, bodyNorm.length)))) {
+        merged = `${merged.slice(0, end).trimEnd()}\n\n${body}\n\n${merged.slice(end).trimStart()}`;
+      }
+    } else {
+      unmatched.push(`## ${heading}\n\n${body}`);
+    }
+  }
+  if (unmatched.length) merged += `\n\n## Additional insights from readings\n\n${unmatched.join("\n\n")}`;
+  return merged;
+}
+
+export const readingImplementIntoNotes = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth]).inputValidator(setIdInput)
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId);
+    const sources = (await collectSources(context.supabase, set)).filter((source) => source.kind === "reading" && source.key !== "current-notes");
+    if (!sources.length) throw new Error("Upload or connect a reading PDF first.");
+    const existingNotes = clip(set.notes ?? "", 18000) || "(No notes yet)";
+    const readingChunks = sources.flatMap((source) => splitTextIntoChunks(source.text, 10000).map((text, index, all) => ({ title: source.title, part: index + 1, total: all.length, text })));
+    const additionParts: string[] = [];
+    const seen = new Set<string>();
+    const normalize = (value: string) => value.toLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
+    for (const chunk of readingChunks) {
+      const result = await aiText(`You are an academic note editor comparing ONE PART of a reading with existing notes. Return ONLY Markdown containing important information from this part that is genuinely absent from the notes. Match existing headings when possible; otherwise add a concise topic heading. Preserve definitions, explanations, conditions, examples, exceptions, formulas, and relationships. Never invent facts. Do not include citations/source references. Do not rewrite existing notes. If this part adds nothing, return exactly NO_NEW_INFORMATION. This is part ${chunk.part} of ${chunk.total} for ${chunk.title}; analyze this part completely and do not assume other parts contain the same information. ${ci(set)}`,
+        [{ role: "user", content: `EXISTING NOTES (reference only; never replace):\n${existingNotes}\n\nREADING: ${chunk.title} (part ${chunk.part}/${chunk.total})\n${chunk.text}` }]);
+      if (!result.trim() || /NO_NEW_INFORMATION/i.test(result.trim())) continue;
+      for (const section of result.trim().split(/(?=^#{1,3}\s+)/m).map((x) => x.trim()).filter(Boolean)) {
+        const key = normalize(section);
+        if (key.length > 20 && !seen.has(key)) { seen.add(key); additionParts.push(section); }
+      }
+    }
+    const additions = additionParts.join("\n\n").trim();
+    if (!additions) return { additions: "", message: "Your notes already cover the useful information in these readings." };
+    return { additions: additions.slice(0, 29000) };
+  });
+
+export const readingApplyNotesAdditions = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth]).inputValidator(implementInput)
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId);
+    const current = set.notes ?? "";
+    const merged = mergeNotesWithoutReplacing(current, data.additions);
+    if (merged === current.trim()) return { added: false, message: "No new information needed to be added; your notes are unchanged." };
+    const { error } = await (context.supabase as any).from("study_sets").update({ notes: merged, updated_at: new Date().toISOString() }).eq("id", set.id).eq("user_id", context.userId);
+    if (error) throw new Error("Couldn't save the merged notes. Your existing notes were not changed.");
+    return { added: true, message: "New reading information added. Existing notes were preserved." };
+  });
+
 export const readingAsk = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth]).inputValidator(askInput)
   .handler(async ({ data, context }) => {
@@ -175,7 +251,12 @@ export const readingGenerateCards = createServerFn({ method: "POST" })
     if (!sources.length) throw new Error("Add reading material or connect a lecture first.");
     const text = await aiText(`Create up to 15 high-value flashcards for this lecture-first Study Set. Prioritize the primary lecture/course material, using optional readings to clarify confusing concepts and add useful context. Use only source-supported facts. Include source name and page/slide marker in topic when provided. Return ONLY JSON: {"cards":[{"q":"question","a":"answer","t":"topic"}]}. Avoid duplicates and vague prompts. ${ci(set)}`,
       [{ role: "user", content: `SET: ${set.name}\nSOURCES:\n${sources.map((s) => `${s.title}\n${clip(s.text, 16000)}`).join("\n\n---\n\n")}` }]);
-    const cards = (parseJson<{ cards?: { q: string; a: string; t?: string }[] }>(text).cards ?? []).filter(c => c?.q?.trim() && c?.a?.trim()).slice(0, 15);
+    const parsed = parseJson<{ cards?: unknown }>(text);
+    const rawCards = parsed && typeof parsed === "object" && Array.isArray(parsed.cards) ? parsed.cards : [];
+    const cards = rawCards.filter((c): c is { q: string; a: string; t?: string } =>
+      !!c && typeof c === "object" && typeof (c as any).q === "string" && typeof (c as any).a === "string" &&
+      (c as any).q.trim().length > 0 && (c as any).a.trim().length > 0)
+      .map((c) => ({ q: c.q.trim(), a: c.a.trim(), t: typeof c.t === "string" ? c.t.trim() : "" })).slice(0, 15);
     if (!cards.length) throw new Error("No flashcards could be generated from these sources.");
     return { cards };
   });

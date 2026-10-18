@@ -68,13 +68,20 @@ export const lectureCards = createServerFn({ method: "POST" })
         },
       ],
     );
-    const cards = (parseJson<{ cards?: { q: string; a: string; t?: string }[] }>(text).cards ?? [])
-      .filter(
-        (c, i, arr) =>
-          c?.q?.trim() &&
-          c?.a?.trim() &&
-          arr.findIndex((x) => x?.q?.trim().toLowerCase() === c.q.trim().toLowerCase()) === i,
-      )
+    const parsed = parseJson<{ cards?: unknown }>(text);
+    const rawCards = parsed && typeof parsed === "object" && Array.isArray(parsed.cards) ? parsed.cards : [];
+    const seenQuestions = new Set<string>();
+    const cards = rawCards
+      .filter((c): c is { q: string; a: string; t?: string } =>
+        !!c && typeof c === "object" && typeof (c as any).q === "string" && typeof (c as any).a === "string" &&
+        (c as any).q.trim().length > 0 && (c as any).a.trim().length > 0)
+      .filter((c) => {
+        const key = c.q.trim().toLowerCase();
+        if (seenQuestions.has(key)) return false;
+        seenQuestions.add(key);
+        return true;
+      })
+      .map((c) => ({ q: c.q.trim(), a: c.a.trim(), t: typeof c.t === "string" ? c.t.trim() : "" }))
       .slice(0, 25);
     if (!cards.length) throw new Error("No flashcards could be generated.");
     const { count } = await sb

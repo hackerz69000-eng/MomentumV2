@@ -1,0 +1,92 @@
+# Momentum
+
+Momentum is an AI study platform that turns your study material into notes, flashcards, quizzes, guided study sessions, an AI tutor, and writing support.
+
+## Development
+
+Requirements: Node.js 22+ and npm.
+
+```sh
+git clone <this-repository-url>
+cd <repository-name>
+npm install
+npm run dev
+```
+
+Copy `.env.example` to `.env` and fill in the required Supabase and AI environment variables for the features you use. Do not commit `.env` or other local environment files.
+
+### Useful commands
+
+```sh
+npm run dev       # start the local development server
+npm run build     # production build
+npm run lint      # ESLint + Prettier checks
+npm test          # test suite
+```
+
+
+## Reading & Lecture Companion
+
+The Reading Companion is integrated into each existing Study Set. It can create study briefs, answer questions from selected or combined course sources, preview flashcards, and connect readings or lectures from another Study Set without copying the source set or replacing existing cards, quizzes, folders, or progress.
+
+### Apply the Reading Companion migration
+
+Before deploying this version, run `drizzle/migrations/0011_reading_companion_sources.sql` once in the Supabase SQL Editor for the project. This creates only the source-link table and its row-level security policies; it does not rewrite existing Study Sets or flashcards. The UI will show a migration notice if the table is missing. Existing source links are metadata only: unlinking a source does not delete the source reading, lecture, generated cards, or study history.
+
+PDF extraction now preserves page headings where the PDF parser returns individual pages. Page citations are only shown when a page marker exists in the extracted text; the AI is instructed not to invent page numbers.
+
+## Vercel deployment
+
+This repository is configured for Vercel/TanStack Start. The Vercel project should use the repository root with the default framework/build detection.
+
+Set these environment variables in Vercel for the environments you deploy to:
+
+- `SUPABASE_URL`
+- `SUPABASE_PUBLISHABLE_KEY`
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`
+- `VITE_SUPABASE_PROJECT_ID` (if used by the client)
+- `NVIDIA_API_KEY` for NVIDIA NIM AI study generation
+- `NIM_MODEL` (optional; defaults to `openai/gpt-oss-20b`)
+- `LOVABLE_API_KEY` for audio/transcription features that use the Lovable AI gateway
+
+The `VITE_` Supabase values are intentionally public client configuration; never put service-role or other private secrets in a `VITE_` variable.
+
+## Architecture
+
+- Supabase authentication and row-level security protect user data.
+- Authenticated server functions receive the browser session as a Bearer token and verify it server-side.
+- AI operations run on the server so provider keys are never exposed to the browser.
+- The `_authenticated` route is gated client-side because Supabase sessions live in browser storage.
+- Database migrations live under `drizzle/migrations`.
+
+
+## Reading-first support for lecture-based Study Sets
+
+Run both `drizzle/migrations/0011_reading_companion_sources.sql` and `drizzle/migrations/0012_reading_documents.sql` in the Supabase SQL Editor before deploying this version. The Study Set's original uploaded course material remains the primary source; optional readings are stored separately in `study_set_readings` and can be added from the Reading & Lecture Companion. The Companion's study brief is lecture-first and uses readings to clarify concepts, identify extra detail, and flag source differences without inventing page references.
+
+
+## Turnitin Submission preparation
+
+Momentum includes a **Turnitin Submission** preparation screen at `/turnitin`. Students can enter course and assignment details, select a final paper file (PDF, DOC/DOCX, RTF, ODT, or TXT) or paste text, complete a pre-submission checklist, and optionally open their institution's official course portal. The screen does **not** submit to Turnitin, generate an official Turnitin Similarity Report, or issue an official receipt. It can run a separate, clearly labelled local similarity pre-check; public-source discovery requires explicit consent and server-side configuration. Actual submission must take place through the institution's licensed Turnitin/LMS flow.
+
+
+## Similarity pre-check source discovery
+
+The Turnitin practice page can compare against documents the student adds locally. It also offers an explicit-consent source-discovery pass that searches accessible public-web pages through Brave Search (when `BRAVE_SEARCH_API_KEY` is configured) and scholarly metadata/abstracts through Crossref. Add `BRAVE_SEARCH_API_KEY` as a **server-side** Vercel environment variable and redeploy; do not use a `VITE_` prefix. See `TURNITIN_SIMILARITY_PRECHECK_NOTES.md` for the implementation, privacy notice, and limitations. The result is a local similarity pre-check, never an official or predicted Turnitin score.
+
+### Cross-device progression storage
+
+Apply `supabase/migrations/20261016000000_user_progression.sql` in the Supabase SQL Editor (or through your normal migration workflow) before deploying this version. It creates the RLS-protected `public.user_progression` row per authenticated user. On authenticated app startup, Momentum merges the device's existing XP/streak/freeze/reward snapshot with the account row and saves progression changes to Supabase. Existing browser-local progress is retained and merged on first sync; review the first signed-in device's values before treating it as canonical.
+
+### Admin progression editor
+
+The authenticated `/admin-progression` page is shown only to accounts whose **Supabase Auth `app_metadata.role`** is `admin`. The database RPCs enforce the same check; changing ordinary `user_metadata` is not sufficient. After applying `supabase/migrations/20261016010000_admin_progression_editor.sql`, grant the role to a trusted account from the Supabase SQL Editor (replace the email):
+
+```sql
+update auth.users
+set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"admin"}'::jsonb
+where email = 'your-admin-email@example.com';
+```
+
+The admin page accepts a target user's UUID from **Authentication → Users**. XP controls the calculated level; tier can be set to Automatic or explicitly overridden from tiers 1–50. The editor uses security-definer RPCs that reject non-admin JWTs. Apply the migration before using the page.

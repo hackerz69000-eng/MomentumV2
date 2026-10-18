@@ -1,6 +1,6 @@
 import { useServerFn } from "@tanstack/react-start";
 import { useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState, useRef } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import { ArrowLeft, ArrowRight, Loader2, Pencil, Plus, Shuffle, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -68,6 +68,32 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
   const idx = i;
   const card = deckIds[idx] ? byId.get(deckIds[idx]!) : undefined;
 
+  // Retry locally queued reviews when the user returns or connectivity recovers.
+  useEffect(() => {
+    if (!user?.id || typeof window === "undefined") return;
+    const queueKey = `momentum_pending_flashcard_reviews_v1:${user.id}`;
+    const retryPending = async () => {
+      if (!navigator.onLine) return;
+      let queue: Record<string, { cardId: string; patch: Partial<Flashcard>; setId: string }> = {};
+      try { queue = JSON.parse(localStorage.getItem(queueKey) ?? "{}"); } catch { return; }
+      for (const [id, item] of Object.entries(queue)) {
+        try {
+          const { data, error } = await supabase.from("flashcards").update(item.patch).eq("id", id).eq("user_id", user.id).select("id");
+          if (error || !data?.length) continue;
+          delete queue[id];
+          localStorage.setItem(queueKey, JSON.stringify(queue));
+          if (item.setId === setId) {
+            qc.setQueryData<Flashcard[]>(["cards", setId], (old) => old?.map((c) => c.id === id ? { ...c, ...item.patch } : c));
+          }
+        } catch { /* leave it queued for the next retry */ }
+      }
+    };
+    window.addEventListener("online", retryPending);
+    window.addEventListener("focus", retryPending);
+    void retryPending();
+    return () => { window.removeEventListener("online", retryPending); window.removeEventListener("focus", retryPending); };
+  }, [user?.id, setId, qc]);
+
   const startDeck = (m: Mode, shuffled = false) => {
     const base =
       m === "due"
@@ -115,23 +141,45 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
     }
 
     let savedRemotely = false;
-    try {
-      const { error } = await supabase.from("flashcards").update(patch).eq("id", card.id);
-      if (error) {
-        // Keep the optimistic/local update visible. Refetching immediately after
-        // a failed write used to replace it with stale server data (e.g. 1/35 -> 0/35).
-        console.error("[flashcards] Review rating could not be saved remotely:", error.message);
-        toast.error("Review saved locally, but cloud sync failed. Your progress will stay visible; check your connection.");
-      } else {
-        savedRemotely = true;
-        void logActivity("flashcard", setId, 1, qc);
+    const queueKey = `momentum_pending_flashcard_reviews_v1:${user?.id ?? "anonymous"}`;
+    const queuePatch = () => {
+      try {
+        const raw = localStorage.getItem(queueKey);
+        const queue = raw ? JSON.parse(raw) as Record<string, { cardId: string; patch: typeof patch; setId: string }> : {};
+        // Latest review state wins per card, preventing duplicate/reordered retries.
+        queue[card.id] = { cardId: card.id, patch, setId };
+        localStorage.setItem(queueKey, JSON.stringify(queue));
+      } catch (queueError) {
+        console.error("[flashcards] Could not queue pending review:", queueError);
       }
+    };
+    try {
+      if (!user?.id) throw new Error("Sign in is required to sync flashcard reviews.");
+      const { data: savedRows, error } = await supabase
+        .from("flashcards")
+        .update(patch)
+        .eq("id", card.id)
+        .eq("user_id", user.id)
+        .select("id");
+      if (error) throw error;
+      if (!savedRows?.length) throw new Error("The cloud did not confirm this card update (ownership or row policy may have blocked it).");
+      savedRemotely = true;
+      // Remove a pending offline copy only after the server confirms this exact card.
+      try {
+        const raw = localStorage.getItem(queueKey);
+        const queue = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+        delete queue[card.id];
+        localStorage.setItem(queueKey, JSON.stringify(queue));
+      } catch { /* optional queue cleanup */ }
+      void logActivity("flashcard", setId, 1, qc);
     } catch (error) {
-      console.error("[flashcards] Review save failed:", error);
-      toast.error("Review saved locally, but cloud sync failed. Your progress will stay visible; check your connection.");
+      queuePatch();
+      const message = error instanceof Error ? error.message : "Unknown cloud sync error";
+      console.error("[flashcards] Review save failed:", message);
+      toast.error(`Review saved locally; cloud sync failed: ${message}. It will retry when you return online.`);
     }
-    // Refetch only after the write has succeeded; otherwise a stale server read
-    // can immediately overwrite the optimistic review state.
+    // Only read server state after a confirmed write. Pending local reviews are
+    // retried on the next review, focus, or reconnect and never overwritten here.
     if (savedRemotely) {
       await qc.invalidateQueries({ queryKey: ["cards", setId] });
       await qc.invalidateQueries({ queryKey: ["sets"] });

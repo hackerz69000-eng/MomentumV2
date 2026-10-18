@@ -287,18 +287,23 @@ export const gradeEssay = createServerFn({ method: "POST" })
         content: `ASSIGNMENT INSTRUCTIONS / ESSAY QUESTION:\n${clip(e.instructions || "(not provided)", 10000)}\n\nRUBRIC:\n${clip(e.rubric || "(not provided)", 10000)}\n\nTEACHER INSTRUCTIONS:\n${clip(e.teacher_notes || "(not provided)", 5000)}\n\nREQUIRED SOURCES / MATERIALS:\n${clip(e.sources || "(not provided)", 15000)}${mat.text}\n\nSTUDENT ESSAY (${e.essay.trim().split(/\s+/).length} words):\n${clip(e.essay, 60000)}`,
       },
     ]);
-    const r = parseJson<Partial<EssayResult>>(text);
+    const parsed = parseJson<Partial<EssayResult>>(text);
+    const r = parsed && typeof parsed === "object" ? parsed : {};
     const arr = (x: unknown) => (Array.isArray(x) ? x.map(String).filter(Boolean) : []);
+    const sections = Array.isArray(r.sections) ? r.sections : [];
+    const paragraphs = Array.isArray(r.paragraphs) ? r.paragraphs : [];
+    const scores = Array.isArray(r.scores) ? r.scores : [];
+    const changes = Array.isArray(r.changes) ? r.changes : [];
     const result: EssayResult = {
       requirements: { items: arr(r.requirements?.items), unclear: arr(r.requirements?.unclear) },
-      sections: (r.sections ?? [])
+      sections: sections
         .map((s) => ({
           name: String(s?.name ?? ""),
           works: arr(s?.works),
           improve: arr(s?.improve),
         }))
         .filter((s) => s.name),
-      paragraphs: (r.paragraphs ?? []).map((p) => ({
+      paragraphs: paragraphs.map((p) => ({
         label: String(p?.label ?? ""),
         works: String(p?.works ?? ""),
         doesnt: String(p?.doesnt ?? ""),
@@ -312,7 +317,7 @@ export const gradeEssay = createServerFn({ method: "POST" })
         missing: arr(r.check?.missing),
       },
       rubricUsed: !!r.rubricUsed,
-      scores: (r.scores ?? [])
+      scores: scores
         .map((s) => ({
           category: String(s?.category ?? ""),
           score: Number(s?.score) || 0,
@@ -325,7 +330,7 @@ export const gradeEssay = createServerFn({ method: "POST" })
       like: arr(r.like),
       improve: arr(r.improve),
       opportunities: arr(r.opportunities),
-      changes: (r.changes ?? []).map((c) => ({
+      changes: changes.map((c) => ({
         current: String(c?.current ?? ""),
         improve: String(c?.improve ?? ""),
         why: String(c?.why ?? ""),

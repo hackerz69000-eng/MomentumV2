@@ -1,7 +1,11 @@
 const NIM_MODEL = process.env["NIM_MODEL"]?.trim() || "openai/gpt-oss-20b";
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 
-type ModelMessage = { role: "user" | "assistant"; content: string };
+type ModelMessage = {
+  role: "user" | "assistant";
+  // The OCR flow sends multimodal file/image content; other AI tools send plain text.
+  content: string | Array<Record<string, unknown>>;
+};
 
 class NimError extends Error {
   statusCode?: number;
@@ -68,48 +72,70 @@ async function callNim(system: string, messages: ModelMessage[]): Promise<string
     );
   }
 
-  const response = await fetch(NIM_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    // Bound individual provider calls so a hung model request cannot consume the
-    // entire server-function execution window.
-    signal: AbortSignal.timeout(45_000),
-    body: JSON.stringify({
-      model: NIM_MODEL,
-      temperature: 0.2,
-      max_tokens: 5000,
-      stream: false,
-      messages: [
-        { role: "system", content: system },
-        ...messages.map((message) => ({ role: message.role, content: message.content })),
-      ],
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(NIM_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      // Bound provider latency, but leave enough time for larger study tasks.
+      signal: AbortSignal.timeout(90_000),
+      body: JSON.stringify({
+        model: NIM_MODEL,
+        temperature: 0.2,
+        max_tokens: 6000,
+        stream: false,
+        messages: [
+          { role: "system", content: system },
+          ...messages.map((message) => ({ role: message.role, content: message.content })),
+        ],
+      }),
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    // Normalize fetch failures so the retry policy handles timeouts and transient network errors.
+    throw new NimError(
+      timedOut
+        ? "The AI request timed out. Please try again, or request a smaller response."
+        : "Couldn't connect to NVIDIA NIM. Check the server connection and try again.",
+      timedOut ? 408 : undefined,
+    );
+  }
 
-  const body = await response.text();
+  let body: string;
+  try {
+    body = await response.text();
+  } catch {
+    throw new NimError("NVIDIA NIM returned an unreadable response.", 502);
+  }
   if (!response.ok) {
     throw new NimError(nimErrorMessage(response.status, body), response.status);
   }
 
-  let payload: { choices?: Array<{ message?: { content?: string | null } }> };
+  let payload: { choices?: Array<{ message?: { content?: string | null }; finish_reason?: string }> };
   try {
-    payload = JSON.parse(body) as { choices?: Array<{ message?: { content?: string | null } }> };
+    payload = JSON.parse(body) as { choices?: Array<{ message?: { content?: string | null }; finish_reason?: string }> };
   } catch {
-    throw new NimError("NVIDIA NIM returned an invalid response.");
+    throw new NimError("NVIDIA NIM returned an invalid response.", 502);
   }
 
-  const text = payload.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new NimError("NVIDIA NIM returned an empty response.");
+  const choice = payload.choices?.[0];
+  if (choice?.finish_reason === "length") {
+    throw new NimError("The AI response reached its output limit. Please request fewer questions or a shorter response.", 413);
+  }
+  const text = choice?.message?.content?.trim();
+  if (!text) throw new NimError("NVIDIA NIM returned an empty response.", 502);
   return text;
 }
 
 function retryable(err: unknown) {
-  const status = err instanceof NimError ? err.statusCode : undefined;
-  return status === 429 || (typeof status === "number" && status >= 500);
+  if (!(err instanceof NimError)) return false;
+  const status = err.statusCode;
+  return status === 408 || status === 429 || (typeof status === "number" && status >= 500) ||
+    /returned an invalid response|returned an empty response|unreadable response|couldn't connect/i.test(err.message);
 }
 
 export async function aiText(
@@ -119,7 +145,9 @@ export async function aiText(
 ): Promise<string> {
   if (opts.grounded !== false) system += GROUNDING;
 
-  const delays = [1000, 2000, 4000];
+  // A bounded retry policy helps with provider/network instability without
+  // multiplying requests indefinitely or retrying credential/configuration errors.
+  const delays = [800, 1800];
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
@@ -135,25 +163,74 @@ export async function aiText(
   throw lastError instanceof Error ? lastError : new Error("NVIDIA NIM request failed. Please try again.");
 }
 
+/** Parse the first complete JSON object/array in an AI response, ignoring surrounding prose. */
 export function parseJson<T>(text: string): T {
-  const cleaned = text.replace(/```(?:json)?/g, "").trim();
-  const start = cleaned.search(/[[{]/);
+  if (typeof text !== "string" || !text.trim()) {
+    throw new Error("The AI response was empty. Please try again.");
+  }
+  const cleaned = text.replace(/```(?:json)?\s*/gi, "").trim();
+  // Scan for a complete root value rather than taking the last brace: prose,
+  // nested objects, braces inside strings, and trailing explanations are common.
+  let start = -1;
+  for (let i = 0; i < cleaned.length; i += 1) {
+    if (cleaned[i] === "{" || cleaned[i] === "[") { start = i; break; }
+  }
   if (start < 0) throw new Error("Could not read the AI response. Please try again.");
-
-  let end = Math.max(cleaned.lastIndexOf("}"), cleaned.lastIndexOf("]"));
-  while (end > start) {
-    try {
-      return JSON.parse(cleaned.slice(start, end + 1)) as T;
-    } catch {
-      const prev = Math.max(cleaned.lastIndexOf("}", end - 1), cleaned.lastIndexOf("]", end - 1));
-      if (prev <= start) break;
-      end = prev;
+  {
+    const stack: string[] = [];
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < cleaned.length; i += 1) {
+      const ch = cleaned[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === "{" || ch === "[") stack.push(ch);
+      else if (ch === "}" || ch === "]") {
+        const last = stack.pop();
+        if ((ch === "}" && last !== "{") || (ch === "]" && last !== "[")) break;
+        if (stack.length === 0) {
+          try {
+            return JSON.parse(cleaned.slice(start, i + 1)) as T;
+          } catch {
+            break;
+          }
+        }
+      }
     }
   }
-
   throw new Error("Could not read the AI response. Please try again.");
 }
 
 export function clip(material: string, max = 60000) {
   return material.length > max ? material.slice(0, max) + "\n\n[...material truncated]" : material;
+}
+
+/** Split long extracted documents at paragraph/line boundaries without dropping later content. */
+export function splitTextIntoChunks(material: string, maxChars = 16000): string[] {
+  const text = material.replace(/\r\n/g, "\n").trim();
+  if (!text) return [];
+  const chunks: string[] = [];
+  const safeMax = Number.isFinite(maxChars) ? Math.max(1, Math.floor(maxChars)) : 16000;
+  let current = "";
+  const blocks = text.split(/\n\s*\n/); // prefer paragraph boundaries; further split oversized blocks below
+  for (const block of blocks) {
+    const part = block.trim();
+    if (!part) continue;
+    if (part.length > safeMax) {
+      if (current.trim()) { chunks.push(current.trim()); current = ""; }
+      for (let i = 0; i < part.length; i += safeMax) chunks.push(part.slice(i, i + safeMax));
+      continue;
+    }
+    if (current.length && current.length + part.length + 2 > safeMax) {
+      chunks.push(current.trim());
+      current = part;
+    } else current += `${current ? "\n\n" : ""}${part}`;
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks;
 }

@@ -237,6 +237,7 @@ export type Database = {
           answer: string;
           created_at: string;
           due_at: string;
+          ease_factor: number;
           id: string;
           interval_days: number;
           is_custom: boolean;
@@ -254,6 +255,7 @@ export type Database = {
           answer: string;
           created_at?: string;
           due_at?: string;
+          ease_factor?: number;
           id?: string;
           interval_days?: number;
           is_custom?: boolean;
@@ -271,6 +273,7 @@ export type Database = {
           answer?: string;
           created_at?: string;
           due_at?: string;
+          ease_factor?: number;
           id?: string;
           interval_days?: number;
           is_custom?: boolean;

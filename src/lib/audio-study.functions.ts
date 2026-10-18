@@ -96,9 +96,10 @@ ${performance}`,
           },
         ],
       );
-      const parsed = parseJson<{ title?: string; sections?: Partial<AudioSection>[] }>(text);
-      const sections = (parsed.sections ?? [])
-        .filter((s) => s.title && s.narration)
+      const parsed = parseJson<{ title?: string; sections?: unknown }>(text);
+      const rawSections = Array.isArray(parsed?.sections) ? parsed.sections.filter((section): section is Partial<AudioSection> => !!section && typeof section === "object") : [];
+      const sections = rawSections
+        .filter((s) => typeof s.title === "string" && !!s.title.trim() && typeof s.narration === "string" && !!s.narration.trim())
         .map((s) => ({
           title: String(s.title).slice(0, 120),
           topic: String(s.topic ?? s.title).slice(0, 80),

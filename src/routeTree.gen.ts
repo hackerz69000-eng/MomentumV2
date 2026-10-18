@@ -12,19 +12,20 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as AuthenticatedAdminProgressionRouteImport } from './routes/_authenticated/admin-progression'
 import { Route as AuthenticatedCoachRouteImport } from './routes/_authenticated/coach'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedExamRouteImport } from './routes/_authenticated/exam'
 import { Route as AuthenticatedHistoryRouteImport } from './routes/_authenticated/history'
-import { Route as AuthenticatedAttemptsIdRouteImport } from './routes/_authenticated/attempts.$id'
 import { Route as AuthenticatedSearchRouteImport } from './routes/_authenticated/search'
 import { Route as AuthenticatedTrashRouteImport } from './routes/_authenticated/trash'
-import { Route as AuthenticatedAdminProgressionRouteImport } from './routes/_authenticated/admin-progression'
 import { Route as AuthenticatedTurnitinRouteImport } from './routes/_authenticated/turnitin'
-import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
+import { Route as ApiCleanupTrashRouteImport } from './routes/api/cleanup-trash'
 import { Route as ApiSimilarityDiscoveryRouteImport } from './routes/api/similarity-discovery'
+import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
 import { Route as AuthenticatedAssignmentIndexRouteImport } from './routes/_authenticated/assignment.index'
 import { Route as AuthenticatedAssignmentIdRouteImport } from './routes/_authenticated/assignment.$id'
+import { Route as AuthenticatedAttemptsIdRouteImport } from './routes/_authenticated/attempts.$id'
 import { Route as AuthenticatedEssayIndexRouteImport } from './routes/_authenticated/essay.index'
 import { Route as AuthenticatedEssayIdRouteImport } from './routes/_authenticated/essay.$id'
 import { Route as AuthenticatedSetsIdRouteImport } from './routes/_authenticated/sets.$id'
@@ -44,6 +45,12 @@ const AuthRoute = AuthRouteImport.update({
   path: '/auth',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedAdminProgressionRoute =
+  AuthenticatedAdminProgressionRouteImport.update({
+    id: '/admin-progression',
+    path: '/admin-progression',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedCoachRoute = AuthenticatedCoachRouteImport.update({
   id: '/coach',
   path: '/coach',
@@ -64,11 +71,6 @@ const AuthenticatedHistoryRoute = AuthenticatedHistoryRouteImport.update({
   path: '/history',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
-const AuthenticatedAttemptsIdRoute = AuthenticatedAttemptsIdRouteImport.update({
-  id: '/attempts/$id',
-  path: '/attempts/$id',
-  getParentRoute: () => AuthenticatedRouteRoute,
-} as any)
 const AuthenticatedSearchRoute = AuthenticatedSearchRouteImport.update({
   id: '/search',
   path: '/search',
@@ -79,24 +81,24 @@ const AuthenticatedTrashRoute = AuthenticatedTrashRouteImport.update({
   path: '/trash',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
-const AuthenticatedAdminProgressionRoute = AuthenticatedAdminProgressionRouteImport.update({
-  id: '/admin-progression',
-  path: '/admin-progression',
-  getParentRoute: () => AuthenticatedRouteRoute,
-} as any)
 const AuthenticatedTurnitinRoute = AuthenticatedTurnitinRouteImport.update({
   id: '/turnitin',
   path: '/turnitin',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
-const ApiTranscribeRoute = ApiTranscribeRouteImport.update({
-  id: '/api/transcribe',
-  path: '/api/transcribe',
+const ApiCleanupTrashRoute = ApiCleanupTrashRouteImport.update({
+  id: '/api/cleanup-trash',
+  path: '/api/cleanup-trash',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiSimilarityDiscoveryRoute = ApiSimilarityDiscoveryRouteImport.update({
   id: '/api/similarity-discovery',
   path: '/api/similarity-discovery',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiTranscribeRoute = ApiTranscribeRouteImport.update({
+  id: '/api/transcribe',
+  path: '/api/transcribe',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedAssignmentIndexRoute =
@@ -111,6 +113,11 @@ const AuthenticatedAssignmentIdRoute =
     path: '/assignment/$id',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedAttemptsIdRoute = AuthenticatedAttemptsIdRouteImport.update({
+  id: '/attempts/$id',
+  path: '/attempts/$id',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedEssayIndexRoute = AuthenticatedEssayIndexRouteImport.update({
   id: '/essay/',
   path: '/essay/',
@@ -135,18 +142,19 @@ const AuthenticatedSetsNewRoute = AuthenticatedSetsNewRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/coach': typeof AuthenticatedCoachRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/exam': typeof AuthenticatedExamRoute
   '/history': typeof AuthenticatedHistoryRoute
-  '/attempts/$id': typeof AuthenticatedAttemptsIdRoute
   '/search': typeof AuthenticatedSearchRoute
   '/trash': typeof AuthenticatedTrashRoute
-  '/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/turnitin': typeof AuthenticatedTurnitinRoute
-  '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/cleanup-trash': typeof ApiCleanupTrashRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
+  '/api/transcribe': typeof ApiTranscribeRoute
   '/assignment/$id': typeof AuthenticatedAssignmentIdRoute
+  '/attempts/$id': typeof AuthenticatedAttemptsIdRoute
   '/essay/$id': typeof AuthenticatedEssayIdRoute
   '/sets/$id': typeof AuthenticatedSetsIdRoute
   '/sets/new': typeof AuthenticatedSetsNewRoute
@@ -156,18 +164,19 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/coach': typeof AuthenticatedCoachRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/exam': typeof AuthenticatedExamRoute
   '/history': typeof AuthenticatedHistoryRoute
-  '/attempts/$id': typeof AuthenticatedAttemptsIdRoute
   '/search': typeof AuthenticatedSearchRoute
   '/trash': typeof AuthenticatedTrashRoute
-  '/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/turnitin': typeof AuthenticatedTurnitinRoute
-  '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/cleanup-trash': typeof ApiCleanupTrashRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
+  '/api/transcribe': typeof ApiTranscribeRoute
   '/assignment/$id': typeof AuthenticatedAssignmentIdRoute
+  '/attempts/$id': typeof AuthenticatedAttemptsIdRoute
   '/essay/$id': typeof AuthenticatedEssayIdRoute
   '/sets/$id': typeof AuthenticatedSetsIdRoute
   '/sets/new': typeof AuthenticatedSetsNewRoute
@@ -179,17 +188,19 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
+  '/_authenticated/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/_authenticated/coach': typeof AuthenticatedCoachRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/exam': typeof AuthenticatedExamRoute
   '/_authenticated/history': typeof AuthenticatedHistoryRoute
   '/_authenticated/search': typeof AuthenticatedSearchRoute
   '/_authenticated/trash': typeof AuthenticatedTrashRoute
-  '/_authenticated/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/_authenticated/turnitin': typeof AuthenticatedTurnitinRoute
-  '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/cleanup-trash': typeof ApiCleanupTrashRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
+  '/api/transcribe': typeof ApiTranscribeRoute
   '/_authenticated/assignment/$id': typeof AuthenticatedAssignmentIdRoute
+  '/_authenticated/attempts/$id': typeof AuthenticatedAttemptsIdRoute
   '/_authenticated/essay/$id': typeof AuthenticatedEssayIdRoute
   '/_authenticated/sets/$id': typeof AuthenticatedSetsIdRoute
   '/_authenticated/sets/new': typeof AuthenticatedSetsNewRoute
@@ -201,18 +212,19 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/auth'
+    | '/admin-progression'
     | '/coach'
     | '/dashboard'
     | '/exam'
     | '/history'
-    | '/attempts/$id'
     | '/search'
     | '/trash'
-    | '/admin-progression'
     | '/turnitin'
-    | '/api/transcribe'
+    | '/api/cleanup-trash'
     | '/api/similarity-discovery'
+    | '/api/transcribe'
     | '/assignment/$id'
+    | '/attempts/$id'
     | '/essay/$id'
     | '/sets/$id'
     | '/sets/new'
@@ -222,18 +234,19 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/auth'
+    | '/admin-progression'
     | '/coach'
     | '/dashboard'
     | '/exam'
     | '/history'
-    | '/attempts/$id'
     | '/search'
     | '/trash'
-    | '/admin-progression'
     | '/turnitin'
-    | '/api/transcribe'
+    | '/api/cleanup-trash'
     | '/api/similarity-discovery'
+    | '/api/transcribe'
     | '/assignment/$id'
+    | '/attempts/$id'
     | '/essay/$id'
     | '/sets/$id'
     | '/sets/new'
@@ -244,18 +257,19 @@ export interface FileRouteTypes {
     | '/'
     | '/_authenticated'
     | '/auth'
+    | '/_authenticated/admin-progression'
     | '/_authenticated/coach'
     | '/_authenticated/dashboard'
     | '/_authenticated/exam'
     | '/_authenticated/history'
-    | '/_authenticated/attempts/$id'
     | '/_authenticated/search'
     | '/_authenticated/trash'
-    | '/_authenticated/admin-progression'
     | '/_authenticated/turnitin'
-    | '/api/transcribe'
+    | '/api/cleanup-trash'
     | '/api/similarity-discovery'
+    | '/api/transcribe'
     | '/_authenticated/assignment/$id'
+    | '/_authenticated/attempts/$id'
     | '/_authenticated/essay/$id'
     | '/_authenticated/sets/$id'
     | '/_authenticated/sets/new'
@@ -267,8 +281,9 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
-  ApiTranscribeRoute: typeof ApiTranscribeRoute
+  ApiCleanupTrashRoute: typeof ApiCleanupTrashRoute
   ApiSimilarityDiscoveryRoute: typeof ApiSimilarityDiscoveryRoute
+  ApiTranscribeRoute: typeof ApiTranscribeRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -293,6 +308,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/auth'
       preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated/admin-progression': {
+      id: '/_authenticated/admin-progression'
+      path: '/admin-progression'
+      fullPath: '/admin-progression'
+      preLoaderRoute: typeof AuthenticatedAdminProgressionRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/coach': {
       id: '/_authenticated/coach'
@@ -322,13 +344,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedHistoryRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
-    '/_authenticated/attempts/$id': {
-      id: '/_authenticated/attempts/$id'
-      path: '/attempts/$id'
-      fullPath: '/attempts/$id'
-      preLoaderRoute: typeof AuthenticatedAttemptsIdRouteImport
-      parentRoute: typeof AuthenticatedRouteRoute
-    }
     '/_authenticated/search': {
       id: '/_authenticated/search'
       path: '/search'
@@ -343,13 +358,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedTrashRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
-    '/_authenticated/admin-progression': {
-      id: '/_authenticated/admin-progression'
-      path: '/admin-progression'
-      fullPath: '/admin-progression'
-      preLoaderRoute: typeof AuthenticatedAdminProgressionRouteImport
-      parentRoute: typeof AuthenticatedRouteRoute
-    }
     '/_authenticated/turnitin': {
       id: '/_authenticated/turnitin'
       path: '/turnitin'
@@ -357,11 +365,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedTurnitinRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
-    '/api/transcribe': {
-      id: '/api/transcribe'
-      path: '/api/transcribe'
-      fullPath: '/api/transcribe'
-      preLoaderRoute: typeof ApiTranscribeRouteImport
+    '/api/cleanup-trash': {
+      id: '/api/cleanup-trash'
+      path: '/api/cleanup-trash'
+      fullPath: '/api/cleanup-trash'
+      preLoaderRoute: typeof ApiCleanupTrashRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/similarity-discovery': {
@@ -369,6 +377,13 @@ declare module '@tanstack/react-router' {
       path: '/api/similarity-discovery'
       fullPath: '/api/similarity-discovery'
       preLoaderRoute: typeof ApiSimilarityDiscoveryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/transcribe': {
+      id: '/api/transcribe'
+      path: '/api/transcribe'
+      fullPath: '/api/transcribe'
+      preLoaderRoute: typeof ApiTranscribeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated/assignment/': {
@@ -383,6 +398,13 @@ declare module '@tanstack/react-router' {
       path: '/assignment/$id'
       fullPath: '/assignment/$id'
       preLoaderRoute: typeof AuthenticatedAssignmentIdRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/attempts/$id': {
+      id: '/_authenticated/attempts/$id'
+      path: '/attempts/$id'
+      fullPath: '/attempts/$id'
+      preLoaderRoute: typeof AuthenticatedAttemptsIdRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/essay/': {
@@ -417,16 +439,16 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedAdminProgressionRoute: typeof AuthenticatedAdminProgressionRoute
   AuthenticatedCoachRoute: typeof AuthenticatedCoachRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedExamRoute: typeof AuthenticatedExamRoute
   AuthenticatedHistoryRoute: typeof AuthenticatedHistoryRoute
-  AuthenticatedAttemptsIdRoute: typeof AuthenticatedAttemptsIdRoute
   AuthenticatedSearchRoute: typeof AuthenticatedSearchRoute
   AuthenticatedTrashRoute: typeof AuthenticatedTrashRoute
-  AuthenticatedAdminProgressionRoute: typeof AuthenticatedAdminProgressionRoute
   AuthenticatedTurnitinRoute: typeof AuthenticatedTurnitinRoute
   AuthenticatedAssignmentIdRoute: typeof AuthenticatedAssignmentIdRoute
+  AuthenticatedAttemptsIdRoute: typeof AuthenticatedAttemptsIdRoute
   AuthenticatedEssayIdRoute: typeof AuthenticatedEssayIdRoute
   AuthenticatedSetsIdRoute: typeof AuthenticatedSetsIdRoute
   AuthenticatedSetsNewRoute: typeof AuthenticatedSetsNewRoute
@@ -435,16 +457,16 @@ interface AuthenticatedRouteRouteChildren {
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedAdminProgressionRoute: AuthenticatedAdminProgressionRoute,
   AuthenticatedCoachRoute: AuthenticatedCoachRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedExamRoute: AuthenticatedExamRoute,
   AuthenticatedHistoryRoute: AuthenticatedHistoryRoute,
-  AuthenticatedAttemptsIdRoute: AuthenticatedAttemptsIdRoute,
   AuthenticatedSearchRoute: AuthenticatedSearchRoute,
   AuthenticatedTrashRoute: AuthenticatedTrashRoute,
-  AuthenticatedAdminProgressionRoute: AuthenticatedAdminProgressionRoute,
   AuthenticatedTurnitinRoute: AuthenticatedTurnitinRoute,
   AuthenticatedAssignmentIdRoute: AuthenticatedAssignmentIdRoute,
+  AuthenticatedAttemptsIdRoute: AuthenticatedAttemptsIdRoute,
   AuthenticatedEssayIdRoute: AuthenticatedEssayIdRoute,
   AuthenticatedSetsIdRoute: AuthenticatedSetsIdRoute,
   AuthenticatedSetsNewRoute: AuthenticatedSetsNewRoute,
@@ -459,8 +481,9 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
-  ApiTranscribeRoute: ApiTranscribeRoute,
+  ApiCleanupTrashRoute: ApiCleanupTrashRoute,
   ApiSimilarityDiscoveryRoute: ApiSimilarityDiscoveryRoute,
+  ApiTranscribeRoute: ApiTranscribeRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
