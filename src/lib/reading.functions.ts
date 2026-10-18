@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { aiText, parseJson, clip } from "./ai.server";
+import { aiText, parseJson, clip, splitTextIntoChunks } from "./ai.server";
 import { loadSet, ci } from "./set-helpers.server";
 
 const setIdInput = (data: unknown) => z.object({ setId: z.string().uuid() }).parse(data);
@@ -157,7 +157,7 @@ export const readingSummary = createServerFn({ method: "POST" })
   });
 
 
-const implementInput = (data: unknown) => z.object({ setId: z.string().uuid(), additions: z.string().trim().min(10).max(500000) }).parse(data);
+const implementInput = (data: unknown) => z.object({ setId: z.string().uuid(), additions: z.string().trim().min(10).max(30000) }).parse(data);
 
 function mergeNotesWithoutReplacing(existing: string, additions: string) {
   const normalize = (value: string) => value.toLocaleLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
@@ -195,74 +195,29 @@ function mergeNotesWithoutReplacing(existing: string, additions: string) {
   return merged;
 }
 
-/** Split on paragraph boundaries without discarding any source characters. */
-function splitReadingIntoChunks(text: string, maxChars = 9000): string[] {
-  const normalized = text.replace(/\r\n/g, "\n");
-  const chunks: string[] = [];
-  let start = 0;
-  while (start < normalized.length) {
-    let end = Math.min(start + maxChars, normalized.length);
-    if (end < normalized.length) {
-      const paragraphBreak = normalized.lastIndexOf("\n\n", end);
-      const lineBreak = normalized.lastIndexOf("\n", end);
-      const boundary = paragraphBreak > start + Math.floor(maxChars * 0.55) ? paragraphBreak + 2
-        : lineBreak > start + Math.floor(maxChars * 0.55) ? lineBreak + 1 : end;
-      end = boundary;
-    }
-    if (end <= start) end = Math.min(start + maxChars, normalized.length);
-    chunks.push(normalized.slice(start, end));
-    start = end;
-  }
-  return chunks.filter((chunk) => chunk.trim().length > 0);
-}
-
-function combineProposedAdditions(parts: string[]): string {
-  const seen = new Set<string>();
-  const output: string[] = [];
-  for (const part of parts) {
-    const cleaned = part.trim();
-    if (!cleaned || /^NO_NEW_INFORMATION\s*$/i.test(cleaned)) continue;
-    // Deduplicate only identical normalized paragraphs; keep distinct details.
-    const paragraphs = cleaned.split(/\n\s*\n/);
-    const unique: string[] = [];
-    for (const paragraph of paragraphs) {
-      const key = paragraph.toLocaleLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      unique.push(paragraph.trim());
-    }
-    if (unique.length) output.push(unique.join("\n\n"));
-  }
-  return output.join("\n\n").trim();
-}
-
 export const readingImplementIntoNotes = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((data: unknown) => z.object({ setId: z.string().uuid(), chunkIndex: z.number().int().nonnegative().default(0) }).parse(data))
+  .middleware([requireSupabaseAuth]).inputValidator(setIdInput)
   .handler(async ({ data, context }) => {
     const set = await loadSet(context.supabase, data.setId);
     const sources = (await collectSources(context.supabase, set)).filter((source) => source.kind === "reading" && source.key !== "current-notes");
     if (!sources.length) throw new Error("Upload or connect a reading PDF first.");
-
-    // Build a stable index of every chunk, then analyze exactly one chunk per HTTP
-    // request. This avoids one long serverless request timing out on large libraries.
-    const chunks = sources.flatMap((source) => splitReadingIntoChunks(source.text).map((text, partIndex, all) => ({
-      title: source.title, text, partIndex, partCount: all.length,
-    })));
-    if (!chunks.length) throw new Error("The selected readings contain no readable text to process.");
-    if (data.chunkIndex >= chunks.length) throw new Error("Reading processing index expired. Please start the scan again.");
-    const chunk = chunks[data.chunkIndex];
-    const additions = await aiText(
-      `You are an academic note editor. Compare this ONE PART of a reading with the student's existing notes. Return ONLY Markdown containing useful information from this part that is genuinely absent from the notes. Organize under headings matching existing note headings as closely as possible; if none fits, create a concise topic heading. Preserve definitions, explanations, conditions, examples, exceptions, formulas, and relationships. Do not repeat covered information, add source references/citations, rewrite existing notes, or invent facts. If this part contains no meaningful new information, return exactly NO_NEW_INFORMATION. This is part ${chunk.partIndex + 1} of ${chunk.partCount} of ${chunk.title}; do not claim to have processed other parts. ${ci(set)}`,
-      [{ role: "user", content: `EXISTING NOTES (must remain intact):\n${clip(set.notes?.trim() || "(No notes yet)", 22000)}\n\nREADING: ${chunk.title}\nPART ${chunk.partIndex + 1}/${chunk.partCount} (all text in this part is supplied below):\n${chunk.text}` }],
-    );
-    const cleaned = additions.trim();
-    return {
-      chunkIndex: data.chunkIndex,
-      totalChunks: chunks.length,
-      sourceCount: sources.length,
-      additions: !cleaned || /^NO_NEW_INFORMATION\s*$/i.test(cleaned) ? "" : cleaned,
-    };
+    const existingNotes = clip(set.notes ?? "", 18000) || "(No notes yet)";
+    const readingChunks = sources.flatMap((source) => splitTextIntoChunks(source.text, 10000).map((text, index, all) => ({ title: source.title, part: index + 1, total: all.length, text })));
+    const additionParts: string[] = [];
+    const seen = new Set<string>();
+    const normalize = (value: string) => value.toLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
+    for (const chunk of readingChunks) {
+      const result = await aiText(`You are an academic note editor comparing ONE PART of a reading with existing notes. Return ONLY Markdown containing important information from this part that is genuinely absent from the notes. Match existing headings when possible; otherwise add a concise topic heading. Preserve definitions, explanations, conditions, examples, exceptions, formulas, and relationships. Never invent facts. Do not include citations/source references. Do not rewrite existing notes. If this part adds nothing, return exactly NO_NEW_INFORMATION. This is part ${chunk.part} of ${chunk.total} for ${chunk.title}; analyze this part completely and do not assume other parts contain the same information. ${ci(set)}`,
+        [{ role: "user", content: `EXISTING NOTES (reference only; never replace):\n${existingNotes}\n\nREADING: ${chunk.title} (part ${chunk.part}/${chunk.total})\n${chunk.text}` }]);
+      if (!result.trim() || /NO_NEW_INFORMATION/i.test(result.trim())) continue;
+      for (const section of result.trim().split(/(?=^#{1,3}\s+)/m).map((x) => x.trim()).filter(Boolean)) {
+        const key = normalize(section);
+        if (key.length > 20 && !seen.has(key)) { seen.add(key); additionParts.push(section); }
+      }
+    }
+    const additions = additionParts.join("\n\n").trim();
+    if (!additions) return { additions: "", message: "Your notes already cover the useful information in these readings." };
+    return { additions: additions.slice(0, 29000) };
   });
 
 export const readingApplyNotesAdditions = createServerFn({ method: "POST" })

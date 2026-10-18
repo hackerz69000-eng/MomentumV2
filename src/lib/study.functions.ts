@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { aiText, parseJson, clip } from "./ai.server";
+import { aiText, parseJson, clip, splitTextIntoChunks } from "./ai.server";
 import { setStats, type Attempt, type AttemptResult, type Flashcard } from "./stats";
 import { activityStats } from "./activity";
 import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server";
@@ -75,12 +75,21 @@ async function makeNotes(set: {
   custom_instructions?: string;
 }) {
   try {
-    return await aiText(NOTES_SYSTEM + ci(set), [
-      {
-        role: "user",
-        content: `Study set: ${set.name} (${set.subject || "general"})\n\nMATERIAL:\n${clip(set.material_text)}`,
-      },
-    ]);
+    const sourceChunks = splitTextIntoChunks(set.material_text, 16000);
+    if (sourceChunks.length <= 1) {
+      return await aiText(NOTES_SYSTEM + ci(set), [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\n\nMATERIAL (complete source):\n${sourceChunks[0] ?? ""}` }]);
+    }
+    // Process every source chunk independently so a large reading never has its tail silently clipped.
+    const noteParts: string[] = [];
+    for (let i = 0; i < sourceChunks.length; i++) {
+      const part = await aiText(
+        `${NOTES_SYSTEM}${ci(set)}\n\nLONG-SOURCE MODE: This is part ${i + 1} of ${sourceChunks.length}. Make thorough notes ONLY for this part. Preserve its important definitions, explanations, examples, formulas, exceptions and relationships. Do not claim this is the whole course, do not add a Key Takeaways section, and do not refer to missing parts. Use meaningful headings so this part can be combined with the others.`,
+        [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\nSOURCE PART ${i + 1}/${sourceChunks.length}:\n${sourceChunks[i]}` }],
+      );
+      noteParts.push(part.trim());
+    }
+    // Preserve every chunk's output; avoid a second huge AI call that could time out again.
+    return `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${noteParts.join("\n\n---\n\n")}`;
   } catch (err) {
     console.warn("AI notes generation fallback active:", err);
     return generateNotesFromMaterial(set.material_text, set.name, set.subject);
@@ -334,7 +343,7 @@ function parseQuestions(text: string): QuizQuestion[] {
   return out;
 }
 
-async function makeQuestions(
+async function makeQuestionsSingle(
   set: { material_text: string; custom_instructions?: string },
   data: QOpts,
   maxChars = 60000,
@@ -397,6 +406,56 @@ ${questions.map((q) => q.question).join("\n")}` }],
     throw new Error(`I could verify only ${questions.length} of the ${data.count} requested questions from these materials. Add more course content or try again; Momentum won't silently shorten your quiz.`);
   }
   return questions;
+}
+
+
+/** Large quizzes are generated and validated in small batches to keep provider latency/output bounded. */
+async function makeQuestions(
+  set: { material_text: string; custom_instructions?: string },
+  data: QOpts,
+  maxChars = 60000,
+): Promise<QuizQuestion[]> {
+  const sourceParts = splitTextIntoChunks(set.material_text, 26000);
+  if (data.count <= 8 && sourceParts.length <= 1) return makeQuestionsSingle(set, data, Math.min(maxChars, 26000));
+  const all: QuizQuestion[] = [];
+  const globallySeen = new Set((data.avoid ?? []).map(norm));
+  // Allocate questions across every material chunk so later readings/chapters are not ignored.
+  for (let partIndex = 0; partIndex < Math.max(1, sourceParts.length) && all.length < data.count; partIndex++) {
+    const remainingParts = Math.max(1, sourceParts.length - partIndex);
+    const count = Math.min(8, Math.ceil((data.count - all.length) / remainingParts));
+    const partMaterial = sourceParts[partIndex] ?? set.material_text;
+    const partSet = { ...set, material_text: partMaterial };
+    const batch = await makeQuestionsSingle(
+      partSet,
+      {
+        ...data,
+        count,
+        avoid: [...globallySeen, ...all.map((q) => q.question)].slice(0, 100),
+        plan: data.plan?.filter((p) => p.count > 0),
+      },
+      Math.min(maxChars, 26000),
+    );
+    for (const question of batch) {
+      const key = norm(question.question);
+      if (!globallySeen.has(key)) {
+        globallySeen.add(key);
+        all.push(question);
+      }
+    }
+  }
+  // If small/empty chunks or duplicate filtering left a shortfall, fill it from the complete source in bounded batches.
+  for (let attempt = 0; all.length < data.count && attempt < 10; attempt++) {
+    const count = Math.min(6, data.count - all.length);
+    const batch = await makeQuestionsSingle(set, { ...data, count, avoid: [...globallySeen, ...all.map((q) => q.question)].slice(0, 100) }, Math.min(maxChars, 26000));
+    for (const question of batch) {
+      const key = norm(question.question);
+      if (!globallySeen.has(key)) { globallySeen.add(key); all.push(question); }
+    }
+  }
+  if (all.length !== data.count) {
+    throw new Error(`Momentum generated ${all.length} of ${data.count} unique verified questions. Your material is preserved; try again to fill the missing questions.`);
+  }
+  return all;
 }
 
 export const generateQuiz = createServerFn({ method: "POST" })
