@@ -1,9 +1,5 @@
+
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "tanstack-start",
-  "functions": {
-    "src/server.ts": {
-      "maxDuration": 300
-    }
-  }
+  "framework": "tanstack-start"
 }
