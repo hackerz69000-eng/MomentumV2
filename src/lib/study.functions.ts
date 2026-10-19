@@ -280,7 +280,7 @@ const QUALITY_RULES = `QUALITY RULES (mandatory):
 - Multiple choice: exactly ONE defensibly correct option; every other option must be definitely wrong according to the material (never partially true or arguably correct). Plausible, same type/length as the answer. No joke, absurd, "all of the above" or "none of the above" options.
 - True/false: unambiguous statements that are clearly true or clearly false per the material; no trick wording unless difficulty is hard.
 - Short answer: ask for a specific idea with a concise model answer drawn from the material.
-- Explanation (2-4 sentences): why the correct answer is right per the material (name the section/document when possible), why the tempting wrong options are wrong, and the concept being tested. It must never contradict the marked answer.
+- Explanation: for batches of 5 or more, use 1-2 concise sentences; for smaller batches, use 2-3 sentences. Explain why the answer is right and the key concept without repeating the question. It must never contradict the marked answer.
 - Match the requested difficulty: easy = recall of key facts/definitions, medium = understanding/application, hard = analysis, comparison and multi-step reasoning.`;
 
 async function validateQuestions(
@@ -400,12 +400,15 @@ async function makeQuestionsSingle(
   const planText = data.plan?.length
     ? `\nADAPTIVE TOPIC PLAN — write this many questions per topic (use these exact topic names): ${data.plan.map((p) => `${p.topic}: ${p.count}`).join("; ")}. If a topic isn't in the material, use the closest topic.`
     : "";
+  const conciseExplanation = data.count >= 5
+    ? "Use concise 1-2 sentence explanations to keep the JSON response within output limits."
+    : "Use concise 2-3 sentence explanations.";
   const draftResponse = await generateQuestionDraft(
     `You write ${data.exam ? "realistic practice exams" : "quizzes"} from study material. Return ONLY JSON:
-{"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"2-4 sentences: why it's right, why the other options are wrong, concept tested","topic":"short topic name (2-4 words)"}]}
+{"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"concise explanation of why the answer is right and the concept tested","topic":"short topic name (2-4 words)"}]}
 Rules: exactly ${data.count} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}${data.difficulty === "mixed" ? " (blend easy, medium and hard)" : ""}.
 For "mc"/"tf", "answer" is the 0-based index of the correct option. For "short", use "options": [] and "answer": -1, and put the model answer in "answerText".
-Reuse consistent topic names across questions. Test understanding, not trivia. Only use the material.
+Reuse consistent topic names across questions. Test understanding, not trivia. Only use the material. ${conciseExplanation}
 ${data.questionGuidance?.trim() ? `\nTEST EXPECTATIONS FROM THE STUDENT — use these preferences to shape the questions. Treat them as strong preferences, but never violate the material-grounding or quality rules. Do not invent facts just to satisfy the request. If the requested style cannot be supported by the material, use the closest supported version.\n${data.questionGuidance.trim().slice(0, 2000)}` : ""}
 ${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat these recently asked questions (ask about different facts or angles):\n- ${data.avoid.slice(0, 40).join("\n- ")}` : ""}${planText}${data.retest?.length ? `\nMISTAKE BANK — the student got these concepts wrong before. Include about ${Math.min(data.retest.length, Math.ceil(data.count / 3))} questions that re-test the same concepts with NEW wording or a new angle (don't copy the question):\n- ${data.retest.join("\n- ")}` : ""}${ci(set)}`,
     [{ role: "user", content: `MATERIAL:\n${clip(set.material_text, maxChars)}` }],
@@ -450,9 +453,14 @@ async function makeQuestions(
   data: QOpts,
   maxChars = 60000,
 ): Promise<QuizQuestion[]> {
-  const sourceParts = splitTextIntoChunks(set.material_text, 26000);
-  // Four questions per provider call reduces JSON truncation risk for exams with detailed explanations.
-  const batchSize = 4;
+  // Keep the chunk size aligned with the actual prompt budget. Previously the
+  // source was split at 26k characters and then clipped to 22k (or as little as
+  // 12k for multi-set exams), silently discarding material from each chunk.
+  const materialBudget = Math.max(1, Math.min(22000, Math.floor(maxChars)));
+  const sourceParts = splitTextIntoChunks(set.material_text, materialBudget);
+  // Five concise questions per call is a better latency/output balance for 30–60
+  // question exams. Detailed explanations are kept short for large batches.
+  const batchSize = 5;
   if (data.count <= batchSize && sourceParts.length <= 1) return makeQuestionsSingle(set, data, Math.min(maxChars, 22000));
   const all: QuizQuestion[] = [];
   const globallySeen = new Set((data.avoid ?? []).map(norm));
@@ -556,8 +564,10 @@ export const generateComprehensive = createServerFn({ method: "POST" })
       const group = allocations.slice(offset, offset + concurrency);
       const groupResults = await Promise.all(group.map(async ({ set, count }) => {
         if (count < 1) return { setName: set.name, questions: [] as QuizQuestion[] };
+        const startedAt = Date.now();
         try {
           const avoid = await recentQuestions(context.supabase, set.id);
+          console.info(`[comprehensive-exam] Starting source set "${set.name}" (${count} questions; material=${set.material_text.length} chars; promptBudget=${perChars}).`);
           const qs = await makeQuestions(set, {
             count,
             difficulty: data.difficulty,
@@ -566,9 +576,13 @@ export const generateComprehensive = createServerFn({ method: "POST" })
             avoid,
             questionGuidance: data.questionGuidance,
           }, perChars);
+          console.info(`[comprehensive-exam] Completed source set "${set.name}" (${qs.length}/${count} questions; ${Date.now() - startedAt}ms).`);
           return { setName: set.name, questions: qs.map((q) => ({ ...q, setId: set.id })) };
         } catch (error) {
-          const reason = error instanceof Error ? error.message : "Unknown generation error";
+          const reason = error instanceof Error ? error.message : String(error ?? "Unknown generation error");
+          // Preserve actionable context in server logs; include elapsed time to distinguish
+          // provider/validation failures from serverless execution timeouts.
+          console.error(`[comprehensive-exam] Failed source set "${set.name}" (${count} questions; ${Date.now() - startedAt}ms): ${reason}`, error);
           return { setName: set.name, questions: [] as QuizQuestion[], error: reason };
         }
       }));

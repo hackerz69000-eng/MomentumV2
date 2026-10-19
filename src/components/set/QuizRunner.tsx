@@ -52,6 +52,24 @@ function prepare(qs: QuizQuestion[]): QuizQuestion[] {
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
+/** TanStack server-function failures are not always native Error instances in the browser. */
+function readableGenerationError(error: unknown): string {
+  const seen = new Set<unknown>();
+  const visit = (value: unknown, depth = 0): string | null => {
+    if (depth > 4 || value == null || seen.has(value)) return null;
+    if (typeof value === "string") return value.trim() || null;
+    if (typeof value !== "object") return null;
+    seen.add(value);
+    const record = value as Record<string, unknown>;
+    for (const key of ["message", "serverMessage", "error", "data", "cause", "payload", "statusText"]) {
+      const found = visit(record[key], depth + 1);
+      if (found && !/^(failed to generate|internal server error)$/i.test(found)) return found;
+    }
+    return null;
+  };
+  return visit(error) ?? "Generation failed without a readable error. Check the server logs and AI provider configuration.";
+}
+
 export function QuizRunner({
   set,
   sets,
@@ -218,7 +236,7 @@ export function QuizRunner({
       submitting.current = false;
       setRemaining(exam && settings.minutes ? settings.minutes * 60 : null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to generate");
+      setError(readableGenerationError(e));
     }
     setLoading(null);
   };
