@@ -46,9 +46,12 @@ Set these environment variables in Vercel for the environments you deploy to:
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
 - `VITE_SUPABASE_PROJECT_ID` (if used by the client)
-- `NVIDIA_API_KEY` for NVIDIA NIM AI study generation
+- `NVIDIA_API_KEY` for NVIDIA NIM text generation and speech transcription
 - `NIM_MODEL` (optional; defaults to `openai/gpt-oss-20b`)
-- `LOVABLE_API_KEY` for audio/transcription features that use the Lovable AI gateway
+- `NVIDIA_ASR_ENDPOINT` (optional; defaults to NVIDIA Parakeet hosted speech-to-text endpoint)
+- `DEEPGRAM_API_KEY` for the Audio Study text-to-speech feature
+- `SUPABASE_SERVICE_ROLE_KEY` only if using server-only admin operations
+- `DATABASE_URL` only when running Drizzle migrations
 
 The `VITE_` Supabase values are intentionally public client configuration; never put service-role or other private secrets in a `VITE_` variable.
 

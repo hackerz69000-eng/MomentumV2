@@ -1,31 +1,45 @@
-# Momentum static reliability audit (v4 input ZIP)
+# Momentum Engineering Audit — 2026-10-20
 
-Date: 2026-10-20
+## Scope
 
-## Scope and limits
+Audited the supplied project archive (`project/`), including 171 TypeScript/TSX files, package/build configuration, environment templates, server routes, Supabase client/auth boundaries, and the existing 10 test files. This pass prioritizes the reported Vercel deployment failure, removal of the Lovable runtime/build dependency, and provider consistency with NVIDIA NIM.
 
-Reviewed the provided project ZIP statically, including all 170 TypeScript/TSX source files, AI request/parsing paths, comprehensive exam batching, package scripts, Vercel configuration, and existing tests. The environment has no `node_modules`, so a full Vite production build, ESLint run, Vitest suite, browser flows, live Supabase/RLS checks, and real NVIDIA NIM calls could not be executed. This is not a claim that every feature can never fail; live integration behavior requires a configured deployment and data.
+## Changes made
 
-## High-impact issues addressed
+1. **Vercel function discovery:** Removed the invalid `functions.src/server.ts` override. TanStack Start + Nitro generates the deployable function structure; the source server entry is not itself a Vercel function glob. `vercel.json` now declares the TanStack Start framework only.
+2. **Build configuration independent of Lovable:** Replaced `@lovable.dev/vite-tanstack-config` with explicit TanStack Start, Nitro, React, Tailwind, and TS path plugins. Kept the existing custom SSR error wrapper as the server entry.
+3. **Removed Lovable dependencies and editor-only hooks:** Removed Lovable auth package, Lovable Vite config package, Lovable preview-session bridge, Lovable editor telemetry hook, unused Lovable auth helper, and `.lovable` metadata. Supabase auth falls back to its normal browser storage behavior outside the removed preview bridge.
+4. **NVIDIA NIM transcription:** Replaced the Lovable AI Gateway transcription route with NVIDIA's hosted Parakeet ASR endpoint. The route verifies the Supabase bearer token, enforces a 4 MiB WAV segment limit sized below Vercel request-body limits, checks the WAV container header, applies a timeout, handles upstream failures without leaking provider internals, and preserves the recorder's existing SSE event contract. `NVIDIA_ASR_ENDPOINT` can override the default hosted endpoint.
+5. **Environment/docs cleanup:** Removed Lovable environment references, documented NVIDIA NIM and Deepgram's existing Audio Study TTS role, added server-only service-role/database variables to the example template, and changed the Drizzle migration connection variable to `DATABASE_URL`.
+6. **Type-check command:** Added `npm run typecheck` (`tsc --noEmit`) so type validation is available separately from Vite's transpile/build.
 
-1. **Comprehensive exam generation could fail because of the secondary AI reviewer.** A draft could be structurally valid, but if the separate reviewer repeatedly returned malformed JSON, the whole source-set batch was discarded. Comprehensive exams now skip that extra reviewer call: the generation prompt still includes grounding/quality rules and every question still passes local schema checks. Regular quiz generation retains AI review, but falls back to the structurally valid draft if the reviewer is unavailable after retries.
-2. **AI parsing could stop at an irrelevant bracketed phrase.** The JSON parser now scans subsequent candidate roots, tolerates fences/prose, and reports malformed/truncated output more clearly.
-3. **Nested retry/timeout behavior could cause long serverless requests.** AI calls now accept bounded timeout/retry options. Exam generation and question review use a 20-second per-call timeout with no internal retry, leaving retry decisions to the bounded generation/review loops rather than multiplying retries invisibly.
-4. **Exam failures needed diagnostics.** Comprehensive exam paths log the affected set, requested count, elapsed time, and error details. The UI has the prior improvement for extracting messages from serialized server-function errors.
+## Checks completed
 
-## Checks performed
+- TypeScript/TSX syntax transpilation: **171 files, 0 syntax errors**.
+- `package.json` and `vercel.json`: valid JSON.
+- `bun.lock`: valid JSON-with-trailing-commas structure after the Lovable package entries were removed.
+- Relative import scan: no missing source imports; one CSS `?url` import was correctly outside the script's TypeScript file resolver.
+- Repository scan: **0 Lovable references** remain in application source, build configuration, package manifests, environment templates, and README. The audit report itself names the removed integration for change-history clarity.
+- Existing test inventory: 10 test files present.
 
-- TypeScript/TSX transpilation syntax check: 174 files, zero syntax errors.
-- Focused runtime checks for JSON parsing/chunking: passed (fenced JSON, prose, nested objects/braces inside strings, bracketed label before JSON, malformed JSON rejection, bounded chunks, blank input).
-- ZIP integrity check: passed after packaging.
+## Checks not completed
 
-## Not verified
+Dependency installation repeatedly timed out in this environment. As a result, I could not honestly claim the following passed:
 
-- `bun run build`, `bun run test`, and `bun run lint` (dependencies are not installed in this environment).
-- Type-level checking across all third-party library declarations.
-- Live AI-provider compatibility, token limits, rate limits, or response quality.
-- Supabase database schema, row-level security, migrations, deployment environment variables, or end-to-end feature workflows.
+- `npm run typecheck`
+- `npm run test`
+- `npm run lint`
+- `npm run build`
+- live Vercel deployment, Supabase RLS/migration validation, and live NVIDIA API requests
 
-## Recommended validation after extracting
+## Deployment notes
 
-Run `bun install`, `bun run build`, `bun run test`, and `bun run lint`. Then exercise: 30-, 40-, and 60-question comprehensive exams with 2, 5, and 10 source sets; source sets with short, long, blank, and PDF-extracted text; generation while the AI provider returns 429/5xx/timeouts; flashcard review save/cloud-sync failure; manual tier changes; reading-to-notes implementation; and authenticated/unauthenticated access to server functions. Inspect server logs for `[comprehensive-exam]` messages if an exam fails.
+- Set `NVIDIA_API_KEY` as a server-side Vercel environment variable. The same key must have access to the selected NVIDIA chat model and the hosted speech endpoint.
+- `NVIDIA_ASR_ENDPOINT` defaults to NVIDIA's hosted Parakeet ASR endpoint. NVIDIA may require the model endpoint to be enabled/accepted for the account; if it is not accessible, configure an endpoint enabled for that account.
+- Keep `NIM_MODEL` server-side. Do not prefix provider secrets with `VITE_`.
+- `DEEPGRAM_API_KEY` remains required only for the existing Audio Study text-to-speech feature; it is not used for chat generation or lecture transcription in this version.
+- Apply the database migrations documented in `README.md` to the intended Supabase project before relying on features that require them.
+
+## Remaining risk / honest status
+
+This is a static audit plus targeted fixes, not a production certification. Because dependencies and live credentials were unavailable, the full suite and integration paths remain unverified. In particular, test lecture transcription against the configured NVIDIA ASR endpoint and run the full feature smoke test after deployment. The app should not be described as guaranteed never to fail.
