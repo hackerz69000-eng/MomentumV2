@@ -64,7 +64,7 @@ QUALITY RULES:
 - Focus on important testable ideas rather than trivia.
 `;
 
-async function callNim(system: string, messages: ModelMessage[]): Promise<string> {
+async function callNim(system: string, messages: ModelMessage[], timeoutMs = 90_000): Promise<string> {
   const apiKey = process.env["NVIDIA_API_KEY"]?.trim();
   if (!apiKey) {
     throw new NimError(
@@ -82,7 +82,7 @@ async function callNim(system: string, messages: ModelMessage[]): Promise<string
         Accept: "application/json",
       },
       // Bound provider latency, but leave enough time for larger study tasks.
-      signal: AbortSignal.timeout(90_000),
+      signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
         model: NIM_MODEL,
         temperature: 0.2,
@@ -141,21 +141,23 @@ function retryable(err: unknown) {
 export async function aiText(
   system: string,
   messages: ModelMessage[],
-  opts: { grounded?: boolean } = {},
+  opts: { grounded?: boolean; retries?: number; timeoutMs?: number } = {},
 ): Promise<string> {
   if (opts.grounded !== false) system += GROUNDING;
 
   // A bounded retry policy helps with provider/network instability without
   // multiplying requests indefinitely or retrying credential/configuration errors.
   const delays = [800, 1800];
+  const retryCount = Math.max(0, Math.min(delays.length, opts.retries ?? delays.length));
+  const timeoutMs = Math.max(1000, Math.min(90_000, opts.timeoutMs ?? 90_000));
   let lastError: unknown;
 
-  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
     try {
-      return await callNim(system, messages);
+      return await callNim(system, messages, timeoutMs);
     } catch (error) {
       lastError = error;
-      if (!retryable(error) || attempt === delays.length) break;
+      if (!retryable(error) || attempt === retryCount) break;
       await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
     }
   }
@@ -163,20 +165,16 @@ export async function aiText(
   throw lastError instanceof Error ? lastError : new Error("NVIDIA NIM request failed. Please try again.");
 }
 
-/** Parse the first complete JSON object/array in an AI response, ignoring surrounding prose. */
+/** Parse a complete JSON object/array from an AI response, tolerating fences and stray prose. */
 export function parseJson<T>(text: string): T {
   if (typeof text !== "string" || !text.trim()) {
     throw new Error("The AI response was empty. Please try again.");
   }
-  const cleaned = text.replace(/```(?:json)?\s*/gi, "").trim();
-  // Scan for a complete root value rather than taking the last brace: prose,
-  // nested objects, braces inside strings, and trailing explanations are common.
-  let start = -1;
-  for (let i = 0; i < cleaned.length; i += 1) {
-    if (cleaned[i] === "{" || cleaned[i] === "[") { start = i; break; }
-  }
-  if (start < 0) throw new Error("Could not read the AI response. Please try again.");
-  {
+  const cleaned = text.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
+  // Some models prepend bracketed labels such as [JSON] before the actual object.
+  // Try each possible root instead of failing permanently on the first brace/bracket.
+  for (let start = 0; start < cleaned.length; start += 1) {
+    if (cleaned[start] !== "{" && cleaned[start] !== "[") continue;
     const stack: string[] = [];
     let inString = false;
     let escaped = false;
@@ -197,13 +195,14 @@ export function parseJson<T>(text: string): T {
           try {
             return JSON.parse(cleaned.slice(start, i + 1)) as T;
           } catch {
+            // Continue scanning: an earlier bracketed phrase may not be JSON.
             break;
           }
         }
       }
     }
   }
-  throw new Error("Could not read the AI response. Please try again.");
+  throw new Error("Could not read the AI response as complete JSON. It may be malformed or truncated; please retry.");
 }
 
 export function clip(material: string, max = 60000) {

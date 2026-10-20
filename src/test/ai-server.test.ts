@@ -12,6 +12,10 @@ describe("parseJson", () => {
     )).toEqual({ message: "brace } and bracket ] are text", nested: { values: [1, 2, 3] } });
   });
 
+  it("skips bracketed labels before the real JSON payload", () => {
+    expect(parseJson<{ questions: number[] }>(`[JSON output]\n{\"questions\":[1,2,3]}`)).toEqual({ questions: [1, 2, 3] });
+  });
+
   it("rejects empty and malformed responses rather than returning partial data", () => {
     expect(() => parseJson("  ")).toThrow(/empty/i);
     expect(() => parseJson(`{"items":[1,2}`)).toThrow(/read the AI response/i);

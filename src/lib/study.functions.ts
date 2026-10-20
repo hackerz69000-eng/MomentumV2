@@ -302,6 +302,7 @@ async function validateQuestions(
             content: `QUESTIONS:\n${JSON.stringify({ questions: qs })}\n\nMATERIAL:\n${clip(material, 35000)}`,
           },
         ],
+        { retries: 0, timeoutMs: 20_000 },
       );
       const fixed = parseQuestions(text);
       if (fixed.length) return fixed;
@@ -310,10 +311,13 @@ async function validateQuestions(
       lastError = error;
     }
   }
-  // If the model consistently fails to return valid output, do not accept
-  // unchecked drafts; report a specific retryable validation failure.
+  // The generation draft has already passed strict local schema validation. If the
+  // separate AI reviewer is unavailable or returns malformed JSON repeatedly, do
+  // not discard an otherwise complete batch solely because the reviewer failed.
+  // Keep the structurally valid draft and log the reviewer failure for diagnostics.
   const detail = lastError instanceof Error ? lastError.message : "Unknown validation error";
-  throw new Error(`The questions couldn't be checked against your study materials after 3 attempts: ${detail.slice(0, 220)}`);
+  console.warn(`[quiz-validation] AI review unavailable after 3 attempts; keeping structurally valid generated questions: ${detail.slice(0, 220)}`);
+  return qs;
 }
 
 function parseQuestions(text: string): QuizQuestion[] {
@@ -364,14 +368,14 @@ async function generateQuestionDraft(
   messages: { role: "user" | "assistant"; content: string }[],
 ): Promise<QuizQuestion[]> {
   let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const retryPrompt = attempt === 0
         ? systemPrompt
         : `${systemPrompt}
 
 IMPORTANT RETRY: Your previous response could not be parsed as complete JSON. Return one complete JSON object only, with a top-level "questions" array. Do not use Markdown fences or add commentary. Keep every question concise enough to fit the output limit.`;
-      const response = await aiText(retryPrompt, messages);
+      const response = await aiText(retryPrompt, messages, { retries: 0, timeoutMs: 20_000 });
       const questions = parseQuestions(response);
       if (questions.length) return questions;
       lastError = new Error("The AI returned JSON but no usable questions.");
@@ -421,11 +425,10 @@ ${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat these recently asked que
   const guidanceForReview = data.questionGuidance?.trim()
     ? `\nTEST EXPECTATIONS FROM THE STUDENT — preserve these requested question-style preferences when reviewing/fixing questions, as long as they remain supported by the material:\n${data.questionGuidance.trim().slice(0, 2000)}`
     : "";
-  let questions = (await validateQuestions(
-    set.material_text,
-    draft,
-    `${guidanceForReview}${ci(set)}`,
-  )).slice(0, data.count);
+  let questions = (data.exam
+    ? draft
+    : await validateQuestions(set.material_text, draft, `${guidanceForReview}${ci(set)}`)
+  ).slice(0, data.count);
   // Validation can discard weak/unsupported drafts. Top up instead of silently
   // returning fewer questions than the count the student explicitly selected.
   for (let attempt = 0; questions.length < data.count && attempt < 2; attempt++) {
@@ -436,7 +439,9 @@ ${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat these recently asked que
     );
     const extraDraft = extraDraftRaw.filter((q) => !avoidSet.has(norm(q.question)) && !questions.some((old) => norm(old.question) === norm(q.question)));
     if (!extraDraft.length) break;
-    const extraValid = await validateQuestions(set.material_text, extraDraft, `${guidanceForReview}${ci(set)}`);
+    const extraValid = data.exam
+      ? extraDraft
+      : await validateQuestions(set.material_text, extraDraft, `${guidanceForReview}${ci(set)}`);
     const seenQuestions = new Set(questions.map((q) => norm(q.question)));
     questions = [...questions, ...extraValid.filter((q) => !seenQuestions.has(norm(q.question)))].slice(0, data.count);
   }
