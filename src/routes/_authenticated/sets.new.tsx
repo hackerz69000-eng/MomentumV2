@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { processSet, ocrFile } from "@/lib/study.functions";
-import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal, storeVisuals, type ExtractedVisual } from "@/lib/extract";
+import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/sets/new")({
@@ -45,45 +45,61 @@ function NewSet() {
   const [mode, setMode] = useState<"pdf" | "text">("pdf");
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [readingFiles, setReadingFiles] = useState<File[]>([]);
   const [extracted, setExtracted] = useState<{ file: File; chars: number }[] | null>(null);
   const [progressMsg, setProgressMsg] = useState("");
   const [stage, setStage] = useState<null | "reading" | "generating">(null);
 
   const extract = async () => {
     if (!files.length) {
-      toast.error("Choose at least one file");
+      toast.error("Choose at least one lecture file");
       return;
     }
     setStage("reading");
     const parts: string[] = [];
-    const meta: { file: File; chars: number; visuals: ExtractedVisual[] }[] = [];
-    // Extract lecture documents first so later standalone images can be interpreted
-    // against the lecture text already collected from the same upload batch.
+    const readingParts: string[] = [];
+    const meta: { file: File; chars: number }[] = [];
+    // Lectures are the primary source and define note structure and order.
     const filesToExtract = [...files].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
     for (const [idx, f] of filesToExtract.entries()) {
       try {
-        const visuals: ExtractedVisual[] = [];
         const t = await extractFile(
           f,
           ocr,
           (m) => setProgressMsg(filesToExtract.length > 1 ? `${m} (${idx + 1}/${filesToExtract.length})` : m),
           parts.join("\n\n").slice(0, 12000),
-          visuals,
         );
         if (t) parts.push(files.length > 1 ? `=== ${f.name} ===\n${t}` : t);
-        meta.push({ file: f, chars: t.length, visuals });
+        meta.push({ file: f, chars: t.length });
       } catch (e) {
         toast.error(e instanceof Error ? e.message : `Couldn't read ${f.name}`);
       }
     }
+    const readingsToExtract = [...readingFiles].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
+    for (const [idx, f] of readingsToExtract.entries()) {
+      try {
+        const t = await extractFile(
+          f,
+          ocr,
+          (m) => setProgressMsg(`Optional reading ${idx + 1}/${readingsToExtract.length}: ${m}`),
+          parts.join("\n\n").slice(0, 12000),
+          false,
+        );
+        if (t.trim()) readingParts.push(`### Reading source: ${f.name}\n${t.trim()}`);
+        meta.push({ file: f, chars: t.length });
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : `Couldn't read optional reading ${f.name}`);
+      }
+    }
     setStage(null);
-    const material = parts.join("\n\n").trim();
-    if (!material) {
-      toast.error(
-        "Couldn't find readable text in those files. Try clearer photos or another format.",
-      );
+    const lectureMaterial = parts.join("\n\n").trim();
+    if (!lectureMaterial) {
+      toast.error("Couldn't find readable text in the lecture files. Try clearer photos or another format.");
       return;
     }
+    const material = readingParts.length
+      ? `=== PRIMARY LECTURE MATERIAL — DEFINES NOTE STRUCTURE AND ORDER ===\n${lectureMaterial}\n\n=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===\n${readingParts.join("\n\n")}`
+      : lectureMaterial;
     setText(material);
     setExtracted(meta);
   };
@@ -138,14 +154,8 @@ function NewSet() {
           extracted.map((m) => storeOriginal(user.id, targetId, m.file, m.chars)),
         );
         const failed = stored.filter((r) => r.status === "rejected").length;
-        if (failed) console.warn(`${failed} original file(s) could not be stored.`);
-        const visuals = extracted.flatMap((m) => m.visuals);
-        if (visuals.length) {
-          const visualResult = await storeVisuals(user.id, targetId, visuals);
-          if (visualResult.failed) {
-            console.warn(`${visualResult.failed} lecture visual(s) could not be stored.`);
-            toast.error(`${visualResult.failed} lecture visual(s) could not be saved to Notes. Their text explanations remain available.`);
-          }
+        if (failed) {
+          console.warn(`${failed} original file(s) could not be stored.`);
         }
       }
 
@@ -207,10 +217,10 @@ function NewSet() {
               />
             </label>
             <label className="space-y-1.5 block">
-              <span className="text-sm">Course / subject</span>
+              <span className="text-sm">Subject</span>
               <input
                 className={inputCls}
-                placeholder="e.g. POLS 101 — Political Science"
+                placeholder="Biology"
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
               />
@@ -346,6 +356,47 @@ function NewSet() {
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
+          )}
+          {mode === "pdf" && (
+            <div className="pt-4 border-t border-line/60 space-y-3">
+              <div>
+                <p className="text-sm font-semibold">Optional readings</p>
+                <p className="text-xs text-soft mt-1">
+                  Add textbook chapters or articles. Momentum will use them to enrich matching lecture topics without creating a separate readings section.
+                </p>
+              </div>
+              {readingFiles.map((f, idx) => (
+                <div key={`${f.name}-${idx}`} className="flex items-center justify-between rounded-xl border border-line bg-foreground/5 px-4 py-3">
+                  <span className="text-sm truncate flex items-center gap-2">
+                    <FileText className="size-4 text-cool2" /> {f.name}
+                  </span>
+                  <button type="button" onClick={() => { setReadingFiles((fs) => fs.filter((_, k) => k !== idx)); setExtracted(null); }} className="text-soft" aria-label="Remove reading">
+                    <X className="size-4" />
+                  </button>
+                </div>
+              ))}
+              <label className="block rounded-xl border border-dashed border-line hover:border-cool2/60 transition-colors p-4 text-center cursor-pointer">
+                <p className="text-sm font-semibold">{readingFiles.length ? "Add more readings" : "Add optional readings"}</p>
+                <p className="text-xs text-soft mt-1">PDF, Word, PowerPoint, TXT, or photos · up to 100MB each</p>
+                <input
+                  type="file"
+                  multiple
+                  accept={ACCEPT}
+                  className="hidden"
+                  onChange={(e) => {
+                    const all = Array.from(e.target.files ?? []);
+                    const picked = all.filter((f) => fileKind(f) && f.size <= MAX_BYTES);
+                    const skipped = all.filter((f) => !fileKind(f) || f.size > MAX_BYTES);
+                    if (skipped.length) {
+                      toast.error(`Some reading files were skipped: ${skipped.map((f) => f.name).join(", ")}`, { duration: 8000 });
+                    }
+                    setReadingFiles((fs) => [...fs, ...picked].slice(0, 20));
+                    if (picked.length) setExtracted(null);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+            </div>
           )}
         </div>
         <button className="font-semibold bg-brand text-ink px-6 py-3 rounded-lg">

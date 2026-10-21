@@ -7,7 +7,7 @@ import { BookOpen, FileText, GraduationCap, Loader2, MessageCircle, Sparkles, La
 import type { StudySet } from "@/lib/queries";
 import { readingAddDocument, readingDeleteDocument, readingAsk, readingGenerateCards, readingListSources, readingLinkSource, readingSaveCards, readingSummary, readingUnlinkSource, readingImplementIntoNotes, readingApplyNotesAdditions } from "@/lib/reading.functions";
 import { btnGhost, btnPrimary, inputCls } from "./ui";
-import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeVisuals, type ExtractedVisual } from "@/lib/extract";
+import { ACCEPT, MAX_BYTES, extractFile, fileKind } from "@/lib/extract";
 import { ocrFile } from "@/lib/study.functions";
 import { storeOriginal } from "@/lib/extract";
 import { useAuth } from "@/hooks/use-auth";
@@ -153,8 +153,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
       const filesToExtract = [...valid].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
       for (const file of filesToExtract) {
         setUploadMessage(`Reading ${file.name}…`);
-        const visuals: ExtractedVisual[] = [];
-        const text = await extractFile(file, ocrFn, setUploadMessage, extractedContext.slice(0, 12000), visuals);
+        const text = await extractFile(file, ocrFn, setUploadMessage, extractedContext.slice(0, 12000));
         if (text.trim()) extractedContext += `\n\n${file.name}:\n${text.trim()}`;
         if (!text.trim() || text.trim().length < 20) {
           toast.error(`Couldn't extract enough readable text from ${file.name}.`);
@@ -162,14 +161,8 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
         }
         await addReadingFn({ data: { setId: set.id, filename: file.name, contentText: text.slice(0, 500000) } });
         if (user?.id) {
-          try {
-            const stored = await storeOriginal(user.id, set.id, file, text.length);
-            if (!stored) toast.error(`${file.name} text was saved, but its original file could not be stored for download.`);
-            if (visuals.length) {
-              const visualResult = await storeVisuals(user.id, set.id, visuals);
-              if (visualResult.failed) toast.error(`${visualResult.failed} visual(s) from ${file.name} could not be stored.`);
-            }
-          } catch { toast.error(`${file.name} text was saved, but its original file could not be stored for download.`); }
+          try { const stored = await storeOriginal(user.id, set.id, file, text.length); if (!stored) toast.error(`${file.name} text was saved, but its original file could not be stored for download.`); }
+          catch { toast.error(`${file.name} text was saved, but its original file could not be stored for download.`); }
         }
         added += 1;
       }

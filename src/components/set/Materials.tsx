@@ -6,7 +6,7 @@ import { Download, FileText, Loader2, Plus, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { ocrFile, regenerateNotes } from "@/lib/study.functions";
-import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal, storeVisuals, type ExtractedVisual } from "@/lib/extract";
+import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import type { StudySet } from "@/lib/queries";
 import { trashRow } from "@/lib/trash";
 import { cn } from "@/lib/utils";
@@ -34,7 +34,7 @@ export function Materials({ set }: { set: StudySet }) {
   const [pending, setPending] = useState<{
     files: File[];
     text: string;
-    meta: { file: File; chars: number; visuals: ExtractedVisual[] }[];
+    meta: { file: File; chars: number }[];
   } | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -73,14 +73,13 @@ export function Materials({ set }: { set: StudySet }) {
     }
     if (!files.length) return;
     const parts: string[] = [];
-    const meta: { file: File; chars: number; visuals: ExtractedVisual[] }[] = [];
+    const meta: { file: File; chars: number }[] = [];
     const failedFiles: File[] = [];
     for (const f of files) {
       try {
-        const visuals: ExtractedVisual[] = [];
-        const t = await extractFile(f, ocr, setMsg, parts.join("\n\n").slice(0, 12000), visuals);
+        const t = await extractFile(f, ocr, setMsg, parts.join("\n\n").slice(0, 12000));
         if (t) parts.push(`=== ${f.name} ===\n${t}`);
-        meta.push({ file: f, chars: t.length, visuals });
+        meta.push({ file: f, chars: t.length });
       } catch (e) {
         failedFiles.push(f);
         toast.error(e instanceof Error ? e.message : `Couldn't read ${f.name}`);
@@ -120,8 +119,6 @@ export function Materials({ set }: { set: StudySet }) {
       pending.meta.map((m) => storeOriginal(user.id, set.id, m.file, m.chars)),
     );
     const lost = stored.filter((r) => r.status === "rejected").length;
-    const visuals = pending.meta.flatMap((m) => m.visuals);
-    const visualResult = visuals.length ? await storeVisuals(user.id, set.id, visuals) : { stored: 0, failed: 0 };
     setPending(null);
     setMsg(null);
     setMaterial(merged);
@@ -130,8 +127,9 @@ export function Materials({ set }: { set: StudySet }) {
       "Material added — quizzes, Active Recall, the tutor and study guides now use it.",
     );
     if (lost)
-      toast.error(`The text was added, but ${lost} original file(s) couldn't be stored for download.`);
-    if (visualResult.failed) toast.error(`${visualResult.failed} lecture visual(s) could not be saved into the Notes gallery.`);
+      toast.error(
+        `The text was added, but ${lost} original file(s) couldn't be stored for download.`,
+      );
     setRefreshAsk(true);
   };
 

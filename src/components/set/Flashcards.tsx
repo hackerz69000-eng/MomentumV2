@@ -349,7 +349,7 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
                 <p className="text-lg md:text-xl leading-relaxed m-auto text-center">
                   {card.answer}
                 </p>
-                <p className="text-xs text-soft text-center">How well did you know it?</p>
+                <p className="text-xs text-soft text-center">Rate honestly: uncertain or guessed? Choose Hard / unsure.</p>
               </div>
             </div>
           </button>
@@ -364,7 +364,7 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
               onClick={() => rate("hard")}
               className="font-semibold text-xs sm:text-sm py-2 sm:py-2.5 rounded-lg border border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition-colors"
             >
-              Hard
+              Hard / unsure
               <span className="block text-[10px] text-soft font-normal">
                 {card.interval_days > 1 ? `${Math.round(card.interval_days * 1.2)}d` : "1d"}
               </span>

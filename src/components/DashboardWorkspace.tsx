@@ -23,6 +23,7 @@ import { StreakCard } from "@/components/StreakCard";
 import { AIStudyPlan } from "@/components/AIStudyPlan";
 import { ConceptConnections } from "@/components/ConceptConnections";
 import { StudyFolderManager } from "@/components/StudyFolderManager";
+import { StudyEngine } from "@/components/StudyEngine";
 
 export function DashboardWorkspace({ sets }: { sets: SetWithCards[] }) {
   const [folderId, setFolderId] = useState<string | null>("__all__");
@@ -41,6 +42,7 @@ export function DashboardWorkspace({ sets }: { sets: SetWithCards[] }) {
         </TabsList>
 
         <TabsContent value="today" className="space-y-6 mt-6">
+          <StudyEngine sets={sets} />
           <CommandCenter sets={sets} />
           <div className="grid lg:grid-cols-2 gap-6"><DailyStudyGoals /><PomodoroTimer /></div>
         </TabsContent>
