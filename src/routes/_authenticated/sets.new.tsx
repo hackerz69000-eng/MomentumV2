@@ -6,7 +6,7 @@ import { FileText, Upload, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
-import { processSet, ocrFile } from "@/lib/study.functions";
+import { processSet, enrichOptionalReadings, ocrFile } from "@/lib/study.functions";
 import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { cn } from "@/lib/utils";
 
@@ -37,6 +37,7 @@ function NewSet() {
   const qc = useQueryClient();
   const { user } = useAuth();
   const process = useServerFn(processSet);
+  const enrichReadings = useServerFn(enrichOptionalReadings);
   const ocr = useServerFn(ocrFile);
   const [name, setName] = useState("");
   const [subject, setSubject] = useState("");
@@ -178,6 +179,21 @@ function NewSet() {
 
       // NVIDIA NIM generates the notes first, then flashcards from those notes.
       await process({ data: { setId: targetId } });
+
+      // Start optional reading enrichment only after the core set is ready. Do not
+      // await it: a slow/failed reading request must never hold up navigation or
+      // change the successful study-set status. The server action also treats all
+      // enrichment failures as non-fatal.
+      if (material.includes("=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===")) {
+        void Promise.resolve()
+          .then(() => enrichReadings({ data: { setId: targetId } }))
+          .then(async (result) => {
+            if (result.enriched) {
+              await qc.invalidateQueries({ queryKey: ["set", targetId] });
+            }
+          })
+          .catch((error) => console.warn("Optional reading enrichment was skipped:", error));
+      }
 
       toast.success("Study set created.");
       qc.invalidateQueries({ queryKey: ["sets"] });

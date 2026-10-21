@@ -7,6 +7,8 @@ export type SetRow = {
   material_text: string;
   custom_instructions: string;
   notes?: string | null;
+  status?: string | null;
+  updated_at?: string | null;
   study_guide?: string | null;
 };
 

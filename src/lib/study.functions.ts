@@ -91,75 +91,65 @@ async function makeNotes(set: {
   subject: string;
   material_text: string;
   custom_instructions?: string;
-}) {
-  try {
-    const separated = splitPrimaryAndOptionalReadings(set.material_text);
-    const sourceChunks = splitTextIntoChunks(set.material_text, 16000);
-    // For large lecture + reading uploads, process lecture structure first, then map reading
-    // additions onto those headings. Splitting the combined text blindly could lose the source
-    // markers and accidentally turn readings into a separate notes section.
-    if (separated.readings && sourceChunks.length > 1) {
-      const lectureChunks = splitTextIntoChunks(separated.lecture, 16000);
-      const lectureParts: string[] = [];
-      for (let i = 0; i < lectureChunks.length; i++) {
-        const part = await aiText(
-          `${NOTES_SYSTEM}${ci(set)}\n\nPRIMARY LECTURE CHUNK MODE: This is lecture part ${i + 1} of ${lectureChunks.length}. Use this lecture chunk only to build the main note structure and order. Preserve important facts, definitions, examples, formulas, exceptions, and relationships. Do not create a readings section. Do not claim this chunk is the whole course. Do not add Key Takeaways until the final integration.`,
-          [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\nPRIMARY LECTURE PART ${i + 1}/${lectureChunks.length}:\n${lectureChunks[i]}` }],
-        );
-        lectureParts.push(part.trim());
-      }
-      let lectureNotes = `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${lectureParts.join("\n\n---\n\n")}`;
-      // Reading enrichment is best-effort: once lecture notes exist, a failure in a
-      // reading-specific NIM call must not fail the entire study set. This is especially
-      // important for short PDFs, which should never block lecture-based notes/cards.
-      try {
-        const readingChunks = splitTextIntoChunks(separated.readings, 12000);
-        const enrichmentParts: string[] = [];
-        for (let i = 0; i < readingChunks.length; i++) {
-          const additions = await aiText(
-            `You are a careful academic cross-reference editor. Return only concise Markdown enrichment candidates grouped by the EXACT existing lecture topic they belong to. Compare the optional reading with the lecture notes. Include only material that is relevant, useful, supported by this reading, and not already present in the lecture notes. Do not create a separate readings section, rewrite the lecture notes, repeat facts, or add unrelated background. Preserve reading filename and printed page numbers when present; never invent page numbers. If this chunk contains no useful new information matching an existing lecture topic, return exactly: NO RELEVANT NEW ADDITIONS.\n\nEXISTING LECTURE NOTES (structure and order are authoritative):\n${clip(lectureNotes, 18000)}${ci(set)}`,
-            [{ role: "user", content: `OPTIONAL READING PART ${i + 1}/${readingChunks.length}:\n${readingChunks[i]}` }],
-          );
-          if (additions.trim() && !/^NO RELEVANT NEW ADDITIONS\.?$/i.test(additions.trim())) enrichmentParts.push(additions.trim());
-        }
-        lectureNotes = await aiText(
-          `${NOTES_SYSTEM}${ci(set)}\n\nFINAL INTEGRATION MODE: Edit the supplied lecture notes. Preserve their exact major topic order and headings. Integrate only new, relevant reading details into the matching existing sections; do not add a standalone readings section, do not duplicate lecture content, and do not create a detached visual gallery. Preserve source filenames and page references supplied in the candidate additions. Keep all important lecture content. Finish with one Key Takeaways section. Return the complete revised notes only.`,
-          [{ role: "user", content: `EXISTING LECTURE NOTES:\n${clip(lectureNotes, 36000)}\n\nREADING ENRICHMENT CANDIDATES (some may overlap; deduplicate carefully):\n${enrichmentParts.length ? clip(enrichmentParts.join("\n\n"), 20000) : "No useful new reading additions were identified. Preserve the lecture notes, clean up any repeated chunk headings if possible, and add one concise Key Takeaways section."}` }],
-        );
-      } catch (readingErr) {
-        console.warn("Optional reading enrichment failed; continuing with lecture-based notes:", readingErr);
-      }
-      return lectureNotes;
-    }
-    if (sourceChunks.length <= 1) {
-      const content = `Study set: ${set.name} (${set.subject || "general"})\n\nMATERIAL (complete source):\n${sourceChunks[0] ?? ""}`;
-      try {
-        return await aiText(NOTES_SYSTEM + ci(set), [{ role: "user", content }]);
-      } catch (combinedErr) {
-        if (!separated.readings) throw combinedErr;
-        // Retry only the primary lecture material if the combined lecture+reading prompt
-        // fails. The optional reading is never allowed to prevent a usable core set.
-        console.warn("Combined lecture/reading note generation failed; retrying lecture-only notes:", combinedErr);
-        return await aiText(NOTES_SYSTEM + ci(set), [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\n\nPRIMARY LECTURE MATERIAL (optional readings intentionally skipped after a reading-related generation failure):\n${separated.lecture}` }]);
-      }
-    }
-    // Process every source chunk independently so a large reading never has its tail silently clipped.
-    const noteParts: string[] = [];
-    for (let i = 0; i < sourceChunks.length; i++) {
-      const part = await aiText(
-        `${NOTES_SYSTEM}${ci(set)}\n\nLONG-SOURCE MODE: This is part ${i + 1} of ${sourceChunks.length}. Make thorough notes ONLY for this part. Preserve its important definitions, explanations, examples, formulas, exceptions and relationships. Do not claim this is the whole course, do not add a Key Takeaways section, and do not refer to missing parts. Use meaningful headings so this part can be combined with the others.`,
-        [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\nSOURCE PART ${i + 1}/${sourceChunks.length}:\n${sourceChunks[i]}` }],
-      );
-      noteParts.push(part.trim());
-    }
-    // Preserve every chunk's output; avoid a second huge AI call that could time out again.
-    return `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${noteParts.join("\n\n---\n\n")}`;
-  } catch (err) {
-    console.error("AI notes generation failed:", err);
-    // Never silently substitute heuristic notes for failed AI generation. Surface the
-    // real failure so the student can retry instead of receiving incomplete material.
-    throw err;
+}): Promise<string> {
+  const { lecture } = splitPrimaryAndOptionalReadings(set.material_text);
+  const lectureMaterial = lecture.trim();
+  if (!lectureMaterial) throw new Error("No lecture text was available to generate the core study notes.");
+
+  // Generate the core study notes from lecture material ONLY. Optional readings
+  // are intentionally excluded from this critical-path request so they cannot
+  // cause the entire study set to fail or extend its initial generation time.
+  const lectureChunks = splitTextIntoChunks(lectureMaterial, 14000);
+  const lectureParts: string[] = [];
+  for (let i = 0; i < lectureChunks.length; i++) {
+    const isSingle = lectureChunks.length === 1;
+    const chunkPrompt = isSingle
+      ? NOTES_SYSTEM
+      : `${NOTES_SYSTEM}\n\nPRIMARY LECTURE CHUNK MODE: This is lecture part ${i + 1} of ${lectureChunks.length}. Make thorough notes ONLY for this part. Preserve important facts, definitions, examples, formulas, exceptions, and relationships. Do not claim this chunk is the whole course. Do not add Key Takeaways until the final integration.`;
+    const part = await aiText(
+      `${chunkPrompt}${ci(set)}`,
+      [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\n\nPRIMARY LECTURE MATERIAL${isSingle ? "" : ` — PART ${i + 1}/${lectureChunks.length}`} (optional readings excluded):\n${lectureChunks[i]}` }],
+      { timeoutMs: 65000, retries: 1 },
+    );
+    lectureParts.push(part.trim());
   }
+
+  return lectureChunks.length === 1
+    ? lectureParts[0]
+    : `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${lectureParts.join("\n\n---\n\n")}`;
+}
+
+async function createOptionalReadingEnrichment(set: {
+  name: string;
+  subject: string;
+  material_text: string;
+  notes?: string | null;
+  custom_instructions?: string;
+}): Promise<string | null> {
+  const { readings } = splitPrimaryAndOptionalReadings(set.material_text);
+  const baselineNotes = set.notes?.trim();
+  if (!readings?.trim() || !baselineNotes) return null;
+  // A single-call rewrite cannot safely preserve very long notes in one prompt.
+  // Keep the core notes untouched rather than risk truncating a large course.
+  if (baselineNotes.length > 20000) return null;
+
+  // This runs in a separate request AFTER the study set is already usable. It is
+  // deliberately one bounded, non-retried call; failure never changes set status.
+  const readingText = clip(readings, 12000);
+  const enriched = await aiText(
+    `You are a careful academic cross-reference editor. Revise the supplied lecture notes by integrating ONLY useful new details from the optional reading into the existing matching lecture sections. The lecture notes define the headings, order, scope, and structure. Do not create a separate Readings section. Do not duplicate lecture facts or add unrelated background. Preserve all important existing lecture content. Preserve reading filenames and printed/source page markers exactly when present; never invent page numbers. If the reading adds nothing useful, return the original notes essentially unchanged. Return the complete revised notes in Markdown only.\n\nEXISTING LECTURE NOTES:\n${clip(baselineNotes, 22000)}${ci(set)}`,
+    [{ role: "user", content: `OPTIONAL READING (enrichment only; bounded to keep this request short):\n${readingText}` }],
+    { timeoutMs: 25000, retries: 0 },
+  );
+
+  const cleaned = enriched.trim();
+  const baselineHeadings = (baselineNotes.match(/^#{1,3} .+$/gm) ?? []).filter((h) => !/^## Key Takeaways$/i.test(h));
+  const retainedHeadingCount = baselineHeadings.filter((heading) => cleaned.includes(heading)).length;
+  const minimumLength = Math.max(300, Math.floor(baselineNotes.length * 0.55));
+  if (!cleaned.startsWith("# ") || cleaned.length < minimumLength || (baselineHeadings.length > 2 && retainedHeadingCount < Math.ceil(baselineHeadings.length * 0.6))) {
+    throw new Error("Optional reading enrichment returned incomplete notes; the lecture-based notes were preserved.");
+  }
+  return cleaned;
 }
 
 async function makeCards(set: {
@@ -203,8 +193,11 @@ export const processSet = createServerFn({ method: "POST" })
   .inputValidator(idInput)
   .handler(async ({ data, context }) => {
     const supabase = context.supabase;
-    const set = await loadSet(supabase, data.setId);
+    let generationStage = "loading study set";
+    let set: Awaited<ReturnType<typeof loadSet>> | null = null;
     try {
+      set = await loadSet(supabase, data.setId);
+      generationStage = "starting generation";
       const { error: statusError } = await supabase
         .from("study_sets")
         .update({ status: "processing", error: null })
@@ -213,11 +206,15 @@ export const processSet = createServerFn({ method: "POST" })
 
       // Generate everything before replacing saved content, so an AI failure never
       // destroys the student's existing notes or cards.
+      generationStage = "generating lecture-based notes";
       const notes = await makeNotes(set);
+      generationStage = "generating flashcards from the notes";
       const cards = await makeCards({ ...set, notes });
+      generationStage = "checking existing flashcards";
       const { data: oldCards, error: readError } = await supabase.from("flashcards").select("*").eq("set_id", set.id);
       if (readError) throw new Error("Couldn't safely replace the existing flashcards.");
       if (oldCards?.length) {
+        generationStage = "backing up existing flashcards";
         const { error: archiveError } = await supabase.from("trash").insert({
           user_id: context.userId,
           kind: "flashcards",
@@ -227,6 +224,7 @@ export const processSet = createServerFn({ method: "POST" })
         });
         if (archiveError) throw new Error("Couldn't back up the existing flashcards, so they were left unchanged.");
       }
+      generationStage = "saving new flashcards";
       const { error: deleteError } = await supabase.from("flashcards").delete().eq("set_id", set.id);
       if (deleteError) throw new Error("Couldn't replace the old flashcards. Your existing cards were kept.");
       const { error: insertError } = await supabase.from("flashcards").insert(
@@ -240,6 +238,7 @@ export const processSet = createServerFn({ method: "POST" })
         })),
       );
       if (insertError) throw new Error("New flashcards couldn't be saved. Your previous cards are in Recently Deleted.");
+      generationStage = "saving completed study set";
       const { error: saveSetError } = await supabase
         .from("study_sets")
         .update({ notes, status: "ready", error: null, updated_at: new Date().toISOString() })
@@ -247,9 +246,49 @@ export const processSet = createServerFn({ method: "POST" })
       if (saveSetError) throw new Error("The study materials were generated, but the set status couldn't be saved. Refresh and check the set before retrying.");
       return { ok: true };
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Processing failed";
-      await supabase.from("study_sets").update({ status: "error", error: msg }).eq("id", set.id);
+      const detail = e instanceof Error ? e.message : String(e ?? "Unknown error");
+      const msg = `Study set generation failed while ${generationStage}: ${detail}`.slice(0, 1800);
+      // Persist the stage and underlying provider/database message so the set page
+      // reports an actionable cause instead of the generic generation failure.
+      if (set?.id) {
+        const { error: saveError } = await supabase
+          .from("study_sets")
+          .update({ status: "error", error: msg })
+          .eq("id", set.id);
+        if (saveError) console.error("Failed to persist study generation error:", saveError.message, "Original error:", detail);
+      }
+      console.error(msg, e);
       throw new Error(msg);
+    }
+  });
+
+export const enrichOptionalReadings = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(idInput)
+  .handler(async ({ data, context }) => {
+    const supabase = context.supabase;
+    const set = await loadSet(supabase, data.setId);
+    if (set.status !== "ready" || !set.notes?.trim()) return { enriched: false };
+    const originalNotes = set.notes;
+    try {
+      const enrichedNotes = await createOptionalReadingEnrichment({ ...set, notes: originalNotes });
+      if (!enrichedNotes || enrichedNotes === originalNotes) return { enriched: false };
+      // Compare-and-set prevents a late enrichment response from overwriting notes
+      // the student edited while the optional request was running.
+      const { data: updatedRows, error } = await supabase
+        .from("study_sets")
+        .update({ notes: enrichedNotes, updated_at: new Date().toISOString() })
+        .eq("id", set.id)
+        .eq("status", "ready")
+        .eq("updated_at", set.updated_at)
+        .select("id");
+      if (error) throw error;
+      return { enriched: Boolean(updatedRows?.length) };
+    } catch (error) {
+      // Optional enrichment is non-critical: never mark the set failed or throw to
+      // the creation flow. The lecture notes and flashcards are already usable.
+      console.warn("Optional reading enrichment skipped; core study set remains ready:", error);
+      return { enriched: false };
     }
   });
 
