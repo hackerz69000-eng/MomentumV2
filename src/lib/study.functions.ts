@@ -5,7 +5,6 @@ import { aiText, parseJson, clip, splitTextIntoChunks } from "./ai.server";
 import { setStats, type Attempt, type AttemptResult, type Flashcard } from "./stats";
 import { activityStats } from "./activity";
 import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server";
-import { generateNotesFromMaterial } from "./study-generator";
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -38,11 +37,8 @@ QUALITY:
 - Keep important qualifiers, conditions, formulas, examples, exceptions, and relationships.
 - Do NOT invent examples, facts, headings, conclusions, or "testable" claims that are not supported by the source.
 - Do NOT add generic study advice or statements such as "this is examinable" unless the source explicitly says so.
-- Treat sections labelled "Visual explanation" or "Visual explanations for figures and diagrams" as first-class lecture material, not optional appendix text.
-- Do not embed, render, or reproduce lecture images in the Notes. Use concise textual references to the source image instead, including the original slide/page number when available.
-- For each available visual description, explain what it depicts, what its visible labels/arrows/axes/parts mean, and how it illustrates or supports the relevant lecture concept. Weave this explanation into the matching topic instead of creating a detached image gallery or a separate visual appendix. If the relationship is unclear, retain the slide/page reference and state the connection cautiously.
-- Distinguish directly visible details from interpretation. Never invent unreadable labels, data points, or a relationship the visual does not support.
-- Do not omit important diagrams, charts, maps, equations, timelines, or labelled illustrations when condensing the material; explain their relevance in text and cite their slide/page location.
+- Do not describe or interpret lecture images, diagrams, charts, maps, timelines, or other visual elements. Their interpretation is intentionally disabled to keep study-set creation faster and more reliable.
+- If the lecture's extracted text explicitly refers to a figure, retain that textual reference and its slide/page number, but do not invent a description of the image.
 - Do not include a preamble or commentary about being an AI.
 - Use only information supported by the provided material.`;
 
@@ -145,9 +141,10 @@ async function makeNotes(set: {
     // Preserve every chunk's output; avoid a second huge AI call that could time out again.
     return `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${noteParts.join("\n\n---\n\n")}`;
   } catch (err) {
-    console.warn("AI notes generation fallback active:", err);
-    const primary = splitPrimaryAndOptionalReadings(set.material_text).lecture;
-    return generateNotesFromMaterial(primary, set.name, set.subject);
+    console.error("AI notes generation failed:", err);
+    // Never silently substitute heuristic notes for failed AI generation. Surface the
+    // real failure so the student can retry instead of receiving incomplete material.
+    throw err;
   }
 }
 
@@ -1057,40 +1054,30 @@ export const ocrFile = createServerFn({ method: "POST" })
         data: z.string().max(140_000_000),
         mediaType: z.enum(["image/png", "image/jpeg", "image/webp"]),
         filename: z.string().max(200),
-        task: z.enum(["transcribe", "describe_visuals"]).optional(),
+        task: z.literal("transcribe").optional(),
         context: z.string().max(12000).optional(),
       })
       .parse(d),
   )
   .handler(async ({ data }) => {
-    const task = data.task ?? "transcribe";
-    // NVIDIA's OpenAI-compatible vision API expects images as image_url parts;
-    // PDF pages are rendered to JPEGs in the browser before they reach this endpoint.
+    // This endpoint is deliberately OCR-only. It transcribes readable text from
+    // scanned pages/images; it does not describe or interpret visual content.
     const file = {
       type: "image_url" as const,
       image_url: { url: data.data },
     };
-    const system = task === "describe_visuals"
-      ? `You are a careful visual-learning assistant helping a student understand lecture material. Inspect the supplied document/image for meaningful visual content: diagrams, charts, graphs, maps, timelines, equations, labelled illustrations, tables, photographs, and visual examples. Describe what is visibly present, including labels, axes, arrows, comparisons, trends, and relationships. Explain what the visual is showing and how it connects to the lecture context supplied below. Use page/slide markers only when they are visible or reliably available. Do not merely repeat surrounding text; do not guess unreadable labels or unsupported meanings. Clearly mark uncertainty. If there are no meaningful visuals, say exactly: No meaningful visual content detected.
+    const system = `You are a careful OCR transcription assistant. Transcribe only text that is visibly readable, preserving reading order, headings, lists, equations, table text, and figure labels when legible. Do not describe, summarize, or interpret pictures, diagrams, charts, arrows, or visual relationships. Never guess obscured or unreadable text; mark uncertain words as [unclear]. If no readable text is present, return exactly: No readable text detected. Output the transcription only, without an AI preamble.
 
-LECTURE CONTEXT:
-${data.context?.trim() || "No extracted lecture text was supplied. Describe only what the visual itself supports."}`
-      : `You are an OCR and visual-understanding assistant for a student. Transcribe all readable text in reading order and preserve headings, lists, equations, labels, and table structure. For every meaningful diagram, chart, graph, map, timeline, labelled illustration, or photo, add a section titled “Visual explanation” that describes what it shows and how it relates to the lecture text/context. Explain arrows, axes, labels, trends, and relationships when visible. Do not invent unreadable labels or unsupported claims; flag uncertainty. If a diagram's meaning depends on missing context, say so. Output structured notes only, with no AI preamble.
-
-LECTURE CONTEXT:
-${data.context?.trim() || "No additional lecture context supplied; use only the provided file."}`;
+Optional context for spelling and terminology (not a source of text to invent):
+${data.context?.trim() || "No additional context supplied."}`;
     const visionModel = process.env["NIM_VISION_MODEL"]?.trim() || "meta/llama-3.2-90b-vision-instruct";
     const text = await aiText(
       system,
-      [
-        {
-          role: "user",
-          content: [{ type: "text", text: task === "describe_visuals"
-            ? `Analyze the visual content in ${data.filename}. Focus on the meaning of the visuals in relation to the supplied lecture context.`
-            : `Read and explain the content of ${data.filename}, including its visuals.` }, file],
-        },
-      ],
-      { grounded: false, model: visionModel, timeoutMs: 90_000 },
+      [{
+        role: "user",
+        content: [{ type: "text", text: `Transcribe readable text from ${data.filename}. Do not describe visuals.` }, file],
+      }],
+      { grounded: false, model: visionModel, timeoutMs: 60_000, retries: 1 },
     );
     return { text };
   });

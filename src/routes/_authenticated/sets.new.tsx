@@ -59,6 +59,8 @@ function NewSet() {
     const parts: string[] = [];
     const readingParts: string[] = [];
     const meta: { file: File; chars: number }[] = [];
+    const failedLectures: string[] = [];
+    const failedReadings: string[] = [];
     // Lectures are the primary source and define note structure and order.
     const filesToExtract = [...files].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
     for (const [idx, f] of filesToExtract.entries()) {
@@ -69,11 +71,19 @@ function NewSet() {
           (m) => setProgressMsg(filesToExtract.length > 1 ? `${m} (${idx + 1}/${filesToExtract.length})` : m),
           parts.join("\n\n").slice(0, 12000),
         );
-        if (t) parts.push(files.length > 1 ? `=== ${f.name} ===\n${t}` : t);
+        if (!t.trim()) throw new Error(`${f.name}: no readable text was extracted. Try a searchable PDF, a clearer scan, or a text-based export.`);
+        parts.push(files.length > 1 ? `=== ${f.name} ===\n${t}` : t);
         meta.push({ file: f, chars: t.length });
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : `Couldn't read ${f.name}`);
+        failedLectures.push(e instanceof Error ? e.message : `Couldn't read ${f.name}`);
       }
+    }
+    // Never create a partial study set when any required lecture failed extraction.
+    if (failedLectures.length) {
+      setStage(null);
+      setProgressMsg("");
+      toast.error(`Study set not created. Fix the lecture extraction issue(s) and try again: ${failedLectures.join(" | ")}`, { duration: 10000 });
+      return;
     }
     const readingsToExtract = [...readingFiles].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
     for (const [idx, f] of readingsToExtract.entries()) {
@@ -83,15 +93,20 @@ function NewSet() {
           ocr,
           (m) => setProgressMsg(`Optional reading ${idx + 1}/${readingsToExtract.length}: ${m}`),
           parts.join("\n\n").slice(0, 12000),
-          false,
         );
-        if (t.trim()) readingParts.push(`### Reading source: ${f.name}\n${t.trim()}`);
+        if (!t.trim()) throw new Error(`${f.name}: no readable text was extracted from this optional reading.`);
+        readingParts.push(`### Reading source: ${f.name}\n${t.trim()}`);
         meta.push({ file: f, chars: t.length });
       } catch (e) {
+        failedReadings.push(f.name);
         toast.error(e instanceof Error ? e.message : `Couldn't read optional reading ${f.name}`);
       }
     }
+    if (failedReadings.length) {
+      toast.warning(`Some optional readings couldn't be used and will be skipped: ${failedReadings.join(", ")}`, { duration: 8000 });
+    }
     setStage(null);
+    setProgressMsg("");
     const lectureMaterial = parts.join("\n\n").trim();
     if (!lectureMaterial) {
       toast.error("Couldn't find readable text in the lecture files. Try clearer photos or another format.");
@@ -107,6 +122,7 @@ function NewSet() {
   const submit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     if (!user) return;
+    let createdSetId: string | null = null;
     if (mode === "pdf" && !extracted) {
       await extract();
       return;
@@ -147,6 +163,7 @@ function NewSet() {
       }
 
       const targetId = sbData.id;
+      createdSetId = targetId;
 
       // Keep every uploaded file attached to the same study set.
       if (mode === "pdf" && extracted?.length) {
@@ -159,15 +176,20 @@ function NewSet() {
         }
       }
 
-      // Gemini generates the notes first, then flashcards from those notes.
+      // NVIDIA NIM generates the notes first, then flashcards from those notes.
       await process({ data: { setId: targetId } });
 
       toast.success("Study set created.");
       qc.invalidateQueries({ queryKey: ["sets"] });
       navigate({ to: "/sets/$id", params: { id: targetId } });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Something went wrong");
+      const message = err instanceof Error ? err.message : "Study set generation failed. Open the set to see its status and retry.";
+      toast.error(message, { duration: 9000 });
       setStage(null);
+      if (createdSetId) {
+        qc.invalidateQueries({ queryKey: ["sets"] });
+        navigate({ to: "/sets/$id", params: { id: createdSetId } });
+      }
     }
   };
 
@@ -187,7 +209,7 @@ function NewSet() {
           <p className="text-soft text-sm mt-2">
             {stage === "reading"
               ? progressMsg || "Extracting text…"
-              : "Writing notes and generating flashcards. This usually takes 20–60 seconds."}
+              : "Writing notes and generating flashcards with NVIDIA NIM. Large files can take longer; if generation fails, the set is saved so you can retry."}
           </p>
         </div>
       </main>
