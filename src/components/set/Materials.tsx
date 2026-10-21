@@ -62,7 +62,8 @@ export function Materials({ set }: { set: StudySet }) {
   };
 
   const pick = async (list: File[]) => {
-    const files = list.filter((f) => fileKind(f) && f.size <= MAX_BYTES);
+    const files = list.filter((f) => fileKind(f) && f.size <= MAX_BYTES)
+      .sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
     const skipped = list.filter((f) => !fileKind(f) || f.size > MAX_BYTES);
     if (skipped.length) {
       const details = skipped.map((f) => !fileKind(f)
@@ -76,7 +77,7 @@ export function Materials({ set }: { set: StudySet }) {
     const failedFiles: File[] = [];
     for (const f of files) {
       try {
-        const t = await extractFile(f, ocr, setMsg);
+        const t = await extractFile(f, ocr, setMsg, parts.join("\n\n").slice(0, 12000));
         if (t) parts.push(`=== ${f.name} ===\n${t}`);
         meta.push({ file: f, chars: t.length });
       } catch (e) {

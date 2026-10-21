@@ -57,10 +57,16 @@ function NewSet() {
     setStage("reading");
     const parts: string[] = [];
     const meta: { file: File; chars: number }[] = [];
-    for (const [idx, f] of files.entries()) {
+    // Extract lecture documents first so later standalone images can be interpreted
+    // against the lecture text already collected from the same upload batch.
+    const filesToExtract = [...files].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
+    for (const [idx, f] of filesToExtract.entries()) {
       try {
-        const t = await extractFile(f, ocr, (m) =>
-          setProgressMsg(files.length > 1 ? `${m} (${idx + 1}/${files.length})` : m),
+        const t = await extractFile(
+          f,
+          ocr,
+          (m) => setProgressMsg(filesToExtract.length > 1 ? `${m} (${idx + 1}/${filesToExtract.length})` : m),
+          parts.join("\n\n").slice(0, 12000),
         );
         if (t) parts.push(files.length > 1 ? `=== ${f.name} ===\n${t}` : t);
         meta.push({ file: f, chars: t.length });

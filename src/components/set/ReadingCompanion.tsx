@@ -148,10 +148,13 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
     if (!valid.length) return;
     setUploadingReading(true);
     let added = 0;
+    let extractedContext = "";
     try {
-      for (const file of valid) {
+      const filesToExtract = [...valid].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
+      for (const file of filesToExtract) {
         setUploadMessage(`Reading ${file.name}…`);
-        const text = await extractFile(file, ocrFn, setUploadMessage);
+        const text = await extractFile(file, ocrFn, setUploadMessage, extractedContext.slice(0, 12000));
+        if (text.trim()) extractedContext += `\n\n${file.name}:\n${text.trim()}`;
         if (!text.trim() || text.trim().length < 20) {
           toast.error(`Couldn't extract enough readable text from ${file.name}.`);
           continue;

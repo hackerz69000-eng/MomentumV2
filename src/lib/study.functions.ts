@@ -32,6 +32,10 @@ QUALITY:
 - Keep important qualifiers, conditions, formulas, examples, exceptions, and relationships.
 - Do NOT invent examples, facts, headings, conclusions, or "testable" claims that are not supported by the source.
 - Do NOT add generic study advice or statements such as "this is examinable" unless the source explicitly says so.
+- Treat sections labelled "Visual explanation" or "Visual explanations for figures and diagrams" as first-class lecture material, not optional appendix text.
+- For each visual, explain what it depicts, what its visible labels/arrows/axes/parts mean, and how it illustrates or supports the relevant lecture concept. Place the explanation under the matching topic when the source context makes the relationship clear; otherwise keep the visual's slide/page label and state the connection cautiously.
+- Distinguish directly visible details from interpretation. Never invent unreadable labels, data points, or a relationship the visual does not support.
+- Do not omit important diagrams, charts, maps, equations, timelines, or labelled illustrations when condensing the material.
 - Do not include a preamble or commentary about being an AI.
 - Use only information supported by the provided material.`;
 
@@ -989,30 +993,42 @@ export const ocrFile = createServerFn({ method: "POST" })
       .object({
         // Base64 expands binary files by about one third. Allow the configured 100 MiB file cap.
         data: z.string().max(140_000_000),
-        mediaType: z.enum(["application/pdf", "image/png", "image/jpeg", "image/webp"]),
+        mediaType: z.enum(["image/png", "image/jpeg", "image/webp"]),
         filename: z.string().max(200),
+        task: z.enum(["transcribe", "describe_visuals"]).optional(),
+        context: z.string().max(12000).optional(),
       })
       .parse(d),
   )
   .handler(async ({ data }) => {
-    const file =
-      data.mediaType === "application/pdf"
-        ? {
-            type: "file" as const,
-            data: data.data,
-            mediaType: data.mediaType,
-            filename: data.filename,
-          }
-        : { type: "image" as const, image: data.data, mediaType: data.mediaType };
+    const task = data.task ?? "transcribe";
+    // NVIDIA's OpenAI-compatible vision API expects images as image_url parts;
+    // PDF pages are rendered to JPEGs in the browser before they reach this endpoint.
+    const file = {
+      type: "image_url" as const,
+      image_url: { url: data.data },
+    };
+    const system = task === "describe_visuals"
+      ? `You are a careful visual-learning assistant helping a student understand lecture material. Inspect the supplied document/image for meaningful visual content: diagrams, charts, graphs, maps, timelines, equations, labelled illustrations, tables, photographs, and visual examples. Describe what is visibly present, including labels, axes, arrows, comparisons, trends, and relationships. Explain what the visual is showing and how it connects to the lecture context supplied below. Use page/slide markers only when they are visible or reliably available. Do not merely repeat surrounding text; do not guess unreadable labels or unsupported meanings. Clearly mark uncertainty. If there are no meaningful visuals, say exactly: No meaningful visual content detected.
+
+LECTURE CONTEXT:
+${data.context?.trim() || "No extracted lecture text was supplied. Describe only what the visual itself supports."}`
+      : `You are an OCR and visual-understanding assistant for a student. Transcribe all readable text in reading order and preserve headings, lists, equations, labels, and table structure. For every meaningful diagram, chart, graph, map, timeline, labelled illustration, or photo, add a section titled “Visual explanation” that describes what it shows and how it relates to the lecture text/context. Explain arrows, axes, labels, trends, and relationships when visible. Do not invent unreadable labels or unsupported claims; flag uncertainty. If a diagram's meaning depends on missing context, say so. Output structured notes only, with no AI preamble.
+
+LECTURE CONTEXT:
+${data.context?.trim() || "No additional lecture context supplied; use only the provided file."}`;
+    const visionModel = process.env["NIM_VISION_MODEL"]?.trim() || "meta/llama-3.2-90b-vision-instruct";
     const text = await aiText(
-      "You are an OCR engine. Transcribe ALL readable text from the provided scanned document or photo of pages, in reading order. Preserve headings, lists and paragraphs. Describe diagrams or tables briefly in [brackets]. Output only the transcription, no commentary.",
+      system,
       [
         {
           role: "user",
-          content: [{ type: "text", text: `Transcribe this file: ${data.filename}` }, file],
+          content: [{ type: "text", text: task === "describe_visuals"
+            ? `Analyze the visual content in ${data.filename}. Focus on the meaning of the visuals in relation to the supplied lecture context.`
+            : `Read and explain the content of ${data.filename}, including its visuals.` }, file],
         },
       ],
-      { grounded: false },
+      { grounded: false, model: visionModel, timeoutMs: 90_000 },
     );
     return { text };
   });

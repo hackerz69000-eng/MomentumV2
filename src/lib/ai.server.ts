@@ -64,7 +64,7 @@ QUALITY RULES:
 - Focus on important testable ideas rather than trivia.
 `;
 
-async function callNim(system: string, messages: ModelMessage[], timeoutMs = 90_000): Promise<string> {
+async function callNim(system: string, messages: ModelMessage[], timeoutMs = 90_000, model = NIM_MODEL): Promise<string> {
   const apiKey = process.env["NVIDIA_API_KEY"]?.trim();
   if (!apiKey) {
     throw new NimError(
@@ -84,7 +84,7 @@ async function callNim(system: string, messages: ModelMessage[], timeoutMs = 90_
       // Bound provider latency, but leave enough time for larger study tasks.
       signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
-        model: NIM_MODEL,
+        model,
         temperature: 0.2,
         max_tokens: 6000,
         stream: false,
@@ -141,7 +141,7 @@ function retryable(err: unknown) {
 export async function aiText(
   system: string,
   messages: ModelMessage[],
-  opts: { grounded?: boolean; retries?: number; timeoutMs?: number } = {},
+  opts: { grounded?: boolean; retries?: number; timeoutMs?: number; model?: string } = {},
 ): Promise<string> {
   if (opts.grounded !== false) system += GROUNDING;
 
@@ -154,7 +154,7 @@ export async function aiText(
 
   for (let attempt = 0; attempt <= retryCount; attempt += 1) {
     try {
-      return await callNim(system, messages, timeoutMs);
+      return await callNim(system, messages, timeoutMs, opts.model?.trim() || NIM_MODEL);
     } catch (error) {
       lastError = error;
       if (!retryable(error) || attempt === retryCount) break;

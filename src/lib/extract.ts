@@ -121,13 +121,14 @@ async function extractDocx(file: File) {
   return value;
 }
 
-async function extractPptx(file: File) {
+async function extractPptx(file: File, ocr: Ocr, onMsg: (m: string) => void) {
   const JSZip = (await import("jszip")).default;
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const slides = Object.keys(zip.files)
     .filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p))
     .sort((a, b) => Number(a.match(/\d+/)![0]) - Number(b.match(/\d+/)![0]));
   const out: string[] = [];
+  let visualsAnalyzed = 0;
   for (const [i, p] of slides.entries()) {
     const xml = await zip.file(p)!.async("string");
     const doc = new DOMParser().parseFromString(xml, "application/xml");
@@ -150,21 +151,117 @@ async function extractPptx(file: File) {
         .join(" ")
         .trim();
     }
-    if (paras.length || notes)
-      out.push(`## Slide ${i + 1}\n${paras.join("\n")}${notes ? `\nSpeaker notes: ${notes}` : ""}`);
+    const slideText = `## Slide ${i + 1}\n${paras.join("\n")}${notes ? `\nSpeaker notes: ${notes}` : ""}`;
+    if (paras.length || notes) out.push(slideText);
+
+    // PowerPoint keeps pictures separately from slide text. Follow the slide's
+    // relationship references so diagrams are described in the context of the slide.
+    if (i < 20 && visualsAnalyzed < 12) {
+      const slideNumber = p.match(/slide(\d+)\.xml$/)?.[1];
+      const relsPath = slideNumber ? `ppt/slides/_rels/slide${slideNumber}.xml.rels` : "";
+      const relsFile = relsPath ? zip.file(relsPath) : null;
+      if (relsFile) {
+        try {
+          const relsDoc = new DOMParser().parseFromString(await relsFile.async("string"), "application/xml");
+          const relationships = Array.from(relsDoc.getElementsByTagName("Relationship"));
+          const byId = new Map(relationships.map((rel) => [
+            rel.getAttribute("Id") ?? "",
+            rel.getAttribute("Target") ?? "",
+          ]));
+          const slideDoc = new DOMParser().parseFromString(xml, "application/xml");
+          const blips = Array.from(slideDoc.getElementsByTagName("a:blip"));
+          for (const blip of blips.slice(0, 6)) {
+            if (visualsAnalyzed >= 12) break;
+            const relId = blip.getAttribute("r:embed") ?? blip.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed");
+            const target = relId ? byId.get(relId) : "";
+            if (!target || target.startsWith("http")) continue;
+            const imagePath = (`ppt/slides/${target}`).replace(/\\/g, "/").split("/").reduce<string[]>((parts, part) => {
+              if (!part || part === ".") return parts;
+              if (part === "..") parts.pop(); else parts.push(part);
+              return parts;
+            }, []).join("/");
+            const imageFile = zip.file(imagePath);
+            if (!imageFile || !/^ppt\/media\//.test(imagePath)) continue;
+            const ext = imagePath.split(".").pop()?.toLowerCase() ?? "png";
+            if (!["png", "jpg", "jpeg", "webp"].includes(ext)) continue;
+            const mediaType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+            try {
+              visualsAnalyzed += 1;
+              onMsg(`Analyzing visual on slide ${i + 1} of ${file.name}…`);
+              const imageBlob = await imageFile.async("blob");
+              const imageFileForVision = new File([imageBlob], `${file.name}-slide-${i + 1}.${ext}`, { type: mediaType });
+              const imageData = await shrinkImage(imageFileForVision);
+              const result = await ocr({ data: {
+                data: imageData,
+                mediaType: "image/jpeg",
+                filename: `${file.name} — slide ${i + 1} visual`,
+                task: "describe_visuals",
+                context: `${file.name} — slide ${i + 1} text:\n${slideText.slice(0, 12000)}`,
+              }});
+              const description = result.text.trim();
+              if (description && !/^no meaningful visual content detected\.?$/i.test(description)) {
+                out.push(`## Slide ${i + 1} — Visual explanation\n${description}`);
+              }
+            } catch (error) {
+              console.warn(`Could not analyze a visual on slide ${i + 1}.`, error);
+            }
+          }
+        } catch (error) {
+          console.warn(`Could not inspect image relationships on slide ${i + 1}.`, error);
+        }
+      }
+    }
   }
   return out.join("\n\n");
 }
 
 type Ocr = (args: {
-  data: { data: string; mediaType: "application/pdf" | "image/jpeg"; filename: string };
+  data: {
+    data: string;
+    mediaType: "image/png" | "image/jpeg" | "image/webp";
+    filename: string;
+    task?: "transcribe" | "describe_visuals";
+    context?: string;
+  };
 }) => Promise<{ text: string }>;
 
-export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void): Promise<string> {
+async function pdfPageCountHint(file: File): Promise<number> {
+  try {
+    const { getDocumentProxy } = await import("unpdf");
+    const pdf = await getDocumentProxy(new Uint8Array(await file.arrayBuffer()));
+    return pdf.numPages;
+  } catch {
+    return 0;
+  }
+}
+
+async function renderPdfPages(file: File, maxPages = 20): Promise<Array<{ page: number; data: string }>> {
+  const { getDocumentProxy } = await import("unpdf");
+  const pdf = await getDocumentProxy(new Uint8Array(await file.arrayBuffer()));
+  const pages: Array<{ page: number; data: string }> = [];
+  const pageCount = Math.min(pdf.numPages, maxPages);
+  for (let pageNo = 1; pageNo <= pageCount; pageNo += 1) {
+    const page = await pdf.getPage(pageNo) as any;
+    const viewport = page.getViewport({ scale: 1.5 });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("This browser couldn't prepare PDF pages for visual analysis.");
+    await page.render({ canvasContext: context, viewport }).promise;
+    pages.push({ page: pageNo, data: canvas.toDataURL("image/jpeg", 0.82) });
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+  return pages;
+}
+
+export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void, lectureContext = ""): Promise<string> {
   const kind = fileKind(f);
   if (kind === "pdf") {
     onMsg(`Reading ${f.name}…`);
     let text = (await extractPdf(f)).trim();
+    const hasReadableExtractedText = Boolean(text) && !looksLikePdfHeadingsOnly(text);
     // A PDF can contain page labels/headings but no body text. Treat that as a
     // failed extraction and try OCR instead of saving misleadingly empty context.
     if (text.length < 30 || looksLikePdfHeadingsOnly(text)) {
@@ -172,16 +269,25 @@ export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void)
         throw new Error(`${f.name} is too large for OCR processing. Try a text-searchable PDF or split it into smaller parts before uploading.`);
       }
       try {
-        onMsg(`Text extraction was sparse. Trying text recognition for ${f.name}…`);
-        const ocrResult = await ocr({
-          data: { data: await readDataUrl(f), mediaType: "application/pdf", filename: f.name },
-        });
-        const ocrText = ocrResult?.text?.trim() ?? "";
-        // A short but complete OCR result is better than a larger extraction made
-        // up of repeated headers. Never replace usable text with a heading-only OCR result.
-        if (ocrText && !looksLikePdfHeadingsOnly(ocrText) &&
-            (looksLikePdfHeadingsOnly(text) || meaningfulWordCount(ocrText) > meaningfulWordCount(text))) {
+        onMsg(`Text extraction was sparse. Rendering pages for text and visual recognition in ${f.name}…`);
+        const pages = await renderPdfPages(f, 20);
+        const recognized: string[] = [];
+        for (const page of pages) {
+          const result = await ocr({ data: {
+            data: page.data,
+            mediaType: "image/jpeg",
+            filename: `${f.name} — page ${page.page}`,
+            context: lectureContext.slice(0, 12000),
+          }});
+          if (result.text.trim()) recognized.push(`## Page ${page.page}\n${result.text.trim()}`);
+        }
+        const ocrText = recognized.join("\n\n").trim();
+        // Keep the better extraction, and preserve the page numbers for source reference.
+        if (ocrText && (looksLikePdfHeadingsOnly(text) || meaningfulWordCount(ocrText) > meaningfulWordCount(text))) {
           text = ocrText;
+        }
+        if (await pdfPageCountHint(f) > pages.length) {
+          text += `\n\n[Visual/OCR analysis was limited to the first ${pages.length} pages of this PDF; the remaining pages were not image-analyzed.]`;
         }
       } catch (err) {
         console.warn("OCR fallback was unavailable for scanned or image-based PDF.", err);
@@ -190,6 +296,38 @@ export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void)
     if (looksLikePdfHeadingsOnly(text)) {
       throw new Error(`${f.name}: Momentum could only read page headings, not the actual page text. Try downloading an OCR/text-searchable version of the PDF, or split the file into smaller parts and retry.`);
     }
+    // Text extraction misses figures in otherwise searchable PDFs. Ask the vision
+    // model to describe visual elements separately and ground them in nearby text.
+    if (hasReadableExtractedText) {
+      try {
+        onMsg(`Analyzing diagrams and figures in ${f.name}…`);
+        const pages = await renderPdfPages(f, 20);
+        const visualNotes: string[] = [];
+        for (const page of pages) {
+          // Keep page-specific extracted text as the grounding context when available.
+          const pageMatch = text.match(new RegExp(`## Page ${page.page}\\s*([\\s\\S]*?)(?=\\n## Page \\d+|$)`, "i"));
+          const pageContext = pageMatch?.[1]?.trim() || text.slice(0, 12000);
+          const visuals = await ocr({ data: {
+            data: page.data,
+            mediaType: "image/jpeg",
+            filename: `${f.name} — page ${page.page}`,
+            task: "describe_visuals",
+            context: pageContext.slice(0, 12000),
+          }});
+          const description = visuals.text.trim();
+          if (description && !/^no meaningful visual content detected\.?$/i.test(description)) {
+            visualNotes.push(`### Page ${page.page}\n${description}`);
+          }
+        }
+        if (visualNotes.length) text = `${text.trim()}\n\n## Visual explanations for figures and diagrams\n${visualNotes.join("\n\n")}`;
+        if (await pdfPageCountHint(f) > pages.length) {
+          text += `\n\n[Visual analysis was limited to the first ${pages.length} pages of this PDF; the remaining pages' figures may not be described.]`;
+        }
+      } catch (err) {
+        // Keep successfully extracted lecture text if visual analysis is unavailable.
+        console.warn(`Visual analysis was unavailable for ${f.name}.`, err);
+      }
+    }
     return text.trim();
   }
   if (kind === "docx") {
@@ -197,14 +335,20 @@ export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void)
     return (await extractDocx(f)).trim();
   }
   if (kind === "pptx") {
-    onMsg(`Reading slides in ${f.name}…`);
-    return (await extractPptx(f)).trim();
+    onMsg(`Reading slides and finding diagrams in ${f.name}…`);
+    return (await extractPptx(f, ocr, onMsg)).trim();
   }
   if (kind === "txt") return (await f.text()).trim();
   if (kind === "image") {
     onMsg(`Running OCR on ${f.name}…`);
     return (
-      await ocr({ data: { data: await shrinkImage(f), mediaType: "image/jpeg", filename: f.name } })
+      await ocr({ data: {
+        data: await shrinkImage(f),
+        mediaType: "image/jpeg",
+        filename: f.name,
+        task: "transcribe",
+        context: lectureContext.slice(0, 12000),
+      } })
     ).text.trim();
   }
   throw new Error(`${f.name} isn't a supported file type.`);

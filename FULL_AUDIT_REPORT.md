@@ -43,3 +43,13 @@ Dependency installation repeatedly timed out in this environment. As a result, I
 ## Remaining risk / honest status
 
 This is a static audit plus targeted fixes, not a production certification. Because dependencies and live credentials were unavailable, the full suite and integration paths remain unverified. In particular, test lecture transcription against the configured NVIDIA ASR endpoint and run the full feature smoke test after deployment. The app should not be described as guaranteed never to fail.
+
+## Lecture-image understanding enhancement (2026-10-20)
+
+- Added a separate `NIM_VISION_MODEL` setting, defaulting to `meta/llama-3.2-90b-vision-instruct`, so image understanding does not replace the existing `NIM_MODEL` used for text generation. NVIDIA documents this model as accepting text and images through the OpenAI-compatible chat-completions endpoint.
+- Corrected image payloads to the NVIDIA-compatible `image_url` content-part format.
+- PDF pages are rendered in the browser and passed as JPEGs to the vision model. Searchable PDFs receive a visual-analysis pass even when text extraction succeeds; scanned PDFs use page-image OCR with visual explanation. Visual/OCR processing is capped at 20 pages per PDF, and the material includes a note if later pages were not image-analyzed.
+- PowerPoint extraction now follows slide image relationships and analyzes up to 12 embedded raster images per file, grounding each description in that slide's text. Unsupported vector image formats are skipped rather than mislabeled.
+- Standalone image uploads receive OCR plus diagram/chart explanation. When multiple files are uploaded together, text/PDF/PowerPoint files are processed before standalone images so image descriptions can use earlier lecture text as context.
+- The note-generation prompt explicitly preserves visual explanations, ties them to the relevant topic when supported, and tells the model not to invent unreadable labels or unsupported relationships.
+- Validation limitation: the dependency install still timed out, so browser PDF rendering and live NVIDIA vision calls have not been integration-tested in this environment. Verify with a searchable PDF, a scanned PDF, a PowerPoint with a labelled diagram, and a standalone image after configuring `NIM_VISION_MODEL` access in NVIDIA NIM.
