@@ -155,6 +155,8 @@ function NewSet() {
               ? files.map((f) => f.name).join(", ").slice(0, 300)
               : null,
           status: "processing",
+          optional_reading_status: material.includes("=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===") ? "pending" : "not_applicable",
+          optional_reading_detail: null,
         })
         .select("id")
         .single();
@@ -187,10 +189,10 @@ function NewSet() {
       if (material.includes("=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===")) {
         void Promise.resolve()
           .then(() => enrichReadings({ data: { setId: targetId } }))
-          .then(async (result) => {
-            if (result.enriched) {
-              await qc.invalidateQueries({ queryKey: ["set", targetId] });
-            }
+          .then(async () => {
+            // Refresh the status even when enrichment was skipped or found no additions.
+            await qc.invalidateQueries({ queryKey: ["set", targetId] });
+            await qc.invalidateQueries({ queryKey: ["sets"] });
           })
           .catch((error) => console.warn("Optional reading enrichment was skipped:", error));
       }

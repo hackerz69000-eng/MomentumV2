@@ -685,6 +685,8 @@ export type Database = {
           minutes_per_day: number | null;
           name: string;
           notes: string | null;
+          optional_reading_status: string | null;
+          optional_reading_detail: string | null;
           plan: Json | null;
           quiz_score: number | null;
           quiz_total: number | null;
@@ -709,6 +711,8 @@ export type Database = {
           minutes_per_day?: number | null;
           name: string;
           notes?: string | null;
+          optional_reading_status?: string | null;
+          optional_reading_detail?: string | null;
           plan?: Json | null;
           quiz_score?: number | null;
           quiz_total?: number | null;
@@ -733,6 +737,8 @@ export type Database = {
           minutes_per_day?: number | null;
           name?: string;
           notes?: string | null;
+          optional_reading_status?: string | null;
+          optional_reading_detail?: string | null;
           plan?: Json | null;
           quiz_score?: number | null;
           quiz_total?: number | null;

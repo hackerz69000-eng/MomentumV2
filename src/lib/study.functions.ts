@@ -268,27 +268,55 @@ export const enrichOptionalReadings = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const supabase = context.supabase;
     const set = await loadSet(supabase, data.setId);
-    if (set.status !== "ready" || !set.notes?.trim()) return { enriched: false };
+    const marker = "=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===";
+    const hasReadings = set.material_text.includes(marker) && Boolean(set.material_text.slice(set.material_text.indexOf(marker) + marker.length).trim());
+    const recordStatus = async (status: string, detail: string | null) => {
+      const { error } = await supabase.from("study_sets").update({
+        optional_reading_status: status,
+        optional_reading_detail: detail,
+      }).eq("id", set.id);
+      if (error) console.warn("Couldn't save optional reading status:", error.message);
+    };
+
+    if (!hasReadings) {
+      await recordStatus("not_applicable", null);
+      return { status: "not_applicable", enriched: false };
+    }
+    if (set.status !== "ready" || !set.notes?.trim()) {
+      await recordStatus("skipped", "Core study notes were not ready when reading enrichment started.");
+      return { status: "skipped", enriched: false };
+    }
     const originalNotes = set.notes;
+    if (originalNotes.length > 20000) {
+      await recordStatus("skipped", "Reading enrichment was skipped because the notes are too long to safely rewrite in one request.");
+      return { status: "skipped", enriched: false };
+    }
     try {
       const enrichedNotes = await createOptionalReadingEnrichment({ ...set, notes: originalNotes });
-      if (!enrichedNotes || enrichedNotes === originalNotes) return { enriched: false };
-      // Compare-and-set prevents a late enrichment response from overwriting notes
-      // the student edited while the optional request was running.
+      if (!enrichedNotes || enrichedNotes === originalNotes) {
+        await recordStatus("processed_no_additions", "The reading was processed, but no safe, relevant additions were identified.");
+        return { status: "processed_no_additions", enriched: false };
+      }
+      // Compare-and-set prevents a late enrichment response from overwriting notes the student edited.
       const { data: updatedRows, error } = await supabase
         .from("study_sets")
-        .update({ notes: enrichedNotes, updated_at: new Date().toISOString() })
+        .update({ notes: enrichedNotes, optional_reading_status: "incorporated", optional_reading_detail: "Relevant reading details were added to existing lecture-note sections.", updated_at: new Date().toISOString() })
         .eq("id", set.id)
         .eq("status", "ready")
         .eq("updated_at", set.updated_at)
         .select("id");
       if (error) throw error;
-      return { enriched: Boolean(updatedRows?.length) };
+      if (!updatedRows?.length) {
+        await recordStatus("skipped", "Notes changed before reading enrichment finished, so the result was not applied to avoid overwriting your edits.");
+        return { status: "skipped", enriched: false };
+      }
+      return { status: "incorporated", enriched: true };
     } catch (error) {
-      // Optional enrichment is non-critical: never mark the set failed or throw to
-      // the creation flow. The lecture notes and flashcards are already usable.
+      const detail = error instanceof Error ? error.message : String(error ?? "Unknown reading enrichment error");
+      await recordStatus("skipped", `Reading enrichment failed: ${detail}`.slice(0, 1000));
+      // Optional enrichment is non-critical: never mark the set failed or throw to the creation flow.
       console.warn("Optional reading enrichment skipped; core study set remains ready:", error);
-      return { enriched: false };
+      return { status: "skipped", enriched: false };
     }
   });
 
