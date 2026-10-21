@@ -2,6 +2,14 @@
 import { supabase } from "@/integrations/supabase/client";
 
 export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
+
+/** A lecture visual saved separately from extracted text so notes can display the actual image. */
+export type ExtractedVisual = {
+  name: string;
+  location: string;
+  dataUrl: string;
+  mediaType: "image/jpeg";
+};
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 export const ACCEPT = [
@@ -115,13 +123,45 @@ async function extractPdf(file: File): Promise<string> {
   return "";
 }
 
-async function extractDocx(file: File) {
+async function extractDocx(file: File, ocr: Ocr, onMsg: (m: string) => void, lectureContext = "", visualsOut: ExtractedVisual[] = []) {
   const mammoth = await import("mammoth");
-  const { value } = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
-  return value;
+  const buffer = await file.arrayBuffer();
+  const { value } = await mammoth.extractRawText({ arrayBuffer: buffer });
+  const text = value.trim();
+  // mammoth's raw-text mode omits embedded pictures. Inspect a small, bounded
+  // number of raster images and retain them separately for the Notes gallery.
+  try {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(buffer);
+    const mediaFiles = Object.keys(zip.files)
+      .filter((path) => /^word\/media\/.+\.(png|jpe?g|webp)$/i.test(path))
+      .slice(0, 8);
+    const descriptions: string[] = [];
+    for (const [index, path] of mediaFiles.entries()) {
+      const ext = path.split(".").pop()?.toLowerCase() ?? "png";
+      const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+      const blob = await zip.file(path)!.async("blob");
+      const fileImage = new File([blob], `${file.name}-image-${index + 1}.${ext}`, { type: mime });
+      const dataUrl = await shrinkImage(fileImage);
+      onMsg(`Analyzing embedded image ${index + 1} of ${file.name}…`);
+      const result = await ocr({ data: {
+        data: dataUrl, mediaType: "image/jpeg", filename: `${file.name} — embedded image ${index + 1}`,
+        task: "describe_visuals", context: `${lectureContext}\n\nDOCUMENT TEXT:\n${text.slice(0, 9000)}`.slice(0, 12000),
+      }});
+      const description = result.text.trim();
+      if (description && !/^no meaningful visual content detected\.?$/i.test(description)) {
+        descriptions.push(`### Document image ${index + 1} — Visual explanation\n${description}`);
+        visualsOut.push({ name: `${file.name} — Image ${index + 1}`, location: `Document image ${index + 1}`, dataUrl, mediaType: "image/jpeg" });
+      }
+    }
+    return [text, ...descriptions].filter(Boolean).join("\n\n").trim();
+  } catch (error) {
+    console.warn(`Embedded image analysis was unavailable for ${file.name}.`, error);
+    return text;
+  }
 }
 
-async function extractPptx(file: File, ocr: Ocr, onMsg: (m: string) => void) {
+async function extractPptx(file: File, ocr: Ocr, onMsg: (m: string) => void, visualsOut: ExtractedVisual[] = []) {
   const JSZip = (await import("jszip")).default;
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const slides = Object.keys(zip.files)
@@ -201,6 +241,8 @@ async function extractPptx(file: File, ocr: Ocr, onMsg: (m: string) => void) {
               const description = result.text.trim();
               if (description && !/^no meaningful visual content detected\.?$/i.test(description)) {
                 out.push(`## Slide ${i + 1} — Visual explanation\n${description}`);
+                // Store the actual image separately; never put its base64 into the AI text context.
+                visualsOut.push({ name: `${file.name} — Slide ${i + 1}`, location: `Slide ${i + 1}`, dataUrl: imageData, mediaType: "image/jpeg" });
               }
             } catch (error) {
               console.warn(`Could not analyze a visual on slide ${i + 1}.`, error);
@@ -256,7 +298,7 @@ async function renderPdfPages(file: File, maxPages = 20): Promise<Array<{ page: 
   return pages;
 }
 
-export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void, lectureContext = ""): Promise<string> {
+export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void, lectureContext = "", visualsOut: ExtractedVisual[] = []): Promise<string> {
   const kind = fileKind(f);
   if (kind === "pdf") {
     onMsg(`Reading ${f.name}…`);
@@ -279,7 +321,12 @@ export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void,
             filename: `${f.name} — page ${page.page}`,
             context: lectureContext.slice(0, 12000),
           }});
-          if (result.text.trim()) recognized.push(`## Page ${page.page}\n${result.text.trim()}`);
+          if (result.text.trim()) {
+            recognized.push(`## Page ${page.page}\n${result.text.trim()}`);
+            if (visualsOut.length < 8 && /visual explanation|diagram|chart|graph|figure|illustration|timeline|labelled image/i.test(result.text)) {
+              visualsOut.push({ name: `${f.name} — Page ${page.page}`, location: `Page ${page.page}`, dataUrl: page.data, mediaType: "image/jpeg" });
+            }
+          }
         }
         const ocrText = recognized.join("\n\n").trim();
         // Keep the better extraction, and preserve the page numbers for source reference.
@@ -317,6 +364,7 @@ export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void,
           const description = visuals.text.trim();
           if (description && !/^no meaningful visual content detected\.?$/i.test(description)) {
             visualNotes.push(`### Page ${page.page}\n${description}`);
+            if (visualsOut.length < 8) visualsOut.push({ name: `${f.name} — Page ${page.page}`, location: `Page ${page.page}`, dataUrl: page.data, mediaType: "image/jpeg" });
           }
         }
         if (visualNotes.length) text = `${text.trim()}\n\n## Visual explanations for figures and diagrams\n${visualNotes.join("\n\n")}`;
@@ -331,25 +379,26 @@ export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void,
     return text.trim();
   }
   if (kind === "docx") {
-    onMsg(`Reading ${f.name}…`);
-    return (await extractDocx(f)).trim();
+    onMsg(`Reading text and embedded images in ${f.name}…`);
+    return (await extractDocx(f, ocr, onMsg, lectureContext, visualsOut)).trim();
   }
   if (kind === "pptx") {
     onMsg(`Reading slides and finding diagrams in ${f.name}…`);
-    return (await extractPptx(f, ocr, onMsg)).trim();
+    return (await extractPptx(f, ocr, onMsg, visualsOut)).trim();
   }
   if (kind === "txt") return (await f.text()).trim();
   if (kind === "image") {
     onMsg(`Running OCR on ${f.name}…`);
-    return (
-      await ocr({ data: {
-        data: await shrinkImage(f),
-        mediaType: "image/jpeg",
-        filename: f.name,
-        task: "transcribe",
-        context: lectureContext.slice(0, 12000),
-      } })
-    ).text.trim();
+    const dataUrl = await shrinkImage(f);
+    const result = await ocr({ data: {
+      data: dataUrl,
+      mediaType: "image/jpeg",
+      filename: f.name,
+      task: "transcribe",
+      context: lectureContext.slice(0, 12000),
+    } });
+    if (result.text.trim()) visualsOut.push({ name: f.name, location: "Uploaded lecture image", dataUrl, mediaType: "image/jpeg" });
+    return result.text.trim();
   }
   throw new Error(`${f.name} isn't a supported file type.`);
 }
@@ -378,4 +427,36 @@ export async function storeOriginal(userId: string, setId: string, f: File, char
     return false;
   }
   return true;
+}
+
+
+/** Upload extracted lecture visuals as private image files associated with a study set. */
+export async function storeVisuals(userId: string, setId: string, visuals: ExtractedVisual[]): Promise<{ stored: number; failed: number }> {
+  let stored = 0;
+  let failed = 0;
+  for (const [index, visual] of visuals.slice(0, 12).entries()) {
+    try {
+      const response = await fetch(visual.dataUrl);
+      if (!response.ok) throw new Error("Could not decode extracted visual");
+      const blob = await response.blob();
+      const safe = visual.location.replace(/[^a-z0-9-]+/gi, "-").slice(0, 50) || `visual-${index + 1}`;
+      const path = `${userId}/${setId}/visual-${Date.now()}-${index}-${safe}.jpg`;
+      const { error: uploadError } = await supabase.storage.from("study-files").upload(path, blob, { contentType: "image/jpeg", upsert: false });
+      if (uploadError) throw uploadError;
+      const { error: metadataError } = await supabase.from("study_files").insert({
+        user_id: userId, set_id: setId, path,
+        name: `Lecture visual — ${visual.location} · ${visual.name}`.slice(0, 300),
+        mime: "image/jpeg", size: blob.size, chars: 0,
+      });
+      if (metadataError) {
+        await supabase.storage.from("study-files").remove([path]);
+        throw metadataError;
+      }
+      stored += 1;
+    } catch (error) {
+      failed += 1;
+      console.warn(`Could not store lecture visual (${visual.location}).`, error);
+    }
+  }
+  return { stored, failed };
 }

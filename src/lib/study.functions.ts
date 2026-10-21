@@ -6,6 +6,7 @@ import { setStats, type Attempt, type AttemptResult, type Flashcard } from "./st
 import { activityStats } from "./activity";
 import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server";
 import { generateNotesFromMaterial } from "./study-generator";
+import { isNearDuplicateQuestion } from "./question-quality";
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -16,9 +17,11 @@ const mistakeLines = (ms: MistakeRow[]) =>
 
 const NOTES_SYSTEM = `You are an expert academic note-taking editor. Convert the student's source material into polished, genuinely useful study notes in Markdown.
 
-ORGANIZATION:
+COURSE CONTEXT AND ORGANIZATION:
+- Treat the student's course/subject metadata as context for terminology, expected depth, and what concepts belong together. The uploaded lecture material remains the authority; course context must never be used to invent lecture facts.
 - Start with exactly one "# " title that accurately describes the material.
 - Preserve the source's order and major topics/chapters/sections. Create a clear "## " heading for each meaningful topic and "### " headings for important subtopics.
+- When visual explanations refer to a page or slide, retain that source marker in the matching note section so students can locate the original lecture visual.
 - Use short paragraphs for explanations and bullets for lists, facts, properties, steps, causes/effects, comparisons, and examples.
 - Put important terminology in the form "**Term** — definition".
 - For processes, use numbered steps when the source describes a sequence.
@@ -42,7 +45,7 @@ QUALITY:
 const CARDS_SYSTEM = `You create high-value review flashcards from the GENERATED STUDY NOTES below. Return ONLY JSON:
 {"cards":[{"q":"question or prompt","a":"concise answer","t":"short topic name (2-4 words)"}]}
 
-Create up to 20 cards, but never pad the deck with weak or generic cards. Every card must test something explicitly stated in the notes.
+Create up to 20 cards, but never pad the deck with weak or generic cards. Every card must test something explicitly stated in the notes AND verifiable in the source material. Use the course name/subject to choose the appropriate academic level and terminology, not to add outside facts.
 Prioritize:
 1. core definitions and terminology
 2. important mechanisms, processes, steps, formulas, and cause/effect relationships
@@ -50,7 +53,7 @@ Prioritize:
 4. high-yield facts, exceptions, and relationships
 5. concepts that require actual recall rather than recognition
 
-Avoid trivial wording, vague prompts, duplicate questions, questions whose answer is obvious from the question, and generic study advice. Answers should be concise but complete (normally under 60 words). Each card's topic must match the section/topic it came from.`;
+Avoid trivial wording, vague prompts, duplicate or near-duplicate questions, questions whose answer is obvious from the question, generic study advice, and facts that are merely mentioned in passing. Do not ask the same concept twice with superficial rewording. Prefer distinct concepts across the whole lecture, with balanced coverage of its major topics. Answers should be concise but complete (normally under 60 words). Each card's topic must match the section/topic it came from. Include source page/slide in the topic when a marker is available.`;
 
 async function recentQuestions(supabase: any, setId: string): Promise<string[]> {
   const { data } = await supabase
@@ -71,6 +74,7 @@ const norm = (t: string) =>
     .replace(/[^a-z0-9 ]+/g, "")
     .replace(/\s+/g, " ")
     .trim();
+
 
 async function makeNotes(set: {
   name: string;
@@ -126,6 +130,7 @@ ${clip(set.material_text, 50000)}`,
       !!c && typeof c === "object" && typeof (c as any).q === "string" &&
       typeof (c as any).a === "string" && (c as any).q.trim().length > 0 && (c as any).a.trim().length > 0)
     .map((c) => ({ q: c.q.trim(), a: c.a.trim(), t: typeof c.t === "string" ? c.t.trim() : "" }))
+    .filter((card, index, all) => !all.slice(0, index).some((prior) => isNearDuplicateQuestion(card.q, prior.q)))
     .slice(0, 20);
 
   if (!cards.length) {
@@ -392,7 +397,7 @@ IMPORTANT RETRY: Your previous response could not be parsed as complete JSON. Re
 }
 
 async function makeQuestionsSingle(
-  set: { material_text: string; custom_instructions?: string },
+  set: { material_text: string; custom_instructions?: string; name?: string; subject?: string },
   data: QOpts,
   maxChars = 60000,
 ): Promise<QuizQuestion[]> {
@@ -418,21 +423,30 @@ Rules: exactly ${data.count} questions. Allowed types: ${typeDesc}; mix them rou
 For "mc"/"tf", "answer" is the 0-based index of the correct option. For "short", use "options": [] and "answer": -1, and put the model answer in "answerText".
 Reuse consistent topic names across questions. Test understanding, not trivia. Only use the material. ${conciseExplanation}
 ${data.questionGuidance?.trim() ? `\nTEST EXPECTATIONS FROM THE STUDENT — use these preferences to shape the questions. Treat them as strong preferences, but never violate the material-grounding or quality rules. Do not invent facts just to satisfy the request. If the requested style cannot be supported by the material, use the closest supported version.\n${data.questionGuidance.trim().slice(0, 2000)}` : ""}
-${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat these recently asked questions (ask about different facts or angles):\n- ${data.avoid.slice(0, 40).join("\n- ")}` : ""}${planText}${data.retest?.length ? `\nMISTAKE BANK — the student got these concepts wrong before. Include about ${Math.min(data.retest.length, Math.ceil(data.count / 3))} questions that re-test the same concepts with NEW wording or a new angle (don't copy the question):\n- ${data.retest.join("\n- ")}` : ""}${ci(set)}`,
-    [{ role: "user", content: `MATERIAL:\n${clip(set.material_text, maxChars)}` }],
+COURSE CONTEXT: ${set.subject || "Not specified"}. STUDY SET / LECTURE: ${set.name || "Study material"}. Use this to set academic depth and terminology, but use only facts supported by the supplied material.
+${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat or closely paraphrase these recently asked questions; each new question must test a different concept or a genuinely different application: \n- ${data.avoid.slice(0, 40).join("\n- ")}` : ""}${planText}${data.retest?.length ? `\nMISTAKE BANK — the student got these concepts wrong before. Include about ${Math.min(data.retest.length, Math.ceil(data.count / 3))} questions that re-test the same concepts with NEW wording or a new angle (don't copy the question):\n- ${data.retest.join("\n- ")}` : ""}${ci(set)}`,
+    [{ role: "user", content: `COURSE: ${set.subject || "Not specified"}\nSTUDY SET / LECTURE: ${set.name || "Study material"}\n\nMATERIAL:\n${clip(set.material_text, maxChars)}` }],
   );
   const avoidSet = new Set((data.avoid ?? []).map(norm));
-  const draft = draftResponse
-    .filter((q) => !avoidSet.has(norm(q.question)))
-    .slice(0, data.count);
+  const draft: QuizQuestion[] = [];
+  for (const candidate of draftResponse) {
+    if (avoidSet.has(norm(candidate.question))) continue;
+    if (draft.some((prior) => isNearDuplicateQuestion(prior.question, candidate.question))) continue;
+    draft.push(candidate);
+    if (draft.length >= data.count) break;
+  }
   if (!draft.length) throw new Error("I couldn't find enough information in your study materials to create this question set.");
   const guidanceForReview = data.questionGuidance?.trim()
     ? `\nTEST EXPECTATIONS FROM THE STUDENT — preserve these requested question-style preferences when reviewing/fixing questions, as long as they remain supported by the material:\n${data.questionGuidance.trim().slice(0, 2000)}`
     : "";
-  let questions = (data.exam
-    ? draft
-    : await validateQuestions(set.material_text, draft, `${guidanceForReview}${ci(set)}`)
-  ).slice(0, data.count);
+  const reviewedDraft = data.exam
+    ? draft // Exam batches use strict prompt/schema checks plus local de-duplication to keep large exams within serverless time limits.
+    : await validateQuestions(set.material_text, draft, `${guidanceForReview}${ci(set)}`);
+  let questions: QuizQuestion[] = [];
+  for (const candidate of reviewedDraft) {
+    if (!questions.some((prior) => isNearDuplicateQuestion(prior.question, candidate.question))) questions.push(candidate);
+    if (questions.length >= data.count) break;
+  }
   // Validation can discard weak/unsupported drafts. Top up instead of silently
   // returning fewer questions than the count the student explicitly selected.
   for (let attempt = 0; questions.length < data.count && attempt < 2; attempt++) {
@@ -441,13 +455,13 @@ ${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat these recently asked que
       `Generate exactly ${missing} additional quiz questions from the material. Return ONLY the same JSON schema: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"...","explanation":"...","topic":"..."}]}. Allowed types: ${typeDesc}. Difficulty: ${data.difficulty}. Do not repeat or paraphrase any existing question listed below. Only use the source material. ${QUALITY_RULES}${ci(set)}`,
       [{ role: "user", content: `MATERIAL:\n${clip(set.material_text, maxChars)}\n\nALREADY GENERATED — DO NOT REPEAT:\n${questions.map((q) => q.question).join("\n")}` }],
     );
-    const extraDraft = extraDraftRaw.filter((q) => !avoidSet.has(norm(q.question)) && !questions.some((old) => norm(old.question) === norm(q.question)));
+    const extraDraft = extraDraftRaw.filter((q) => !avoidSet.has(norm(q.question)) && !questions.some((old) => isNearDuplicateQuestion(old.question, q.question)));
     if (!extraDraft.length) break;
     const extraValid = data.exam
       ? extraDraft
       : await validateQuestions(set.material_text, extraDraft, `${guidanceForReview}${ci(set)}`);
     const seenQuestions = new Set(questions.map((q) => norm(q.question)));
-    questions = [...questions, ...extraValid.filter((q) => !seenQuestions.has(norm(q.question)))].slice(0, data.count);
+    questions = [...questions, ...extraValid.filter((q) => !seenQuestions.has(norm(q.question)) && !questions.some((old) => isNearDuplicateQuestion(old.question, q.question)))].slice(0, data.count);
   }
   if (questions.length !== data.count) {
     throw new Error(`I could verify only ${questions.length} of the ${data.count} requested questions from these materials. Add more course content or try again; Momentum won't silently shorten your quiz.`);
@@ -458,7 +472,7 @@ ${QUALITY_RULES}${data.avoid?.length ? `\nDo NOT repeat these recently asked que
 
 /** Large quizzes are generated and validated in small batches to keep provider latency/output bounded. */
 async function makeQuestions(
-  set: { material_text: string; custom_instructions?: string },
+  set: { material_text: string; custom_instructions?: string; name?: string; subject?: string },
   data: QOpts,
   maxChars = 60000,
 ): Promise<QuizQuestion[]> {
@@ -491,7 +505,7 @@ async function makeQuestions(
     );
     for (const question of batch) {
       const key = norm(question.question);
-      if (!globallySeen.has(key)) {
+      if (!globallySeen.has(key) && !all.some((old) => isNearDuplicateQuestion(old.question, question.question))) {
         globallySeen.add(key);
         all.push(question);
       }
@@ -503,7 +517,7 @@ async function makeQuestions(
     const batch = await makeQuestionsSingle(set, { ...data, count, avoid: [...globallySeen, ...all.map((q) => q.question)].slice(0, 100) }, Math.min(maxChars, 22000));
     for (const question of batch) {
       const key = norm(question.question);
-      if (!globallySeen.has(key)) { globallySeen.add(key); all.push(question); }
+      if (!globallySeen.has(key) && !all.some((old) => isNearDuplicateQuestion(old.question, question.question))) { globallySeen.add(key); all.push(question); }
     }
   }
   if (all.length !== data.count) {
@@ -561,43 +575,43 @@ export const generateComprehensive = createServerFn({ method: "POST" })
     const base = Math.floor(data.count / sets.length);
     let extra = data.count - base * sets.length;
     const perChars = Math.max(12000, Math.floor(60000 / sets.length));
-    // Limit simultaneous set jobs. Firing all selected sets at once can trigger
-    // provider rate limits, especially for 40- and 60-question comprehensive exams.
+    // Generate source sets in order rather than concurrently so each lecture can
+    // avoid questions already generated from earlier selected lectures.
     const allocations = sets.map((set) => {
       const count = base + (extra-- > 0 ? 1 : 0);
       return { set, count };
     });
     const results: { setName: string; questions: QuizQuestion[]; error?: string }[] = [];
-    const concurrency = 2;
-    for (let offset = 0; offset < allocations.length; offset += concurrency) {
-      const group = allocations.slice(offset, offset + concurrency);
-      const groupResults = await Promise.all(group.map(async ({ set, count }) => {
-        if (count < 1) return { setName: set.name, questions: [] as QuizQuestion[] };
-        const startedAt = Date.now();
-        try {
-          const avoid = await recentQuestions(context.supabase, set.id);
-          console.info(`[comprehensive-exam] Starting source set "${set.name}" (${count} questions; material=${set.material_text.length} chars; promptBudget=${perChars}).`);
-          const qs = await makeQuestions(set, {
-            count,
-            difficulty: data.difficulty,
-            types: data.types,
-            exam: true,
-            avoid,
-            questionGuidance: data.questionGuidance,
-          }, perChars);
-          console.info(`[comprehensive-exam] Completed source set "${set.name}" (${qs.length}/${count} questions; ${Date.now() - startedAt}ms).`);
-          return { setName: set.name, questions: qs.map((q) => ({ ...q, setId: set.id })) };
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error ?? "Unknown generation error");
-          // Preserve actionable context in server logs; include elapsed time to distinguish
-          // provider/validation failures from serverless execution timeouts.
-          console.error(`[comprehensive-exam] Failed source set "${set.name}" (${count} questions; ${Date.now() - startedAt}ms): ${reason}`, error);
-          return { setName: set.name, questions: [] as QuizQuestion[], error: reason };
-        }
-      }));
-      results.push(...groupResults);
+    for (const { set, count } of allocations) {
+      if (count < 1) { results.push({ setName: set.name, questions: [] }); continue; }
+      const startedAt = Date.now();
+      try {
+        const priorQuestions = results.flatMap((result) => result.questions.map((q) => q.question));
+        const recent = await recentQuestions(context.supabase, set.id);
+        const avoid = [...new Set([...recent, ...priorQuestions])].slice(-100);
+        console.info(`[comprehensive-exam] Starting source set "${set.name}" (${count} questions; material=${set.material_text.length} chars; promptBudget=${perChars}).`);
+        const qs = await makeQuestions(set, {
+          count,
+          difficulty: data.difficulty,
+          types: data.types,
+          exam: true,
+          avoid,
+          questionGuidance: data.questionGuidance,
+        }, perChars);
+        console.info(`[comprehensive-exam] Completed source set "${set.name}" (${qs.length}/${count} questions; ${Date.now() - startedAt}ms).`);
+        results.push({ setName: set.name, questions: qs.map((q) => ({ ...q, setId: set.id })) });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error ?? "Unknown generation error");
+        console.error(`[comprehensive-exam] Failed source set "${set.name}" (${count} questions; ${Date.now() - startedAt}ms): ${reason}`, error);
+        results.push({ setName: set.name, questions: [], error: reason });
+      }
     }
-    const questions = results.flatMap((result) => result.questions);
+    const questions: QuizQuestion[] = [];
+    for (const result of results) {
+      for (const question of result.questions) {
+        if (!questions.some((prior) => isNearDuplicateQuestion(prior.question, question.question))) questions.push(question);
+      }
+    }
     if (questions.length !== data.count) {
       const failed = results.filter((result) => result.error);
       const detail = failed.length
@@ -770,8 +784,14 @@ export const generateGuide = createServerFn({ method: "POST" })
       ? `The student's test date is ${data.testDate}. Include a realistic study timeline counting back from that date: split work into manageable sessions, prioritize harder/high-yield topics first, schedule practice and active recall, and reserve the day before for mixed review. Do not claim there is time for more sessions than the date reasonably allows.`
       : "No test date was provided. Include a flexible study sequence rather than dated schedule.";
     const guide = await aiText(
-      `You are an expert teacher and learning designer creating a polished, easy-to-follow study guide for a student preparing for a test. The student selected ${sourceSets.length} study set(s), which may cover multiple topics. Synthesize all selected sources into ONE coherent guide, keeping clear topic boundaries and explaining how related ideas connect.\n\nFORMAT AND READABILITY RULES:
-- Output clean Markdown only, with a useful title and a short overview that tells the student what they will learn. No AI preamble.\n- Make the guide scannable, not a wall of text: one # title, ## section headings, ### topic headings, short paragraphs (2-4 sentences), descriptive bullets, and numbered procedures. Use blank lines between every heading, paragraph, list, and blockquote.\n- Avoid Markdown tables. Present comparisons and topic maps as short labeled bullet lists so the guide stays readable on phones and narrow screens. Never output multiple table rows on one line, raw pipe characters, or escaped table syntax.\n- For each major topic, explain it in plain language, why it matters, the key details, and a concrete example when supported by the material. Define technical vocabulary before using it heavily.\n- **Teach the student how to study, not just what to memorize.** At the end of EACH major topic or content section (Core Concepts, Key Terms, Processes, Comparisons, Examples, Common Confusions, and Practice Questions), add a clearly labeled blockquote heading such as “Study this section (about 15 minutes)” followed by 2-4 numbered actions in the exact order the student should do them. Every action must name an actual Momentum tool and give a specific time estimate in minutes, plus what to do with that tool. Example sequence: Notes (4 min) → Flashcards (5 min) → Active Recall (4 min) → Adaptive Quiz (5 min). Adjust the sequence and time to the content; do not copy the same generic sequence blindly for every section. For difficult or repeatedly missed topics, add a short Mistake Bank or AI Tutor step. Do not suggest a tool that does not fit the section.\n- Include a clearly titled “How to Use This Guide” workflow near the beginning that explains what to do first, second, third, and fourth, including realistic minutes for Notes, Flashcards, Active Recall, Adaptive Quiz, Mistake Bank when there are recorded mistakes, and a Practice Exam. Explain when to move on: if the student misses a concept, revisit its explanation and retry recall before progressing. Avoid telling the student to use every tool on every topic.\n- Clearly distinguish source facts from additional explanation. If clarifying beyond the sources, label it “Additional explanation” and do not invent facts. If sources conflict, point out the difference instead of silently choosing one.\n- Include these main sections in this order after the overview and the initial “How to use this guide” workflow: ## Topic Map, ## Core Concepts Explained, ## Key Terms and Definitions, ## Processes, Formulas, and Important Details, ## Compare and Connect the Topics, ## Worked or Concrete Examples, ## Common Confusions and Mistakes, ## Practice Questions, ## Answer Key, ## Final Quick Review${data.testDate ? ", ## Study Plan Before the Test" : ", ## Flexible Study Plan"}.\n- Topic Map should use compact bullets and identify which study set/source each topic came from.\n- Practice Questions should contain 8-12 varied questions spanning ALL selected sets (mix recall, explain, apply, and compare); do not put answers beside the questions. Answer Key must answer them clearly and number-match.\n- Common Confusions should include actual misconceptions supported by source/performance data. Personalize it with the current set's performance data when available, but do not pretend to have quiz data for other sets.\n- Final Quick Review should be a compact high-yield checklist, not another long summary.\n- The study plan must include a total time budget and a day-by-day schedule when a test date is provided. For each session, state the topic, tool, exact minutes, and intended result. When there is no test date, provide a flexible 3-session plan with minutes. Keep each day's workload realistic and reserve the day before the test for mixed practice and light review.\n- ${testDateContext}\n- Use only material supported by the provided sources, apart from clearly labeled additional explanation. Do not omit important source topics just to make the guide shorter. Keep it readable and genuinely useful rather than dumping raw notes.\n\nCURRENT STUDY SET PERFORMANCE DATA:\n${perf}${ci(set)}`,
+      `You are an expert teacher and learning designer creating a polished, easy-to-follow study guide for a student preparing for a test. The student selected ${sourceSets.length} study set(s), which may cover multiple topics. Synthesize all selected sources into ONE coherent guide, keeping clear topic boundaries and explaining how related ideas connect. COURSE CONTEXT: ${[...new Set(sourceSets.map((s) => s.subject).filter(Boolean))].join(", ") || set.subject || "Not specified"}. Use course context to calibrate terminology and depth; the lecture sources remain the factual authority.
+
+MULTI-LECTURE ORDERING (important): Do not write one giant block for Lecture 1, then Lecture 2, then Lecture 3. First identify the major concepts and their dependencies across all selected sources. Order the guide from foundations/prerequisites to more advanced applications. Within each major topic, deliberately interleave relevant material from different lectures (for example, Lecture A concept → Lecture B connection → Lecture C example → return to Lecture A only if it adds a distinct point), so students see how the course fits together. Keep genuinely unrelated topics in separate sections rather than mixing them randomly. Every topic-map bullet and important claim must name its source study set; preserve explicit page/slide markers when available. If two sources conflict, identify the conflict and attribute each claim instead of blending them.
+
+FORMAT AND READABILITY RULES:
+- Output clean Markdown only, with a useful title and a short overview that tells the student what they will learn. No AI preamble.\n- Make the guide scannable, not a wall of text: one # title, ## section headings, ### topic headings, short paragraphs (2-4 sentences), descriptive bullets, and numbered procedures. Use blank lines between every heading, paragraph, list, and blockquote.\n- Avoid Markdown tables. Present comparisons and topic maps as short labeled bullet lists so the guide stays readable on phones and narrow screens. Never output multiple table rows on one line, raw pipe characters, or escaped table syntax.\n- For each major topic, explain it in plain language, why it matters, the key details, and a concrete example when supported by the material. Define technical vocabulary before using it heavily.\n- **Teach the student how to study, not just what to memorize.** At the end of EACH major topic or content section (Core Concepts, Key Terms, Processes, Comparisons, Examples, Common Confusions, and Practice Questions), add a clearly labeled blockquote heading such as “Study this section (about 15 minutes)” followed by 2-4 numbered actions in the exact order the student should do them. Every action must name an actual Momentum tool and give a specific time estimate in minutes, plus what to do with that tool. Example sequence: Notes (4 min) → Flashcards (5 min) → Active Recall (4 min) → Adaptive Quiz (5 min). Adjust the sequence and time to the content; do not copy the same generic sequence blindly for every section. For difficult or repeatedly missed topics, add a short Mistake Bank or AI Tutor step. Do not suggest a tool that does not fit the section.\n- Include a clearly titled “How to Use This Guide” workflow near the beginning that explains what to do first, second, third, and fourth, including realistic minutes for Notes, Flashcards, Active Recall, Adaptive Quiz, Mistake Bank when there are recorded mistakes, and a Practice Exam. Explain when to move on: if the student misses a concept, revisit its explanation and retry recall before progressing. Avoid telling the student to use every tool on every topic.\n- Clearly distinguish source facts from additional explanation. If clarifying beyond the sources, label it “Additional explanation” and do not invent facts. If sources conflict, point out the difference instead of silently choosing one.\n- Include these main sections in this order after the overview and the initial “How to use this guide” workflow: ## Topic Map, ## Core Concepts Explained, ## Key Terms and Definitions, ## Processes, Formulas, and Important Details, ## Compare and Connect the Topics, ## Worked or Concrete Examples, ## Common Confusions and Mistakes, ## Practice Questions, ## Answer Key, ## Final Quick Review${data.testDate ? ", ## Study Plan Before the Test" : ", ## Flexible Study Plan"}.\n- Topic Map should use compact bullets and identify which study set/source each topic came from.
+- In Core Concepts Explained and Compare and Connect the Topics, interleave related concepts from different selected lectures rather than summarizing each lecture in isolation. Use inline source labels such as **Source: Lecture 2, slide 5** where the source marker exists; never invent page/slide numbers.
+- For each selected set, cover its distinct high-value concepts, but spend more space on foundational, repeated, connected, or assessment-relevant material than on incidental examples. Explicitly say when a selected source adds no new information rather than padding the guide with repetition.\n- Practice Questions should contain 8-12 varied questions spanning ALL selected sets (mix recall, explain, apply, and compare); do not put answers beside the questions. Answer Key must answer them clearly and number-match.\n- Common Confusions should include actual misconceptions supported by source/performance data. Personalize it with the current set's performance data when available, but do not pretend to have quiz data for other sets.\n- Final Quick Review should be a compact high-yield checklist, not another long summary.\n- The study plan must include a total time budget and a day-by-day schedule when a test date is provided. For each session, state the topic, tool, exact minutes, and intended result. When there is no test date, provide a flexible 3-session plan with minutes. Keep each day's workload realistic and reserve the day before the test for mixed practice and light review.\n- ${testDateContext}\n- Use only material supported by the provided sources, apart from clearly labeled additional explanation. Do not omit important source topics just to make the guide shorter. Keep it readable and genuinely useful rather than dumping raw notes.\n\nCURRENT STUDY SET PERFORMANCE DATA:\n${perf}${ci(set)}`,
       [{ role: "user", content: `STUDY GUIDE TITLE SET: ${set.name}\nTEST DATE: ${data.testDate ?? "Not provided"}\nSELECTED STUDY SETS: ${sourceSets.map((s) => `${s.name} (${s.subject || "General subject"})`).join("; ")}\n\n${sourceContext}` }],
     );
     const at = new Date().toISOString();

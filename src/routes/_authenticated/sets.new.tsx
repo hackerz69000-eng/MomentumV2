@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { processSet, ocrFile } from "@/lib/study.functions";
-import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
+import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal, storeVisuals, type ExtractedVisual } from "@/lib/extract";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/sets/new")({
@@ -56,20 +56,22 @@ function NewSet() {
     }
     setStage("reading");
     const parts: string[] = [];
-    const meta: { file: File; chars: number }[] = [];
+    const meta: { file: File; chars: number; visuals: ExtractedVisual[] }[] = [];
     // Extract lecture documents first so later standalone images can be interpreted
     // against the lecture text already collected from the same upload batch.
     const filesToExtract = [...files].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
     for (const [idx, f] of filesToExtract.entries()) {
       try {
+        const visuals: ExtractedVisual[] = [];
         const t = await extractFile(
           f,
           ocr,
           (m) => setProgressMsg(filesToExtract.length > 1 ? `${m} (${idx + 1}/${filesToExtract.length})` : m),
           parts.join("\n\n").slice(0, 12000),
+          visuals,
         );
         if (t) parts.push(files.length > 1 ? `=== ${f.name} ===\n${t}` : t);
-        meta.push({ file: f, chars: t.length });
+        meta.push({ file: f, chars: t.length, visuals });
       } catch (e) {
         toast.error(e instanceof Error ? e.message : `Couldn't read ${f.name}`);
       }
@@ -136,8 +138,14 @@ function NewSet() {
           extracted.map((m) => storeOriginal(user.id, targetId, m.file, m.chars)),
         );
         const failed = stored.filter((r) => r.status === "rejected").length;
-        if (failed) {
-          console.warn(`${failed} original file(s) could not be stored.`);
+        if (failed) console.warn(`${failed} original file(s) could not be stored.`);
+        const visuals = extracted.flatMap((m) => m.visuals);
+        if (visuals.length) {
+          const visualResult = await storeVisuals(user.id, targetId, visuals);
+          if (visualResult.failed) {
+            console.warn(`${visualResult.failed} lecture visual(s) could not be stored.`);
+            toast.error(`${visualResult.failed} lecture visual(s) could not be saved to Notes. Their text explanations remain available.`);
+          }
         }
       }
 
@@ -199,10 +207,10 @@ function NewSet() {
               />
             </label>
             <label className="space-y-1.5 block">
-              <span className="text-sm">Subject</span>
+              <span className="text-sm">Course / subject</span>
               <input
                 className={inputCls}
-                placeholder="Biology"
+                placeholder="e.g. POLS 101 — Political Science"
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
               />
