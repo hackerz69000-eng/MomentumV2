@@ -109,25 +109,39 @@ async function makeNotes(set: {
         lectureParts.push(part.trim());
       }
       let lectureNotes = `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${lectureParts.join("\n\n---\n\n")}`;
-      const readingChunks = splitTextIntoChunks(separated.readings, 12000);
-      const enrichmentParts: string[] = [];
-      for (let i = 0; i < readingChunks.length; i++) {
-        const additions = await aiText(
-          `You are a careful academic cross-reference editor. Return only concise Markdown enrichment candidates grouped by the EXACT existing lecture topic they belong to. Compare the optional reading with the lecture notes. Include only material that is relevant, useful, supported by this reading, and not already present in the lecture notes. Do not create a separate readings section, rewrite the lecture notes, repeat facts, or add unrelated background. Preserve reading filename and printed page numbers when present; never invent page numbers. If this chunk contains no useful new information matching an existing lecture topic, return exactly: NO RELEVANT NEW ADDITIONS.\n\nEXISTING LECTURE NOTES (structure and order are authoritative):\n${clip(lectureNotes, 18000)}${ci(set)}`,
-          [{ role: "user", content: `OPTIONAL READING PART ${i + 1}/${readingChunks.length}:\n${readingChunks[i]}` }],
-        );
-        if (additions.trim() && !/^NO RELEVANT NEW ADDITIONS\.?$/i.test(additions.trim())) enrichmentParts.push(additions.trim());
-      }
-      {
+      // Reading enrichment is best-effort: once lecture notes exist, a failure in a
+      // reading-specific NIM call must not fail the entire study set. This is especially
+      // important for short PDFs, which should never block lecture-based notes/cards.
+      try {
+        const readingChunks = splitTextIntoChunks(separated.readings, 12000);
+        const enrichmentParts: string[] = [];
+        for (let i = 0; i < readingChunks.length; i++) {
+          const additions = await aiText(
+            `You are a careful academic cross-reference editor. Return only concise Markdown enrichment candidates grouped by the EXACT existing lecture topic they belong to. Compare the optional reading with the lecture notes. Include only material that is relevant, useful, supported by this reading, and not already present in the lecture notes. Do not create a separate readings section, rewrite the lecture notes, repeat facts, or add unrelated background. Preserve reading filename and printed page numbers when present; never invent page numbers. If this chunk contains no useful new information matching an existing lecture topic, return exactly: NO RELEVANT NEW ADDITIONS.\n\nEXISTING LECTURE NOTES (structure and order are authoritative):\n${clip(lectureNotes, 18000)}${ci(set)}`,
+            [{ role: "user", content: `OPTIONAL READING PART ${i + 1}/${readingChunks.length}:\n${readingChunks[i]}` }],
+          );
+          if (additions.trim() && !/^NO RELEVANT NEW ADDITIONS\.?$/i.test(additions.trim())) enrichmentParts.push(additions.trim());
+        }
         lectureNotes = await aiText(
           `${NOTES_SYSTEM}${ci(set)}\n\nFINAL INTEGRATION MODE: Edit the supplied lecture notes. Preserve their exact major topic order and headings. Integrate only new, relevant reading details into the matching existing sections; do not add a standalone readings section, do not duplicate lecture content, and do not create a detached visual gallery. Preserve source filenames and page references supplied in the candidate additions. Keep all important lecture content. Finish with one Key Takeaways section. Return the complete revised notes only.`,
           [{ role: "user", content: `EXISTING LECTURE NOTES:\n${clip(lectureNotes, 36000)}\n\nREADING ENRICHMENT CANDIDATES (some may overlap; deduplicate carefully):\n${enrichmentParts.length ? clip(enrichmentParts.join("\n\n"), 20000) : "No useful new reading additions were identified. Preserve the lecture notes, clean up any repeated chunk headings if possible, and add one concise Key Takeaways section."}` }],
         );
+      } catch (readingErr) {
+        console.warn("Optional reading enrichment failed; continuing with lecture-based notes:", readingErr);
       }
       return lectureNotes;
     }
     if (sourceChunks.length <= 1) {
-      return await aiText(NOTES_SYSTEM + ci(set), [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\n\nMATERIAL (complete source):\n${sourceChunks[0] ?? ""}` }]);
+      const content = `Study set: ${set.name} (${set.subject || "general"})\n\nMATERIAL (complete source):\n${sourceChunks[0] ?? ""}`;
+      try {
+        return await aiText(NOTES_SYSTEM + ci(set), [{ role: "user", content }]);
+      } catch (combinedErr) {
+        if (!separated.readings) throw combinedErr;
+        // Retry only the primary lecture material if the combined lecture+reading prompt
+        // fails. The optional reading is never allowed to prevent a usable core set.
+        console.warn("Combined lecture/reading note generation failed; retrying lecture-only notes:", combinedErr);
+        return await aiText(NOTES_SYSTEM + ci(set), [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\n\nPRIMARY LECTURE MATERIAL (optional readings intentionally skipped after a reading-related generation failure):\n${separated.lecture}` }]);
+      }
     }
     // Process every source chunk independently so a large reading never has its tail silently clipped.
     const noteParts: string[] = [];
@@ -163,8 +177,8 @@ async function makeCards(set: {
 GENERATED STUDY NOTES:
 ${clip(set.notes, 50000)}
 
-SOURCE MATERIAL FOR VERIFICATION:
-${clip(set.material_text, 50000)}`,
+PRIMARY LECTURE MATERIAL FOR VERIFICATION (optional-reading details, when useful, are already incorporated into the notes above):
+${clip(splitPrimaryAndOptionalReadings(set.material_text).lecture, 30000)}`,
     },
   ]);
   const parsed = parseJson<{ cards?: unknown }>(text);

@@ -343,7 +343,19 @@ function Processing({ set }: { set: StudySet }) {
       await process({ data: { setId: set.id } });
       toast.success("Study set ready");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed");
+      const message = e instanceof Error ? e.message : "Study set generation failed. Please try again.";
+      toast.error(message, { duration: 9000 });
+      // A platform timeout can end the request before the server-side handler
+      // gets a chance to save status=error. Recover from the client as well so
+      // this page never stays on the processing spinner after a failed retry.
+      const { error: statusError } = await supabase
+        .from("study_sets")
+        .update({ status: "error", error: message.slice(0, 2000) })
+        .eq("id", set.id)
+        .eq("status", "processing");
+      if (statusError) {
+        console.error("Couldn't update the failed study set status:", statusError.message);
+      }
     }
     setBusy(false);
     qc.invalidateQueries({ queryKey: ["set", set.id] });

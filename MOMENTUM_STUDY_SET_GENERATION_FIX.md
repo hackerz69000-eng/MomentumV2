@@ -11,11 +11,12 @@ This update is based on `momentum-study-engine-update.zip` and preserves the exi
 - Study-set creation now stops if any required lecture file fails extraction; it no longer continues with a partial lecture set. Optional reading failures remain non-fatal and are reported.
 - Removed the silent heuristic-notes fallback when NVIDIA NIM note generation fails. The actual error is now saved to the set so the student can retry, instead of potentially receiving incomplete notes as if generation succeeded.
 - If generation fails after the set record is created, the app opens that set's error/retry screen rather than leaving the student on the creation page with no obvious way to recover.
+- Optional reading enrichment is now best-effort: if a reading-specific NVIDIA NIM call or final reading integration fails, Momentum keeps the lecture-based notes and continues generating flashcards. For short combined inputs, if the combined lecture-plus-reading note call fails, it retries note generation using lecture material only. The reading never becomes a requirement for completing the core set.
 
 ## Validation
 
-- TypeScript syntax transpilation passed for the three modified TypeScript/TSX files.
-- Full typecheck, tests, and production build were not run because dependencies are not installed in this environment.
+- TypeScript syntax transpilation passed for the modified study-set generation source file.
+- Full typecheck, tests, and production build were not run because project dependencies are not installed in this environment.
 
 ## Accuracy note
 
