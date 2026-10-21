@@ -187,7 +187,19 @@ function NewSet() {
       toast.error(message, { duration: 9000 });
       setStage(null);
       if (createdSetId) {
-        qc.invalidateQueries({ queryKey: ["sets"] });
+        // A platform timeout can terminate the server request before processSet's
+        // catch block runs. Mark the still-processing row as failed from the client
+        // so the set page does not spin forever and can offer a real retry action.
+        const { error: statusError } = await supabase
+          .from("study_sets")
+          .update({ status: "error", error: message.slice(0, 2000) })
+          .eq("id", createdSetId)
+          .eq("status", "processing");
+        if (statusError) {
+          console.error("Couldn't update the failed study set status:", statusError.message);
+        }
+        await qc.invalidateQueries({ queryKey: ["sets"] });
+        await qc.invalidateQueries({ queryKey: ["set", createdSetId] });
         navigate({ to: "/sets/$id", params: { id: createdSetId } });
       }
     }
