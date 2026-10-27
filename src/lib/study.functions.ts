@@ -5,6 +5,7 @@ import { aiText, parseJson, clip, splitTextIntoChunks } from "./ai.server";
 import { setStats, type Attempt, type AttemptResult, type Flashcard } from "./stats";
 import { activityStats } from "./activity";
 import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server";
+import { generateNotesFromMaterial } from "./study-generator";
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -37,8 +38,11 @@ QUALITY:
 - Keep important qualifiers, conditions, formulas, examples, exceptions, and relationships.
 - Do NOT invent examples, facts, headings, conclusions, or "testable" claims that are not supported by the source.
 - Do NOT add generic study advice or statements such as "this is examinable" unless the source explicitly says so.
-- Do not describe or interpret lecture images, diagrams, charts, maps, timelines, or other visual elements. Their interpretation is intentionally disabled to keep study-set creation faster and more reliable.
-- If the lecture's extracted text explicitly refers to a figure, retain that textual reference and its slide/page number, but do not invent a description of the image.
+- Treat sections labelled "Visual explanation" or "Visual explanations for figures and diagrams" as first-class lecture material, not optional appendix text.
+- Do not embed, render, or reproduce lecture images in the Notes. Use concise textual references to the source image instead, including the original slide/page number when available.
+- For each available visual description, explain what it depicts, what its visible labels/arrows/axes/parts mean, and how it illustrates or supports the relevant lecture concept. Weave this explanation into the matching topic instead of creating a detached image gallery or a separate visual appendix. If the relationship is unclear, retain the slide/page reference and state the connection cautiously.
+- Distinguish directly visible details from interpretation. Never invent unreadable labels, data points, or a relationship the visual does not support.
+- Do not omit important diagrams, charts, maps, equations, timelines, or labelled illustrations when condensing the material; explain their relevance in text and cite their slide/page location.
 - Do not include a preamble or commentary about being an AI.
 - Use only information supported by the provided material.`;
 
@@ -91,65 +95,60 @@ async function makeNotes(set: {
   subject: string;
   material_text: string;
   custom_instructions?: string;
-}): Promise<string> {
-  const { lecture } = splitPrimaryAndOptionalReadings(set.material_text);
-  const lectureMaterial = lecture.trim();
-  if (!lectureMaterial) throw new Error("No lecture text was available to generate the core study notes.");
-
-  // Generate the core study notes from lecture material ONLY. Optional readings
-  // are intentionally excluded from this critical-path request so they cannot
-  // cause the entire study set to fail or extend its initial generation time.
-  const lectureChunks = splitTextIntoChunks(lectureMaterial, 14000);
-  const lectureParts: string[] = [];
-  for (let i = 0; i < lectureChunks.length; i++) {
-    const isSingle = lectureChunks.length === 1;
-    const chunkPrompt = isSingle
-      ? NOTES_SYSTEM
-      : `${NOTES_SYSTEM}\n\nPRIMARY LECTURE CHUNK MODE: This is lecture part ${i + 1} of ${lectureChunks.length}. Make thorough notes ONLY for this part. Preserve important facts, definitions, examples, formulas, exceptions, and relationships. Do not claim this chunk is the whole course. Do not add Key Takeaways until the final integration.`;
-    const part = await aiText(
-      `${chunkPrompt}${ci(set)}`,
-      [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\n\nPRIMARY LECTURE MATERIAL${isSingle ? "" : ` — PART ${i + 1}/${lectureChunks.length}`} (optional readings excluded):\n${lectureChunks[i]}` }],
-      { timeoutMs: 65000, retries: 1 },
-    );
-    lectureParts.push(part.trim());
+}) {
+  try {
+    const separated = splitPrimaryAndOptionalReadings(set.material_text);
+    const sourceChunks = splitTextIntoChunks(set.material_text, 16000);
+    // For large lecture + reading uploads, process lecture structure first, then map reading
+    // additions onto those headings. Splitting the combined text blindly could lose the source
+    // markers and accidentally turn readings into a separate notes section.
+    if (separated.readings && sourceChunks.length > 1) {
+      const lectureChunks = splitTextIntoChunks(separated.lecture, 16000);
+      const lectureParts: string[] = [];
+      for (let i = 0; i < lectureChunks.length; i++) {
+        const part = await aiText(
+          `${NOTES_SYSTEM}${ci(set)}\n\nPRIMARY LECTURE CHUNK MODE: This is lecture part ${i + 1} of ${lectureChunks.length}. Use this lecture chunk only to build the main note structure and order. Preserve important facts, definitions, examples, formulas, exceptions, and relationships. Do not create a readings section. Do not claim this chunk is the whole course. Do not add Key Takeaways until the final integration.`,
+          [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\nPRIMARY LECTURE PART ${i + 1}/${lectureChunks.length}:\n${lectureChunks[i]}` }],
+        );
+        lectureParts.push(part.trim());
+      }
+      let lectureNotes = `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${lectureParts.join("\n\n---\n\n")}`;
+      const readingChunks = splitTextIntoChunks(separated.readings, 12000);
+      const enrichmentParts: string[] = [];
+      for (let i = 0; i < readingChunks.length; i++) {
+        const additions = await aiText(
+          `You are a careful academic cross-reference editor. Return only concise Markdown enrichment candidates grouped by the EXACT existing lecture topic they belong to. Compare the optional reading with the lecture notes. Include only material that is relevant, useful, supported by this reading, and not already present in the lecture notes. Do not create a separate readings section, rewrite the lecture notes, repeat facts, or add unrelated background. Preserve reading filename and printed page numbers when present; never invent page numbers. If this chunk contains no useful new information matching an existing lecture topic, return exactly: NO RELEVANT NEW ADDITIONS.\n\nEXISTING LECTURE NOTES (structure and order are authoritative):\n${clip(lectureNotes, 18000)}${ci(set)}`,
+          [{ role: "user", content: `OPTIONAL READING PART ${i + 1}/${readingChunks.length}:\n${readingChunks[i]}` }],
+        );
+        if (additions.trim() && !/^NO RELEVANT NEW ADDITIONS\.?$/i.test(additions.trim())) enrichmentParts.push(additions.trim());
+      }
+      {
+        lectureNotes = await aiText(
+          `${NOTES_SYSTEM}${ci(set)}\n\nFINAL INTEGRATION MODE: Edit the supplied lecture notes. Preserve their exact major topic order and headings. Integrate only new, relevant reading details into the matching existing sections; do not add a standalone readings section, do not duplicate lecture content, and do not create a detached visual gallery. Preserve source filenames and page references supplied in the candidate additions. Keep all important lecture content. Finish with one Key Takeaways section. Return the complete revised notes only.`,
+          [{ role: "user", content: `EXISTING LECTURE NOTES:\n${clip(lectureNotes, 36000)}\n\nREADING ENRICHMENT CANDIDATES (some may overlap; deduplicate carefully):\n${enrichmentParts.length ? clip(enrichmentParts.join("\n\n"), 20000) : "No useful new reading additions were identified. Preserve the lecture notes, clean up any repeated chunk headings if possible, and add one concise Key Takeaways section."}` }],
+        );
+      }
+      return lectureNotes;
+    }
+    if (sourceChunks.length <= 1) {
+      return await aiText(NOTES_SYSTEM + ci(set), [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\n\nMATERIAL (complete source):\n${sourceChunks[0] ?? ""}` }]);
+    }
+    // Process every source chunk independently so a large reading never has its tail silently clipped.
+    const noteParts: string[] = [];
+    for (let i = 0; i < sourceChunks.length; i++) {
+      const part = await aiText(
+        `${NOTES_SYSTEM}${ci(set)}\n\nLONG-SOURCE MODE: This is part ${i + 1} of ${sourceChunks.length}. Make thorough notes ONLY for this part. Preserve its important definitions, explanations, examples, formulas, exceptions and relationships. Do not claim this is the whole course, do not add a Key Takeaways section, and do not refer to missing parts. Use meaningful headings so this part can be combined with the others.`,
+        [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\nSOURCE PART ${i + 1}/${sourceChunks.length}:\n${sourceChunks[i]}` }],
+      );
+      noteParts.push(part.trim());
+    }
+    // Preserve every chunk's output; avoid a second huge AI call that could time out again.
+    return `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${noteParts.join("\n\n---\n\n")}`;
+  } catch (err) {
+    console.warn("AI notes generation fallback active:", err);
+    const primary = splitPrimaryAndOptionalReadings(set.material_text).lecture;
+    return generateNotesFromMaterial(primary, set.name, set.subject);
   }
-
-  return lectureChunks.length === 1
-    ? lectureParts[0]
-    : `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${lectureParts.join("\n\n---\n\n")}`;
-}
-
-async function createOptionalReadingEnrichment(set: {
-  name: string;
-  subject: string;
-  material_text: string;
-  notes?: string | null;
-  custom_instructions?: string;
-}): Promise<string | null> {
-  const { readings } = splitPrimaryAndOptionalReadings(set.material_text);
-  const baselineNotes = set.notes?.trim();
-  if (!readings?.trim() || !baselineNotes) return null;
-  // A single-call rewrite cannot safely preserve very long notes in one prompt.
-  // Keep the core notes untouched rather than risk truncating a large course.
-  if (baselineNotes.length > 20000) return null;
-
-  // This runs in a separate request AFTER the study set is already usable. It is
-  // deliberately one bounded, non-retried call; failure never changes set status.
-  const readingText = clip(readings, 12000);
-  const enriched = await aiText(
-    `You are a careful academic cross-reference editor. Revise the supplied lecture notes by integrating ONLY useful new details from the optional reading into the existing matching lecture sections. The lecture notes define the headings, order, scope, and structure. Do not create a separate Readings section. Do not duplicate lecture facts or add unrelated background. Preserve all important existing lecture content. Preserve reading filenames and printed/source page markers exactly when present; never invent page numbers. If the reading adds nothing useful, return the original notes essentially unchanged. Return the complete revised notes in Markdown only.\n\nEXISTING LECTURE NOTES:\n${clip(baselineNotes, 22000)}${ci(set)}`,
-    [{ role: "user", content: `OPTIONAL READING (enrichment only; bounded to keep this request short):\n${readingText}` }],
-    { timeoutMs: 25000, retries: 0 },
-  );
-
-  const cleaned = enriched.trim();
-  const baselineHeadings = (baselineNotes.match(/^#{1,3} .+$/gm) ?? []).filter((h) => !/^## Key Takeaways$/i.test(h));
-  const retainedHeadingCount = baselineHeadings.filter((heading) => cleaned.includes(heading)).length;
-  const minimumLength = Math.max(300, Math.floor(baselineNotes.length * 0.55));
-  if (!cleaned.startsWith("# ") || cleaned.length < minimumLength || (baselineHeadings.length > 2 && retainedHeadingCount < Math.ceil(baselineHeadings.length * 0.6))) {
-    throw new Error("Optional reading enrichment returned incomplete notes; the lecture-based notes were preserved.");
-  }
-  return cleaned;
 }
 
 async function makeCards(set: {
@@ -167,8 +166,8 @@ async function makeCards(set: {
 GENERATED STUDY NOTES:
 ${clip(set.notes, 50000)}
 
-PRIMARY LECTURE MATERIAL FOR VERIFICATION (optional-reading details, when useful, are already incorporated into the notes above):
-${clip(splitPrimaryAndOptionalReadings(set.material_text).lecture, 30000)}`,
+SOURCE MATERIAL FOR VERIFICATION:
+${clip(set.material_text, 50000)}`,
     },
   ]);
   const parsed = parseJson<{ cards?: unknown }>(text);
@@ -193,11 +192,8 @@ export const processSet = createServerFn({ method: "POST" })
   .inputValidator(idInput)
   .handler(async ({ data, context }) => {
     const supabase = context.supabase;
-    let generationStage = "loading study set";
-    let set: Awaited<ReturnType<typeof loadSet>> | null = null;
+    const set = await loadSet(supabase, data.setId);
     try {
-      set = await loadSet(supabase, data.setId);
-      generationStage = "starting generation";
       const { error: statusError } = await supabase
         .from("study_sets")
         .update({ status: "processing", error: null })
@@ -206,15 +202,11 @@ export const processSet = createServerFn({ method: "POST" })
 
       // Generate everything before replacing saved content, so an AI failure never
       // destroys the student's existing notes or cards.
-      generationStage = "generating lecture-based notes";
       const notes = await makeNotes(set);
-      generationStage = "generating flashcards from the notes";
       const cards = await makeCards({ ...set, notes });
-      generationStage = "checking existing flashcards";
       const { data: oldCards, error: readError } = await supabase.from("flashcards").select("*").eq("set_id", set.id);
       if (readError) throw new Error("Couldn't safely replace the existing flashcards.");
       if (oldCards?.length) {
-        generationStage = "backing up existing flashcards";
         const { error: archiveError } = await supabase.from("trash").insert({
           user_id: context.userId,
           kind: "flashcards",
@@ -224,7 +216,6 @@ export const processSet = createServerFn({ method: "POST" })
         });
         if (archiveError) throw new Error("Couldn't back up the existing flashcards, so they were left unchanged.");
       }
-      generationStage = "saving new flashcards";
       const { error: deleteError } = await supabase.from("flashcards").delete().eq("set_id", set.id);
       if (deleteError) throw new Error("Couldn't replace the old flashcards. Your existing cards were kept.");
       const { error: insertError } = await supabase.from("flashcards").insert(
@@ -238,7 +229,6 @@ export const processSet = createServerFn({ method: "POST" })
         })),
       );
       if (insertError) throw new Error("New flashcards couldn't be saved. Your previous cards are in Recently Deleted.");
-      generationStage = "saving completed study set";
       const { error: saveSetError } = await supabase
         .from("study_sets")
         .update({ notes, status: "ready", error: null, updated_at: new Date().toISOString() })
@@ -246,77 +236,9 @@ export const processSet = createServerFn({ method: "POST" })
       if (saveSetError) throw new Error("The study materials were generated, but the set status couldn't be saved. Refresh and check the set before retrying.");
       return { ok: true };
     } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e ?? "Unknown error");
-      const msg = `Study set generation failed while ${generationStage}: ${detail}`.slice(0, 1800);
-      // Persist the stage and underlying provider/database message so the set page
-      // reports an actionable cause instead of the generic generation failure.
-      if (set?.id) {
-        const { error: saveError } = await supabase
-          .from("study_sets")
-          .update({ status: "error", error: msg })
-          .eq("id", set.id);
-        if (saveError) console.error("Failed to persist study generation error:", saveError.message, "Original error:", detail);
-      }
-      console.error(msg, e);
+      const msg = e instanceof Error ? e.message : "Processing failed";
+      await supabase.from("study_sets").update({ status: "error", error: msg }).eq("id", set.id);
       throw new Error(msg);
-    }
-  });
-
-export const enrichOptionalReadings = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator(idInput)
-  .handler(async ({ data, context }) => {
-    const supabase = context.supabase;
-    const set = await loadSet(supabase, data.setId);
-    const marker = "=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===";
-    const hasReadings = set.material_text.includes(marker) && Boolean(set.material_text.slice(set.material_text.indexOf(marker) + marker.length).trim());
-    const recordStatus = async (status: string, detail: string | null) => {
-      const { error } = await supabase.from("study_sets").update({
-        optional_reading_status: status,
-        optional_reading_detail: detail,
-      }).eq("id", set.id);
-      if (error) console.warn("Couldn't save optional reading status:", error.message);
-    };
-
-    if (!hasReadings) {
-      await recordStatus("not_applicable", null);
-      return { status: "not_applicable", enriched: false };
-    }
-    if (set.status !== "ready" || !set.notes?.trim()) {
-      await recordStatus("skipped", "Core study notes were not ready when reading enrichment started.");
-      return { status: "skipped", enriched: false };
-    }
-    const originalNotes = set.notes;
-    if (originalNotes.length > 20000) {
-      await recordStatus("skipped", "Reading enrichment was skipped because the notes are too long to safely rewrite in one request.");
-      return { status: "skipped", enriched: false };
-    }
-    try {
-      const enrichedNotes = await createOptionalReadingEnrichment({ ...set, notes: originalNotes });
-      if (!enrichedNotes || enrichedNotes === originalNotes) {
-        await recordStatus("processed_no_additions", "The reading was processed, but no safe, relevant additions were identified.");
-        return { status: "processed_no_additions", enriched: false };
-      }
-      // Compare-and-set prevents a late enrichment response from overwriting notes the student edited.
-      const { data: updatedRows, error } = await supabase
-        .from("study_sets")
-        .update({ notes: enrichedNotes, optional_reading_status: "incorporated", optional_reading_detail: "Relevant reading details were added to existing lecture-note sections.", updated_at: new Date().toISOString() })
-        .eq("id", set.id)
-        .eq("status", "ready")
-        .eq("updated_at", set.updated_at)
-        .select("id");
-      if (error) throw error;
-      if (!updatedRows?.length) {
-        await recordStatus("skipped", "Notes changed before reading enrichment finished, so the result was not applied to avoid overwriting your edits.");
-        return { status: "skipped", enriched: false };
-      }
-      return { status: "incorporated", enriched: true };
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error ?? "Unknown reading enrichment error");
-      await recordStatus("skipped", `Reading enrichment failed: ${detail}`.slice(0, 1000));
-      // Optional enrichment is non-critical: never mark the set failed or throw to the creation flow.
-      console.warn("Optional reading enrichment skipped; core study set remains ready:", error);
-      return { status: "skipped", enriched: false };
     }
   });
 
@@ -1135,30 +1057,40 @@ export const ocrFile = createServerFn({ method: "POST" })
         data: z.string().max(140_000_000),
         mediaType: z.enum(["image/png", "image/jpeg", "image/webp"]),
         filename: z.string().max(200),
-        task: z.literal("transcribe").optional(),
+        task: z.enum(["transcribe", "describe_visuals"]).optional(),
         context: z.string().max(12000).optional(),
       })
       .parse(d),
   )
   .handler(async ({ data }) => {
-    // This endpoint is deliberately OCR-only. It transcribes readable text from
-    // scanned pages/images; it does not describe or interpret visual content.
+    const task = data.task ?? "transcribe";
+    // NVIDIA's OpenAI-compatible vision API expects images as image_url parts;
+    // PDF pages are rendered to JPEGs in the browser before they reach this endpoint.
     const file = {
       type: "image_url" as const,
       image_url: { url: data.data },
     };
-    const system = `You are a careful OCR transcription assistant. Transcribe only text that is visibly readable, preserving reading order, headings, lists, equations, table text, and figure labels when legible. Do not describe, summarize, or interpret pictures, diagrams, charts, arrows, or visual relationships. Never guess obscured or unreadable text; mark uncertain words as [unclear]. If no readable text is present, return exactly: No readable text detected. Output the transcription only, without an AI preamble.
+    const system = task === "describe_visuals"
+      ? `You are a careful visual-learning assistant helping a student understand lecture material. Inspect the supplied document/image for meaningful visual content: diagrams, charts, graphs, maps, timelines, equations, labelled illustrations, tables, photographs, and visual examples. Describe what is visibly present, including labels, axes, arrows, comparisons, trends, and relationships. Explain what the visual is showing and how it connects to the lecture context supplied below. Use page/slide markers only when they are visible or reliably available. Do not merely repeat surrounding text; do not guess unreadable labels or unsupported meanings. Clearly mark uncertainty. If there are no meaningful visuals, say exactly: No meaningful visual content detected.
 
-Optional context for spelling and terminology (not a source of text to invent):
-${data.context?.trim() || "No additional context supplied."}`;
+LECTURE CONTEXT:
+${data.context?.trim() || "No extracted lecture text was supplied. Describe only what the visual itself supports."}`
+      : `You are an OCR and visual-understanding assistant for a student. Transcribe all readable text in reading order and preserve headings, lists, equations, labels, and table structure. For every meaningful diagram, chart, graph, map, timeline, labelled illustration, or photo, add a section titled “Visual explanation” that describes what it shows and how it relates to the lecture text/context. Explain arrows, axes, labels, trends, and relationships when visible. Do not invent unreadable labels or unsupported claims; flag uncertainty. If a diagram's meaning depends on missing context, say so. Output structured notes only, with no AI preamble.
+
+LECTURE CONTEXT:
+${data.context?.trim() || "No additional lecture context supplied; use only the provided file."}`;
     const visionModel = process.env["NIM_VISION_MODEL"]?.trim() || "meta/llama-3.2-90b-vision-instruct";
     const text = await aiText(
       system,
-      [{
-        role: "user",
-        content: [{ type: "text", text: `Transcribe readable text from ${data.filename}. Do not describe visuals.` }, file],
-      }],
-      { grounded: false, model: visionModel, timeoutMs: 60_000, retries: 1 },
+      [
+        {
+          role: "user",
+          content: [{ type: "text", text: task === "describe_visuals"
+            ? `Analyze the visual content in ${data.filename}. Focus on the meaning of the visuals in relation to the supplied lecture context.`
+            : `Read and explain the content of ${data.filename}, including its visuals.` }, file],
+        },
+      ],
+      { grounded: false, model: visionModel, timeoutMs: 90_000 },
     );
     return { text };
   });

@@ -6,7 +6,7 @@ import { FileText, Upload, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
-import { processSet, enrichOptionalReadings, ocrFile } from "@/lib/study.functions";
+import { processSet, ocrFile } from "@/lib/study.functions";
 import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { cn } from "@/lib/utils";
 
@@ -37,7 +37,6 @@ function NewSet() {
   const qc = useQueryClient();
   const { user } = useAuth();
   const process = useServerFn(processSet);
-  const enrichReadings = useServerFn(enrichOptionalReadings);
   const ocr = useServerFn(ocrFile);
   const [name, setName] = useState("");
   const [subject, setSubject] = useState("");
@@ -46,7 +45,6 @@ function NewSet() {
   const [mode, setMode] = useState<"pdf" | "text">("pdf");
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [readingFiles, setReadingFiles] = useState<File[]>([]);
   const [extracted, setExtracted] = useState<{ file: File; chars: number }[] | null>(null);
   const [progressMsg, setProgressMsg] = useState("");
   const [stage, setStage] = useState<null | "reading" | "generating">(null);
@@ -58,10 +56,7 @@ function NewSet() {
     }
     setStage("reading");
     const parts: string[] = [];
-    const readingParts: string[] = [];
     const meta: { file: File; chars: number }[] = [];
-    const failedLectures: string[] = [];
-    const failedReadings: string[] = [];
     // Lectures are the primary source and define note structure and order.
     const filesToExtract = [...files].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
     for (const [idx, f] of filesToExtract.entries()) {
@@ -72,58 +67,25 @@ function NewSet() {
           (m) => setProgressMsg(filesToExtract.length > 1 ? `${m} (${idx + 1}/${filesToExtract.length})` : m),
           parts.join("\n\n").slice(0, 12000),
         );
-        if (!t.trim()) throw new Error(`${f.name}: no readable text was extracted. Try a searchable PDF, a clearer scan, or a text-based export.`);
-        parts.push(files.length > 1 ? `=== ${f.name} ===\n${t}` : t);
+        if (t) parts.push(files.length > 1 ? `=== ${f.name} ===\n${t}` : t);
         meta.push({ file: f, chars: t.length });
       } catch (e) {
-        failedLectures.push(e instanceof Error ? e.message : `Couldn't read ${f.name}`);
+        toast.error(e instanceof Error ? e.message : `Couldn't read ${f.name}`);
       }
-    }
-    // Never create a partial study set when any required lecture failed extraction.
-    if (failedLectures.length) {
-      setStage(null);
-      setProgressMsg("");
-      toast.error(`Study set not created. Fix the lecture extraction issue(s) and try again: ${failedLectures.join(" | ")}`, { duration: 10000 });
-      return;
-    }
-    const readingsToExtract = [...readingFiles].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
-    for (const [idx, f] of readingsToExtract.entries()) {
-      try {
-        const t = await extractFile(
-          f,
-          ocr,
-          (m) => setProgressMsg(`Optional reading ${idx + 1}/${readingsToExtract.length}: ${m}`),
-          parts.join("\n\n").slice(0, 12000),
-        );
-        if (!t.trim()) throw new Error(`${f.name}: no readable text was extracted from this optional reading.`);
-        readingParts.push(`### Reading source: ${f.name}\n${t.trim()}`);
-        meta.push({ file: f, chars: t.length });
-      } catch (e) {
-        failedReadings.push(f.name);
-        toast.error(e instanceof Error ? e.message : `Couldn't read optional reading ${f.name}`);
-      }
-    }
-    if (failedReadings.length) {
-      toast.warning(`Some optional readings couldn't be used and will be skipped: ${failedReadings.join(", ")}`, { duration: 8000 });
     }
     setStage(null);
-    setProgressMsg("");
     const lectureMaterial = parts.join("\n\n").trim();
     if (!lectureMaterial) {
       toast.error("Couldn't find readable text in the lecture files. Try clearer photos or another format.");
       return;
     }
-    const material = readingParts.length
-      ? `=== PRIMARY LECTURE MATERIAL — DEFINES NOTE STRUCTURE AND ORDER ===\n${lectureMaterial}\n\n=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===\n${readingParts.join("\n\n")}`
-      : lectureMaterial;
-    setText(material);
+    setText(lectureMaterial);
     setExtracted(meta);
   };
 
   const submit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     if (!user) return;
-    let createdSetId: string | null = null;
     if (mode === "pdf" && !extracted) {
       await extract();
       return;
@@ -155,8 +117,6 @@ function NewSet() {
               ? files.map((f) => f.name).join(", ").slice(0, 300)
               : null,
           status: "processing",
-          optional_reading_status: material.includes("=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===") ? "pending" : "not_applicable",
-          optional_reading_detail: null,
         })
         .select("id")
         .single();
@@ -166,7 +126,6 @@ function NewSet() {
       }
 
       const targetId = sbData.id;
-      createdSetId = targetId;
 
       // Keep every uploaded file attached to the same study set.
       if (mode === "pdf" && extracted?.length) {
@@ -179,47 +138,15 @@ function NewSet() {
         }
       }
 
-      // NVIDIA NIM generates the notes first, then flashcards from those notes.
+      // Gemini generates the notes first, then flashcards from those notes.
       await process({ data: { setId: targetId } });
-
-      // Start optional reading enrichment only after the core set is ready. Do not
-      // await it: a slow/failed reading request must never hold up navigation or
-      // change the successful study-set status. The server action also treats all
-      // enrichment failures as non-fatal.
-      if (material.includes("=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===")) {
-        void Promise.resolve()
-          .then(() => enrichReadings({ data: { setId: targetId } }))
-          .then(async () => {
-            // Refresh the status even when enrichment was skipped or found no additions.
-            await qc.invalidateQueries({ queryKey: ["set", targetId] });
-            await qc.invalidateQueries({ queryKey: ["sets"] });
-          })
-          .catch((error) => console.warn("Optional reading enrichment was skipped:", error));
-      }
 
       toast.success("Study set created.");
       qc.invalidateQueries({ queryKey: ["sets"] });
       navigate({ to: "/sets/$id", params: { id: targetId } });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Study set generation failed. Open the set to see its status and retry.";
-      toast.error(message, { duration: 9000 });
+      toast.error(err instanceof Error ? err.message : "Something went wrong");
       setStage(null);
-      if (createdSetId) {
-        // A platform timeout can terminate the server request before processSet's
-        // catch block runs. Mark the still-processing row as failed from the client
-        // so the set page does not spin forever and can offer a real retry action.
-        const { error: statusError } = await supabase
-          .from("study_sets")
-          .update({ status: "error", error: message.slice(0, 2000) })
-          .eq("id", createdSetId)
-          .eq("status", "processing");
-        if (statusError) {
-          console.error("Couldn't update the failed study set status:", statusError.message);
-        }
-        await qc.invalidateQueries({ queryKey: ["sets"] });
-        await qc.invalidateQueries({ queryKey: ["set", createdSetId] });
-        navigate({ to: "/sets/$id", params: { id: createdSetId } });
-      }
     }
   };
 
@@ -239,7 +166,7 @@ function NewSet() {
           <p className="text-soft text-sm mt-2">
             {stage === "reading"
               ? progressMsg || "Extracting text…"
-              : "Writing notes and generating flashcards with NVIDIA NIM. Large files can take longer; if generation fails, the set is saved so you can retry."}
+              : "Writing notes and generating flashcards. This usually takes 20–60 seconds."}
           </p>
         </div>
       </main>
@@ -408,47 +335,6 @@ function NewSet() {
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
-          )}
-          {mode === "pdf" && (
-            <div className="pt-4 border-t border-line/60 space-y-3">
-              <div>
-                <p className="text-sm font-semibold">Optional readings</p>
-                <p className="text-xs text-soft mt-1">
-                  Add textbook chapters or articles. Momentum will use them to enrich matching lecture topics without creating a separate readings section.
-                </p>
-              </div>
-              {readingFiles.map((f, idx) => (
-                <div key={`${f.name}-${idx}`} className="flex items-center justify-between rounded-xl border border-line bg-foreground/5 px-4 py-3">
-                  <span className="text-sm truncate flex items-center gap-2">
-                    <FileText className="size-4 text-cool2" /> {f.name}
-                  </span>
-                  <button type="button" onClick={() => { setReadingFiles((fs) => fs.filter((_, k) => k !== idx)); setExtracted(null); }} className="text-soft" aria-label="Remove reading">
-                    <X className="size-4" />
-                  </button>
-                </div>
-              ))}
-              <label className="block rounded-xl border border-dashed border-line hover:border-cool2/60 transition-colors p-4 text-center cursor-pointer">
-                <p className="text-sm font-semibold">{readingFiles.length ? "Add more readings" : "Add optional readings"}</p>
-                <p className="text-xs text-soft mt-1">PDF, Word, PowerPoint, TXT, or photos · up to 100MB each</p>
-                <input
-                  type="file"
-                  multiple
-                  accept={ACCEPT}
-                  className="hidden"
-                  onChange={(e) => {
-                    const all = Array.from(e.target.files ?? []);
-                    const picked = all.filter((f) => fileKind(f) && f.size <= MAX_BYTES);
-                    const skipped = all.filter((f) => !fileKind(f) || f.size > MAX_BYTES);
-                    if (skipped.length) {
-                      toast.error(`Some reading files were skipped: ${skipped.map((f) => f.name).join(", ")}`, { duration: 8000 });
-                    }
-                    setReadingFiles((fs) => [...fs, ...picked].slice(0, 20));
-                    if (picked.length) setExtracted(null);
-                    e.target.value = "";
-                  }}
-                />
-              </label>
-            </div>
           )}
         </div>
         <button className="font-semibold bg-brand text-ink px-6 py-3 rounded-lg">

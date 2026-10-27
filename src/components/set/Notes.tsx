@@ -3,7 +3,7 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
-import { BookOpen, CheckCircle2, CircleHelp, Headphones, Lightbulb, Loader2, RefreshCw, X } from "lucide-react";
+import { Headphones, Lightbulb, Loader2, RefreshCw, X } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { explainPassage, regenerateNotes } from "@/lib/study.functions";
 import type { StudySet } from "@/lib/queries";
@@ -63,15 +63,6 @@ export function Notes({ set }: { set: StudySet }) {
   const sections = set.notes ? splitSections(set.notes) : [];
   return (
     <div className="max-w-3xl">
-      {set.optional_reading_status && set.optional_reading_status !== "not_applicable" && (
-        <div className="mb-4 rounded-xl border border-line/70 bg-panel px-4 py-3 flex items-start gap-3" role="status">
-          {set.optional_reading_status === "incorporated" ? <CheckCircle2 className="size-4 text-emerald-400 mt-0.5 shrink-0" /> : set.optional_reading_status === "pending" ? <Loader2 className="size-4 animate-spin text-cool2 mt-0.5 shrink-0" /> : set.optional_reading_status === "processed_no_additions" ? <BookOpen className="size-4 text-cool2 mt-0.5 shrink-0" /> : <CircleHelp className="size-4 text-amber-400 mt-0.5 shrink-0" />}
-          <div className="min-w-0">
-            <p className="text-sm font-semibold">{set.optional_reading_status === "incorporated" ? "Optional reading incorporated" : set.optional_reading_status === "pending" ? "Checking optional reading" : set.optional_reading_status === "processed_no_additions" ? "Reading processed — no additions needed" : "Optional reading not incorporated"}</p>
-            <p className="text-xs text-soft mt-1">{set.optional_reading_detail || (set.optional_reading_status === "pending" ? "Your lecture-based notes are ready while the reading is checked." : "Your lecture-based notes are still available.")}</p>
-          </div>
-        </div>
-      )}
       <div className="flex items-center justify-between gap-3 mb-4">
         <p className="text-xs text-soft inline-flex items-center gap-1.5">
           <Lightbulb className="size-3.5 text-cool2" /> Use "Explain" on any section for a simpler
