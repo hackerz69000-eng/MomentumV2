@@ -1,4 +1,4 @@
-const BYTEZ_MODEL = process.env["BYTEZ_MODEL"]?.trim() || "microsoft/Phi-3-mini-4k-instruct";
+const BYTEZ_MODEL = process.env["BYTEZ_MODEL"]?.trim() || "DataCanvas/Alaya-7B-Chat";
 const BYTEZ_URL = "https://api.bytez.com/models/v2";
 
 type ModelMessage = {
@@ -136,6 +136,25 @@ QUALITY RULES:
 - Focus on important testable ideas rather than trivia.
 `;
 
+function configuredTextModels(preferred?: string): string[] {
+  // BYTEZ_FALLBACK_MODELS is an ordered comma-separated list. Put preferred
+  // models first; this is a fallback order, not a claim about live remaining credits.
+  const configured = (process.env["BYTEZ_FALLBACK_MODELS"] ?? "")
+    .split(",").map((model) => model.trim()).filter(Boolean);
+  const candidates = [preferred?.trim(), BYTEZ_MODEL, ...configured].filter((model): model is string => !!model);
+  return [...new Set(candidates)];
+}
+
+function shouldTryNextModel(error: unknown): boolean {
+  if (!(error instanceof BytezError)) return false;
+  const status = error.statusCode;
+  // These are model/request-specific or transient. Auth failures and account-wide
+  // credit errors should stop rather than hammer every model with the same problem.
+  return status === 400 || status === 404 || status === 408 || status === 429 ||
+    (typeof status === "number" && status >= 500) ||
+    /model does not exist|model.*catalog|yet to be added|empty or unrecognized response|invalid response|inference error|couldn't connect|timed out/i.test(error.message);
+}
+
 export async function aiText(
   system: string,
   messages: ModelMessage[],
@@ -143,28 +162,33 @@ export async function aiText(
 ): Promise<string> {
   if (opts.grounded !== false) system += GROUNDING;
 
-  // A bounded retry policy helps with provider/network instability without
-  // multiplying requests indefinitely or retrying credential/configuration errors.
   const delays = [1200, 3000];
   const retryCount = Math.max(0, Math.min(delays.length, opts.retries ?? delays.length));
   const timeoutMs = Math.max(1000, Math.min(90_000, opts.timeoutMs ?? 90_000));
+  const models = configuredTextModels(opts.model);
   let lastError: unknown;
 
-  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
-    try {
-      return await callBytez(system, messages, timeoutMs, opts.model?.trim() || BYTEZ_MODEL);
-    } catch (error) {
-      lastError = error;
-      // Retry transient failures and rate limits only; never retry auth, credit, or model errors.
-      const status = error instanceof BytezError ? error.statusCode : undefined;
-      const retryable = status === 408 || status === 429 || (typeof status === "number" && status >= 500) ||
-        (error instanceof BytezError && /invalid response|empty or unrecognized|unreadable response|couldn't connect/i.test(error.message));
-      if (!retryable || attempt === retryCount) break;
-      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+    const model = models[modelIndex];
+    for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+      try {
+        return await callBytez(system, messages, timeoutMs, model);
+      } catch (error) {
+        lastError = error;
+        const status = error instanceof BytezError ? error.statusCode : undefined;
+        const retryable = status === 408 || status === 429 || (typeof status === "number" && status >= 500) ||
+          (error instanceof BytezError && /invalid response|empty or unrecognized|unreadable response|couldn't connect|timed out/i.test(error.message));
+        if (shouldTryNextModel(error) && modelIndex < models.length - 1) break;
+        if (!retryable || attempt === retryCount) break;
+        await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+      }
     }
+    // If this model failed for an error that cannot be fixed by another model,
+    // surface it immediately (for example invalid credentials or exhausted account credits).
+    if (lastError instanceof BytezError && !shouldTryNextModel(lastError)) throw lastError;
   }
 
-  throw lastError instanceof Error ? lastError : new Error("Bytez request failed. Please try again.");
+  throw lastError instanceof Error ? lastError : new Error("All configured Bytez models failed. Check BYTEZ_FALLBACK_MODELS and try again.");
 }
 
 /** Call a Bytez vision model using its documented text + base64 multi-input schema. */

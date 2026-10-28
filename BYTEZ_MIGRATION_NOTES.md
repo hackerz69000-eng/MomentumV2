@@ -5,7 +5,7 @@ Momentum's server-side text generation, image analysis, and microphone transcrip
 ## Vercel environment variables
 
 - `BYTEZ_API_KEY` — required; create/copy this from your Bytez dashboard.
-- `BYTEZ_MODEL=microsoft/Phi-3-mini-4k-instruct` — default text/chat model for study sets, notes, flashcards, exams, tutoring, and other AI features. Override it with a Bytez model that supports the `chat` task and fits your plan.
+- `BYTEZ_MODEL=DataCanvas/Alaya-7B-Chat` — default text/chat model for study sets, notes, flashcards, exams, tutoring, and other AI features. Override it with a Bytez model that supports the `chat` task and fits your plan.
 - `BYTEZ_VISION_MODEL=Qwen/Qwen2.5-VL-7B-Instruct` — vision model for OCR and visual explanations. Confirm that the model ID exists in your Bytez account and supports image inputs.
 - `BYTEZ_ASR_MODEL=openai/whisper-large-v3` — speech-to-text model for microphone transcription. Confirm the model supports audio input through Bytez's model API.
 - `DEEPGRAM_API_KEY` — retained for the app's existing text-to-speech feature; this is separate from Bytez.
@@ -19,3 +19,8 @@ Momentum's server-side text generation, image analysis, and microphone transcrip
 5. If Bytez returns a model/task or input-schema error, choose a model that supports the corresponding task and adjust the model-specific request schema based on that model's Bytez documentation.
 
 The integration uses Bytez's unified HTTP API (`https://api.bytez.com/models/v2/...`) and its standardized `messages` / multimodal input conventions. Live provider requests were not run during this source update because no Bytez credentials are available in this workspace. The project still needs end-to-end validation with your Bytez account and selected models.
+
+
+## Ordered model fallback
+
+Set `BYTEZ_MODEL` to the primary text/chat model and optionally set `BYTEZ_FALLBACK_MODELS` to a comma-separated list of additional Bytez model IDs, ordered from preferred to last-resort. Momentum tries the next configured model after model-specific failures and rate limits, while authentication and account-credit errors stop the chain. Bytez does not provide a verified per-model remaining-credit figure through the integration here, so list order is configured priority—not live usage-based ranking. Confirm each model exists in Bytez and supports chat messages before adding it.
