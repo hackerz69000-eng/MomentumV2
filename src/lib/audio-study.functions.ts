@@ -188,7 +188,7 @@ export const generateAudioSpeech = createServerFn({ method: "POST" })
 
       // Use Deepgram's Aura-2 REST TTS directly. This keeps the TTS request
       // independent of the text-generation provider.
-      // NVIDIA NIM generates the lesson script above.
+      // Groq generates the lesson script above.
       const response = await fetch(
         "https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mp3",
         {

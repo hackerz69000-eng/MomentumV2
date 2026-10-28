@@ -1,5 +1,5 @@
-const NIM_MODEL = process.env["NIM_MODEL"]?.trim() || "openai/gpt-oss-20b";
-const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
+const GROQ_MODEL = process.env["GROQ_MODEL"]?.trim() || "openai/gpt-oss-20b";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 type ModelMessage = {
   role: "user" | "assistant";
@@ -7,38 +7,38 @@ type ModelMessage = {
   content: string | Array<Record<string, unknown>>;
 };
 
-class NimError extends Error {
+class GroqError extends Error {
   statusCode?: number;
   constructor(message: string, statusCode?: number) {
     super(message);
-    this.name = "NimError";
+    this.name = "GroqError";
     this.statusCode = statusCode;
   }
 }
 
-function nimErrorMessage(status: number, body: string): string {
+function groqErrorMessage(status: number, body: string): string {
   let detail = body.trim();
   try {
     const parsed = JSON.parse(body) as { error?: { message?: string } | string };
     if (typeof parsed.error === "string") detail = parsed.error;
     else if (parsed.error?.message) detail = parsed.error.message;
   } catch {
-    // Keep the raw response when NVIDIA does not return JSON.
+    // Keep the raw response when Groq does not return JSON.
   }
 
   if (status === 401) {
-    return "NVIDIA NIM rejected the API key. Check NVIDIA_API_KEY in your Vercel environment variables and redeploy.";
+    return "Groq rejected the API key. Check GROQ_API_KEY in your Vercel environment variables and redeploy.";
   }
   if (status === 402) {
-    return "NVIDIA NIM requires billing or the selected model is not available to this API key. Check your NVIDIA API Catalog account and model access.";
+    return "Groq rejected the request because access or billing may be unavailable for this model. Check your Groq Console model access and usage limits.";
   }
   if (status === 403) {
-    return `NVIDIA NIM denied the request${detail ? `: ${detail.slice(0, 1000)}` : "."}`;
+    return `Groq denied the request${detail ? `: ${detail.slice(0, 1000)}` : "."}`;
   }
   if (status === 429) {
-    return "NVIDIA NIM rate limit reached. Please wait a moment and try again.";
+    return "Groq rate limit reached. Please wait a moment and try again.";
   }
-  return `NVIDIA NIM request failed${detail ? `: ${detail.slice(0, 1000)}` : ` (HTTP ${status}).`}`;
+  return `Groq request failed${detail ? `: ${detail.slice(0, 1000)}` : ` (HTTP ${status}).`}`;
 }
 
 /** Appended to every AI system prompt: the student's materials are the primary source. */
@@ -64,17 +64,17 @@ QUALITY RULES:
 - Focus on important testable ideas rather than trivia.
 `;
 
-async function callNim(system: string, messages: ModelMessage[], timeoutMs = 90_000, model = NIM_MODEL): Promise<string> {
-  const apiKey = process.env["NVIDIA_API_KEY"]?.trim();
+async function callGroq(system: string, messages: ModelMessage[], timeoutMs = 90_000, model = GROQ_MODEL): Promise<string> {
+  const apiKey = process.env["GROQ_API_KEY"]?.trim();
   if (!apiKey) {
-    throw new NimError(
-      "NVIDIA NIM is not configured on the server. Set NVIDIA_API_KEY in the Vercel environment variables, then redeploy.",
+    throw new GroqError(
+      "Groq is not configured on the server. Set GROQ_API_KEY in the Vercel environment variables, then redeploy.",
     );
   }
 
   let response: Response;
   try {
-    response = await fetch(NIM_URL, {
+    response = await fetch(GROQ_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -86,7 +86,7 @@ async function callNim(system: string, messages: ModelMessage[], timeoutMs = 90_
       body: JSON.stringify({
         model,
         temperature: 0.2,
-        max_tokens: 6000,
+        max_completion_tokens: 6000,
         stream: false,
         messages: [
           { role: "system", content: system },
@@ -97,10 +97,10 @@ async function callNim(system: string, messages: ModelMessage[], timeoutMs = 90_
   } catch (error) {
     const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
     // Normalize fetch failures so the retry policy handles timeouts and transient network errors.
-    throw new NimError(
+    throw new GroqError(
       timedOut
         ? "The AI request timed out. Please try again, or request a smaller response."
-        : "Couldn't connect to NVIDIA NIM. Check the server connection and try again.",
+        : "Couldn't connect to Groq. Check the server connection and try again.",
       timedOut ? 408 : undefined,
     );
   }
@@ -109,30 +109,30 @@ async function callNim(system: string, messages: ModelMessage[], timeoutMs = 90_
   try {
     body = await response.text();
   } catch {
-    throw new NimError("NVIDIA NIM returned an unreadable response.", 502);
+    throw new GroqError("Groq returned an unreadable response.", 502);
   }
   if (!response.ok) {
-    throw new NimError(nimErrorMessage(response.status, body), response.status);
+    throw new GroqError(groqErrorMessage(response.status, body), response.status);
   }
 
   let payload: { choices?: Array<{ message?: { content?: string | null }; finish_reason?: string }> };
   try {
     payload = JSON.parse(body) as { choices?: Array<{ message?: { content?: string | null }; finish_reason?: string }> };
   } catch {
-    throw new NimError("NVIDIA NIM returned an invalid response.", 502);
+    throw new GroqError("Groq returned an invalid response.", 502);
   }
 
   const choice = payload.choices?.[0];
   if (choice?.finish_reason === "length") {
-    throw new NimError("The AI response reached its output limit. Please request fewer questions or a shorter response.", 413);
+    throw new GroqError("The AI response reached its output limit. Please request fewer questions or a shorter response.", 413);
   }
   const text = choice?.message?.content?.trim();
-  if (!text) throw new NimError("NVIDIA NIM returned an empty response.", 502);
+  if (!text) throw new GroqError("Groq returned an empty response.", 502);
   return text;
 }
 
 function retryable(err: unknown) {
-  if (!(err instanceof NimError)) return false;
+  if (!(err instanceof GroqError)) return false;
   const status = err.statusCode;
   return status === 408 || status === 429 || (typeof status === "number" && status >= 500) ||
     /returned an invalid response|returned an empty response|unreadable response|couldn't connect/i.test(err.message);
@@ -154,7 +154,7 @@ export async function aiText(
 
   for (let attempt = 0; attempt <= retryCount; attempt += 1) {
     try {
-      return await callNim(system, messages, timeoutMs, opts.model?.trim() || NIM_MODEL);
+      return await callGroq(system, messages, timeoutMs, opts.model?.trim() || GROQ_MODEL);
     } catch (error) {
       lastError = error;
       if (!retryable(error) || attempt === retryCount) break;
@@ -162,7 +162,7 @@ export async function aiText(
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error("NVIDIA NIM request failed. Please try again.");
+  throw lastError instanceof Error ? lastError : new Error("Groq request failed. Please try again.");
 }
 
 /** Parse a complete JSON object/array from an AI response, tolerating fences and stray prose. */

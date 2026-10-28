@@ -4,8 +4,8 @@ import { verifySupabaseAccessToken } from "@/integrations/supabase/verify-token.
 // Stay below Vercel Functions’ request-body cap, including multipart overhead.
 // The recorder’s 60-second 16 kHz mono WAV segments are about 1.9 MiB.
 const MAX_FILE = 4 * 1024 * 1024;
-const DEFAULT_ASR_ENDPOINT =
-  "https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions";
+const GROQ_ASR_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions";
+const GROQ_ASR_MODEL = process.env["GROQ_ASR_MODEL"]?.trim() || "whisper-large-v3-turbo";
 
 function json(data: unknown, status: number) {
   return new Response(JSON.stringify(data), {
@@ -51,12 +51,12 @@ async function authorized(request: Request) {
 }
 
 function safeProviderMessage(status: number) {
-  if (status === 400 || status === 415) return "NVIDIA transcription could not read this audio. Try recording again.";
-  if (status === 401 || status === 403) return "NVIDIA NIM rejected the transcription request. Check your NVIDIA API key and ASR model access.";
+  if (status === 400 || status === 415) return "Groq transcription could not read this audio. Try recording again.";
+  if (status === 401 || status === 403) return "Groq rejected the transcription request. Check GROQ_API_KEY and model access.";
   if (status === 413) return "This audio segment is too large for transcription.";
-  if (status === 429) return "NVIDIA transcription is busy right now. Please wait a moment and try again.";
-  if (status === 402) return "NVIDIA transcription access or credits are unavailable for this model.";
-  return "NVIDIA transcription failed. Please try again in a moment.";
+  if (status === 429) return "Groq transcription is busy right now. Please wait a moment and try again.";
+  if (status === 402) return "Groq transcription access or usage limits are unavailable for this model.";
+  return "Groq transcription failed. Please try again in a moment.";
 }
 
 export const Route = createFileRoute("/api/transcribe")({
@@ -70,8 +70,8 @@ export const Route = createFileRoute("/api/transcribe")({
           return json({ error: "Audio segment too large." }, 413);
         }
 
-        const apiKey = process.env["NVIDIA_API_KEY"]?.trim();
-        if (!apiKey) return json({ error: "NVIDIA NIM is not configured on the server." }, 500);
+        const apiKey = process.env["GROQ_API_KEY"]?.trim();
+        if (!apiKey) return json({ error: "Groq is not configured on the server. Set GROQ_API_KEY in Vercel." }, 500);
 
         let form: FormData;
         try {
@@ -93,24 +93,15 @@ export const Route = createFileRoute("/api/transcribe")({
           String.fromCharCode(...header.slice(8, 12)) === "WAVE";
         if (!isWav) return json({ error: "Audio must be a valid WAV segment. Please record again." }, 415);
 
-        const endpoint = process.env["NVIDIA_ASR_ENDPOINT"]?.trim() || DEFAULT_ASR_ENDPOINT;
-        let endpointUrl: URL;
-        try {
-          endpointUrl = new URL(endpoint);
-        } catch {
-          return json({ error: "NVIDIA_ASR_ENDPOINT is not a valid URL." }, 500);
-        }
-        if (endpointUrl.protocol !== "https:") {
-          return json({ error: "NVIDIA_ASR_ENDPOINT must use HTTPS." }, 500);
-        }
-
         const upstreamForm = new FormData();
-        upstreamForm.append("language", "en-US");
+        upstreamForm.append("model", GROQ_ASR_MODEL);
+        upstreamForm.append("language", "en");
+        upstreamForm.append("response_format", "json");
         upstreamForm.append("file", new File([file], file.name || "segment.wav", { type: "audio/wav" }));
 
         let upstream: Response;
         try {
-          upstream = await fetch(endpointUrl, {
+          upstream = await fetch(GROQ_ASR_ENDPOINT, {
             method: "POST",
             headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
             body: upstreamForm,
@@ -119,9 +110,9 @@ export const Route = createFileRoute("/api/transcribe")({
         } catch (error) {
           if (request.signal.aborted) return new Response(null, { status: 499 });
           if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-            return json({ error: "NVIDIA transcription timed out. Please try the segment again." }, 504);
+            return json({ error: "Groq transcription timed out. Please try the segment again." }, 504);
           }
-          return json({ error: "Couldn't connect to NVIDIA transcription. Please try again." }, 502);
+          return json({ error: "Couldn't connect to Groq transcription. Please try again." }, 502);
         }
 
         if (!upstream.ok) {
@@ -138,7 +129,7 @@ export const Route = createFileRoute("/api/transcribe")({
         try {
           payload = await upstream.json() as { text?: unknown };
         } catch {
-          return json({ error: "NVIDIA transcription returned an unreadable response." }, 502);
+          return json({ error: "Groq transcription returned an unreadable response." }, 502);
         }
         const transcript = typeof payload.text === "string" ? payload.text.trim() : "";
         if (!transcript) return json({ error: "No speech was detected in this audio segment." }, 422);

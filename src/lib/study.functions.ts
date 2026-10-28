@@ -1064,7 +1064,7 @@ export const ocrFile = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const task = data.task ?? "transcribe";
-    // NVIDIA's OpenAI-compatible vision API expects images as image_url parts;
+    // Groq's OpenAI-compatible vision API expects images as image_url parts;
     // PDF pages are rendered to JPEGs in the browser before they reach this endpoint.
     const file = {
       type: "image_url" as const,
@@ -1079,7 +1079,7 @@ ${data.context?.trim() || "No extracted lecture text was supplied. Describe only
 
 LECTURE CONTEXT:
 ${data.context?.trim() || "No additional lecture context supplied; use only the provided file."}`;
-    const visionModel = process.env["NIM_VISION_MODEL"]?.trim() || "meta/llama-3.2-90b-vision-instruct";
+    const visionModel = process.env["GROQ_VISION_MODEL"]?.trim() || "qwen/qwen3.8-27b";
     const text = await aiText(
       system,
       [
