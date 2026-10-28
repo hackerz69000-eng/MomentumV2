@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { aiText, parseJson, clip, splitTextIntoChunks } from "./ai.server";
+import { aiImage, aiText, parseJson, clip, splitTextIntoChunks } from "./ai.server";
 import { setStats, type Attempt, type AttemptResult, type Flashcard } from "./stats";
 import { activityStats } from "./activity";
 import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server";
@@ -369,6 +369,10 @@ async function validateQuestions(
       lastError = new Error("The AI reviewer returned no usable questions.");
     } catch (error) {
       lastError = error;
+      // Rate limits are not a content-validation failure. Don't send more requests
+      // that will likely be rejected; preserve the draft, which already passed the
+      // local schema checks, and let the quiz continue.
+      if (error instanceof Error && /rate limit reached|\b429\b/i.test(error.message)) break;
     }
   }
   // The generation draft has already passed strict local schema validation. If the
@@ -441,6 +445,11 @@ IMPORTANT RETRY: Your previous response could not be parsed as complete JSON. Re
       lastError = new Error("The AI returned JSON but no usable questions.");
     } catch (error) {
       lastError = error;
+      // A 429 is a provider quota/rate-limit response, not malformed model JSON.
+      // Fail clearly instead of immediately repeating the same blocked request.
+      if (error instanceof Error && /rate limit reached|\b429\b/i.test(error.message)) {
+        throw error;
+      }
     }
   }
   const detail = lastError instanceof Error ? lastError.message : "Unknown AI response error";
@@ -1064,12 +1073,7 @@ export const ocrFile = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const task = data.task ?? "transcribe";
-    // Groq's OpenAI-compatible vision API expects images as image_url parts;
-    // PDF pages are rendered to JPEGs in the browser before they reach this endpoint.
-    const file = {
-      type: "image_url" as const,
-      image_url: { url: data.data },
-    };
+    // PDF pages are rendered to JPEGs in the browser before they reach Bytez.
     const system = task === "describe_visuals"
       ? `You are a careful visual-learning assistant helping a student understand lecture material. Inspect the supplied document/image for meaningful visual content: diagrams, charts, graphs, maps, timelines, equations, labelled illustrations, tables, photographs, and visual examples. Describe what is visibly present, including labels, axes, arrows, comparisons, trends, and relationships. Explain what the visual is showing and how it connects to the lecture context supplied below. Use page/slide markers only when they are visible or reliably available. Do not merely repeat surrounding text; do not guess unreadable labels or unsupported meanings. Clearly mark uncertainty. If there are no meaningful visuals, say exactly: No meaningful visual content detected.
 
@@ -1079,19 +1083,11 @@ ${data.context?.trim() || "No extracted lecture text was supplied. Describe only
 
 LECTURE CONTEXT:
 ${data.context?.trim() || "No additional lecture context supplied; use only the provided file."}`;
-    const visionModel = process.env["GROQ_VISION_MODEL"]?.trim() || "qwen/qwen3.8-27b";
-    const text = await aiText(
-      system,
-      [
-        {
-          role: "user",
-          content: [{ type: "text", text: task === "describe_visuals"
-            ? `Analyze the visual content in ${data.filename}. Focus on the meaning of the visuals in relation to the supplied lecture context.`
-            : `Read and explain the content of ${data.filename}, including its visuals.` }, file],
-        },
-      ],
-      { grounded: false, model: visionModel, timeoutMs: 90_000 },
-    );
+    const visionModel = process.env["BYTEZ_VISION_MODEL"]?.trim() || "Qwen/Qwen2.5-VL-7B-Instruct";
+    const prompt = task === "describe_visuals"
+      ? `Analyze the visual content in ${data.filename}. Focus on the meaning of the visuals in relation to the supplied lecture context.`
+      : `Read and explain the content of ${data.filename}, including its visuals.`;
+    const text = await aiImage(system, prompt, data.data, { model: visionModel, timeoutMs: 90_000 });
     return { text };
   });
 

@@ -1,44 +1,116 @@
-const GROQ_MODEL = process.env["GROQ_MODEL"]?.trim() || "openai/gpt-oss-20b";
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const BYTEZ_MODEL = process.env["BYTEZ_MODEL"]?.trim() || "microsoft/Phi-3-mini-4k-instruct";
+const BYTEZ_URL = "https://api.bytez.com/models/v2";
 
 type ModelMessage = {
   role: "user" | "assistant";
-  // The OCR flow sends multimodal file/image content; other AI tools send plain text.
   content: string | Array<Record<string, unknown>>;
 };
 
-class GroqError extends Error {
+class BytezError extends Error {
   statusCode?: number;
   constructor(message: string, statusCode?: number) {
     super(message);
-    this.name = "GroqError";
+    this.name = "BytezError";
     this.statusCode = statusCode;
   }
 }
 
-function groqErrorMessage(status: number, body: string): string {
-  let detail = body.trim();
+function providerDetail(body: string): string {
   try {
-    const parsed = JSON.parse(body) as { error?: { message?: string } | string };
-    if (typeof parsed.error === "string") detail = parsed.error;
-    else if (parsed.error?.message) detail = parsed.error.message;
+    const parsed = JSON.parse(body) as { error?: { message?: string } | string; message?: string; detail?: string };
+    if (typeof parsed.error === "string") return parsed.error;
+    if (parsed.error?.message) return parsed.error.message;
+    if (parsed.message) return parsed.message;
+    if (parsed.detail) return parsed.detail;
   } catch {
-    // Keep the raw response when Groq does not return JSON.
+    // Keep raw response when the provider does not return JSON.
+  }
+  return body.trim();
+}
+
+function bytezErrorMessage(status: number, body: string): string {
+  const detail = providerDetail(body).slice(0, 800);
+  if (status === 401 || status === 403) return "Bytez rejected the API key or model access. Check BYTEZ_API_KEY and the selected model in Bytez, then redeploy.";
+  if (status === 402) return "Bytez needs more credits or this model is not available on your current plan. Check your Bytez dashboard.";
+  if (status === 429) return "Bytez is rate-limiting requests. Wait a little and try again; avoid generating multiple quizzes at once.";
+  if (status === 413) return "The AI request is too large. Try fewer questions or a smaller source document.";
+  return `Bytez request failed${detail ? `: ${detail}` : ` (HTTP ${status}).`}`;
+}
+
+function extractText(output: unknown): string {
+  if (typeof output === "string") return output.trim();
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      if (typeof item === "string" && item.trim()) return item.trim();
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        if (typeof record.generated_text === "string" && record.generated_text.trim()) return record.generated_text.trim();
+        if (Array.isArray(record.generated_text)) {
+          const messages = record.generated_text as Array<Record<string, unknown>>;
+          const last = [...messages].reverse().find((message) => message.role === "assistant" && typeof message.content === "string");
+          if (typeof last?.content === "string" && last.content.trim()) return last.content.trim();
+        }
+        if (typeof record.text === "string" && record.text.trim()) return record.text.trim();
+      }
+    }
+  }
+  if (output && typeof output === "object") {
+    const record = output as Record<string, unknown>;
+    if (typeof record.generated_text === "string") return record.generated_text.trim();
+    if (Array.isArray(record.generated_text)) {
+      const messages = record.generated_text as Array<Record<string, unknown>>;
+      const last = [...messages].reverse().find((message) => message.role === "assistant" && typeof message.content === "string");
+      if (typeof last?.content === "string" && last.content.trim()) return last.content.trim();
+    }
+    if (typeof record.text === "string") return record.text.trim();
+    if (typeof record.content === "string") return record.content.trim();
+  }
+  return "";
+}
+
+async function callBytez(
+  system: string,
+  messages: ModelMessage[],
+  timeoutMs = 90_000,
+  model = BYTEZ_MODEL,
+): Promise<string> {
+  const apiKey = process.env["BYTEZ_API_KEY"]?.trim();
+  if (!apiKey) throw new BytezError("Bytez is not configured on the server. Set BYTEZ_API_KEY in Vercel, then redeploy.");
+
+  let response: Response;
+  try {
+    response = await fetch(`${BYTEZ_URL}/${model}`, {
+      method: "POST",
+      headers: { Authorization: apiKey, "Content-Type": "application/json", Accept: "application/json" },
+      signal: AbortSignal.timeout(timeoutMs),
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: system },
+          ...messages.map((message) => ({ role: message.role, content: message.content })),
+        ],
+        stream: false,
+        params: { temperature: 0.2, max_length: 6000 },
+      }),
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    throw new BytezError(timedOut
+      ? "The Bytez request timed out. Try fewer questions or a shorter response."
+      : "Couldn't connect to Bytez. Check the server connection and try again.", timedOut ? 408 : undefined);
   }
 
-  if (status === 401) {
-    return "Groq rejected the API key. Check GROQ_API_KEY in your Vercel environment variables and redeploy.";
-  }
-  if (status === 402) {
-    return "Groq rejected the request because access or billing may be unavailable for this model. Check your Groq Console model access and usage limits.";
-  }
-  if (status === 403) {
-    return `Groq denied the request${detail ? `: ${detail.slice(0, 1000)}` : "."}`;
-  }
-  if (status === 429) {
-    return "Groq rate limit reached. Please wait a moment and try again.";
-  }
-  return `Groq request failed${detail ? `: ${detail.slice(0, 1000)}` : ` (HTTP ${status}).`}`;
+  let body: string;
+  try { body = await response.text(); }
+  catch { throw new BytezError("Bytez returned an unreadable response.", 502); }
+  if (!response.ok) throw new BytezError(bytezErrorMessage(response.status, body), response.status);
+
+  let payload: { output?: unknown; error?: unknown };
+  try { payload = JSON.parse(body) as { output?: unknown; error?: unknown }; }
+  catch { throw new BytezError("Bytez returned an invalid response.", 502); }
+  if (payload.error) throw new BytezError(typeof payload.error === "string" ? payload.error : "Bytez reported an inference error.", 502);
+  const text = extractText(payload.output);
+  if (!text) throw new BytezError("Bytez returned an empty or unrecognized response. Check that the selected model supports chat messages.", 502);
+  return text;
 }
 
 /** Appended to every AI system prompt: the student's materials are the primary source. */
@@ -64,80 +136,6 @@ QUALITY RULES:
 - Focus on important testable ideas rather than trivia.
 `;
 
-async function callGroq(system: string, messages: ModelMessage[], timeoutMs = 90_000, model = GROQ_MODEL): Promise<string> {
-  const apiKey = process.env["GROQ_API_KEY"]?.trim();
-  if (!apiKey) {
-    throw new GroqError(
-      "Groq is not configured on the server. Set GROQ_API_KEY in the Vercel environment variables, then redeploy.",
-    );
-  }
-
-  let response: Response;
-  try {
-    response = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      // Bound provider latency, but leave enough time for larger study tasks.
-      signal: AbortSignal.timeout(timeoutMs),
-      body: JSON.stringify({
-        model,
-        temperature: 0.2,
-        max_completion_tokens: 6000,
-        stream: false,
-        messages: [
-          { role: "system", content: system },
-          ...messages.map((message) => ({ role: message.role, content: message.content })),
-        ],
-      }),
-    });
-  } catch (error) {
-    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-    // Normalize fetch failures so the retry policy handles timeouts and transient network errors.
-    throw new GroqError(
-      timedOut
-        ? "The AI request timed out. Please try again, or request a smaller response."
-        : "Couldn't connect to Groq. Check the server connection and try again.",
-      timedOut ? 408 : undefined,
-    );
-  }
-
-  let body: string;
-  try {
-    body = await response.text();
-  } catch {
-    throw new GroqError("Groq returned an unreadable response.", 502);
-  }
-  if (!response.ok) {
-    throw new GroqError(groqErrorMessage(response.status, body), response.status);
-  }
-
-  let payload: { choices?: Array<{ message?: { content?: string | null }; finish_reason?: string }> };
-  try {
-    payload = JSON.parse(body) as { choices?: Array<{ message?: { content?: string | null }; finish_reason?: string }> };
-  } catch {
-    throw new GroqError("Groq returned an invalid response.", 502);
-  }
-
-  const choice = payload.choices?.[0];
-  if (choice?.finish_reason === "length") {
-    throw new GroqError("The AI response reached its output limit. Please request fewer questions or a shorter response.", 413);
-  }
-  const text = choice?.message?.content?.trim();
-  if (!text) throw new GroqError("Groq returned an empty response.", 502);
-  return text;
-}
-
-function retryable(err: unknown) {
-  if (!(err instanceof GroqError)) return false;
-  const status = err.statusCode;
-  return status === 408 || status === 429 || (typeof status === "number" && status >= 500) ||
-    /returned an invalid response|returned an empty response|unreadable response|couldn't connect/i.test(err.message);
-}
-
 export async function aiText(
   system: string,
   messages: ModelMessage[],
@@ -147,22 +145,54 @@ export async function aiText(
 
   // A bounded retry policy helps with provider/network instability without
   // multiplying requests indefinitely or retrying credential/configuration errors.
-  const delays = [800, 1800];
+  const delays = [1200, 3000];
   const retryCount = Math.max(0, Math.min(delays.length, opts.retries ?? delays.length));
   const timeoutMs = Math.max(1000, Math.min(90_000, opts.timeoutMs ?? 90_000));
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= retryCount; attempt += 1) {
     try {
-      return await callGroq(system, messages, timeoutMs, opts.model?.trim() || GROQ_MODEL);
+      return await callBytez(system, messages, timeoutMs, opts.model?.trim() || BYTEZ_MODEL);
     } catch (error) {
       lastError = error;
-      if (!retryable(error) || attempt === retryCount) break;
+      // Retry transient failures and rate limits only; never retry auth, credit, or model errors.
+      const status = error instanceof BytezError ? error.statusCode : undefined;
+      const retryable = status === 408 || status === 429 || (typeof status === "number" && status >= 500) ||
+        (error instanceof BytezError && /invalid response|empty or unrecognized|unreadable response|couldn't connect/i.test(error.message));
+      if (!retryable || attempt === retryCount) break;
       await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error("Groq request failed. Please try again.");
+  throw lastError instanceof Error ? lastError : new Error("Bytez request failed. Please try again.");
+}
+
+/** Call a Bytez vision model using its documented text + base64 multi-input schema. */
+export async function aiImage(system: string, prompt: string, base64Image: string, opts: { model?: string; timeoutMs?: number } = {}): Promise<string> {
+  const apiKey = process.env["BYTEZ_API_KEY"]?.trim();
+  if (!apiKey) throw new BytezError("Bytez is not configured on the server. Set BYTEZ_API_KEY in Vercel, then redeploy.");
+  const model = opts.model?.trim() || process.env["BYTEZ_VISION_MODEL"]?.trim() || "Qwen/Qwen2.5-VL-7B-Instruct";
+  let response: Response;
+  try {
+    response = await fetch(`${BYTEZ_URL}/${model}`, {
+      method: "POST",
+      headers: { Authorization: apiKey, "Content-Type": "application/json", Accept: "application/json" },
+      signal: AbortSignal.timeout(Math.max(1000, Math.min(90_000, opts.timeoutMs ?? 90_000))),
+      body: JSON.stringify({ text: `${system}\n\n${prompt}`, base64: base64Image, stream: false, params: { temperature: 0.2, max_length: 6000 } }),
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    throw new BytezError(timedOut ? "The Bytez vision request timed out. Try a smaller image." : "Couldn't connect to Bytez vision. Please try again.", timedOut ? 408 : undefined);
+  }
+  const body = await response.text();
+  if (!response.ok) throw new BytezError(bytezErrorMessage(response.status, body), response.status);
+  let payload: { output?: unknown; error?: unknown };
+  try { payload = JSON.parse(body) as { output?: unknown; error?: unknown }; }
+  catch { throw new BytezError("Bytez vision returned an invalid response.", 502); }
+  if (payload.error) throw new BytezError(typeof payload.error === "string" ? payload.error : "Bytez vision inference failed.", 502);
+  const text = extractText(payload.output);
+  if (!text) throw new BytezError("Bytez vision returned an empty response. Check that the selected model supports image inputs.", 502);
+  return text;
 }
 
 /** Parse a complete JSON object/array from an AI response, tolerating fences and stray prose. */
