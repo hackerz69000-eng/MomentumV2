@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { BookOpenText, Globe, Loader2, Send } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { prepareAskMaterialsStream, saveAskMaterialsStreamReply, type SourceRef } from "@/lib/ask.functions";
-import { streamAiText } from "@/lib/ai-stream.client";
+import { streamAiText } from "@/lib/ai-stream";
 import type { StudySet } from "@/lib/queries";
 import { ErrorBox } from "./ui";
 

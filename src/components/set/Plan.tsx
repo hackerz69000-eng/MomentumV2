@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { CalendarDays, Loader2 } from "lucide-react";
 import { generatePlan, type PlanDay } from "@/lib/study.functions";
-import { streamAiJson } from "@/lib/ai-stream.client";
+import { streamAiJson } from "@/lib/ai-stream";
 import type { StudySet } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { btnPrimary, ErrorBox, inputCls } from "./ui";

@@ -2,7 +2,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef, useState, type FormEvent } from "react";
-import { streamAiText, streamAiJson } from "@/lib/ai-stream.client";
+import { streamAiText, streamAiJson } from "@/lib/ai-stream";
 import { toast } from "sonner";
 import { BookOpen, FileText, GraduationCap, Loader2, MessageCircle, Sparkles, Layers, RefreshCw, Send, Link2, Unlink, BookMarked, LibraryBig, AlertTriangle, Trash2, Copy, Check, ChevronDown, ChevronUp } from "lucide-react";
 import type { StudySet } from "@/lib/queries";

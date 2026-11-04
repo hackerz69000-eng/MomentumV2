@@ -21,7 +21,7 @@ import { fetchCards, fetchSet, fetchSets, type StudySet } from "@/lib/queries";
 import { computeProgress } from "@/lib/progress";
 import { supabase } from "@/integrations/supabase/client";
 import { prepareTutorStream, saveTutorStreamReply, processSet } from "@/lib/study.functions";
-import { streamAiText, streamAiJson, streamPreparedNotes } from "@/lib/ai-stream.client";
+import { streamAiText, streamAiJson, streamPreparedNotes } from "@/lib/ai-stream";
 import { setStats, type Attempt } from "@/lib/stats";
 import { cn } from "@/lib/utils";
 import { ErrorBox } from "@/components/set/ui";

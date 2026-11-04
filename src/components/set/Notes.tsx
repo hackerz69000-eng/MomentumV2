@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Headphones, Lightbulb, Loader2, RefreshCw, X } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { prepareExplainPassageStream, regenerateNotes } from "@/lib/study.functions";
-import { streamAiText, streamPreparedNotes } from "@/lib/ai-stream.client";
+import { streamAiText, streamPreparedNotes } from "@/lib/ai-stream";
 import type { StudySet } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import {

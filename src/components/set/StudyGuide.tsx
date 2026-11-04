@@ -5,7 +5,7 @@ import { useMemo, useRef, useState } from "react";
 import { CalendarDays, CheckSquare, Headphones, Loader2, RefreshCw, ScrollText } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { generateGuide } from "@/lib/study.functions";
-import { streamAiText } from "@/lib/ai-stream.client";
+import { streamAiText } from "@/lib/ai-stream";
 import { fetchSets, type StudySet } from "@/lib/queries";
 import { btnGhost, btnPrimary, ErrorBox, inputCls } from "./ui";
 

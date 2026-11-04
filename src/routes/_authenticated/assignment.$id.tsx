@@ -10,7 +10,7 @@ import { ACCEPT, MAX_BYTES, extractFile, fileKind } from "@/lib/extract";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 import { assignmentStep, type AssignmentStep } from "@/lib/writing.functions";
-import { streamAiText } from "@/lib/ai-stream.client";
+import { streamAiText } from "@/lib/ai-stream";
 import { useAutosave } from "@/hooks/use-autosave";
 import { PageHeader } from "@/components/PageHeader";
 import { SaveStatus } from "@/components/SaveStatus";

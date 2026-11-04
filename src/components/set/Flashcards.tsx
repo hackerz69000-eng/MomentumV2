@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { ArrowLeft, ArrowRight, Loader2, Pencil, Plus, Shuffle, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { prepareRegenerateCardsStream, saveRegenerateCardsStream } from "@/lib/study.functions";
-import { streamAiJson } from "@/lib/ai-stream.client";
+import { streamAiJson } from "@/lib/ai-stream";
 import { trashRow } from "@/lib/trash";
 import { cardStats, isDue, schedule, shuffle, type Flashcard, type Rating } from "@/lib/stats";
 import { useAuth } from "@/hooks/use-auth";

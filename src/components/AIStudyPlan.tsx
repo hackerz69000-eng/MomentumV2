@@ -3,7 +3,7 @@ import { useMemo, useRef, useState } from "react";
 import { CalendarDays, Check, Loader2, Sparkles } from "lucide-react";
 import type { SetWithCards } from "@/lib/queries";
 import { generatePlan, type PlanDay } from "@/lib/study.functions";
-import { streamAiJson } from "@/lib/ai-stream.client";
+import { streamAiJson } from "@/lib/ai-stream";
 import { supabase } from "@/integrations/supabase/client";
 import { setStats, type Attempt, type Flashcard, type Mistake } from "@/lib/stats";
 import { toast } from "sonner";

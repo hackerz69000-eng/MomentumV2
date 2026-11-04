@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { processSet, ocrFile } from "@/lib/study.functions";
-import { streamAiJson, streamPreparedNotes } from "@/lib/ai-stream.client";
+import { streamAiJson, streamPreparedNotes } from "@/lib/ai-stream";
 import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { cn } from "@/lib/utils";
 

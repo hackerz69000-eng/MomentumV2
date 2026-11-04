@@ -3,7 +3,7 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 import { useState } from "react";
 import { HelpCircle, Loader2 } from "lucide-react";
 import { prepareExplainWhyStream } from "@/lib/explain.functions";
-import { streamAiText } from "@/lib/ai-stream.client";
+import { streamAiText } from "@/lib/ai-stream";
 
 /** "Explain why" button + inline explanation. Doesn't interrupt the activity. */
 export function ExplainWhy(props: {

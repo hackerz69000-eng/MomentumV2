@@ -1,7 +1,7 @@
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { streamPreparedNotes } from "@/lib/ai-stream.client";
+import { streamPreparedNotes } from "@/lib/ai-stream";
 import { toast } from "sonner";
 import { Download, FileText, Loader2, Plus, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";

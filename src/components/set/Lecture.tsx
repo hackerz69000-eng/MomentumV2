@@ -24,7 +24,7 @@ import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 import { useAuth } from "@/hooks/use-auth";
 import { prepareLectureNotesStream, saveLectureNotesStream, prepareLectureGuideStream, saveLectureGuideStream, prepareLectureCardsStream, saveLectureCardsStream } from "@/lib/lecture.functions";
-import { streamAiText, streamAiJson } from "@/lib/ai-stream.client";
+import { streamAiText, streamAiJson } from "@/lib/ai-stream";
 import { logActivity } from "@/lib/log-activity";
 import { micErrorMessage, startRecorder, transcribeSegment, type Recorder } from "@/lib/recorder";
 import type { StudySet } from "@/lib/queries";

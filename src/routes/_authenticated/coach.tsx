@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { Compass, Loader2, Send } from "lucide-react";
 import { prepareCoachStream } from "@/lib/study.functions";
-import { streamAiText } from "@/lib/ai-stream.client";
+import { streamAiText } from "@/lib/ai-stream";
 import { dayKey } from "@/lib/activity";
 import { btnPrimary, ErrorBox, inputCls } from "@/components/set/ui";
 import { cn } from "@/lib/utils";

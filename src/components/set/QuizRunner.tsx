@@ -1,5 +1,5 @@
 import { useServerFn } from "@tanstack/react-start";
-import { streamAiJson, streamAiText } from "@/lib/ai-stream.client";
+import { streamAiJson, streamAiText } from "@/lib/ai-stream";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";

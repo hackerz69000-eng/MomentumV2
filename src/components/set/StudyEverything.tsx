@@ -7,7 +7,7 @@ import { Headphones, Loader2, SkipForward, Sparkles, Square } from "lucide-react
 import { useNavigate } from "@tanstack/react-router";
 import { supabase } from "@/integrations/supabase/client";
 import { planSession, type SessionStep } from "@/lib/study.functions";
-import { streamAiJson } from "@/lib/ai-stream.client";
+import { streamAiJson } from "@/lib/ai-stream";
 import { dayKey } from "@/lib/activity";
 import { logActivity } from "@/lib/log-activity";
 import type { StudySet } from "@/lib/queries";

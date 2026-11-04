@@ -2,7 +2,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { streamAiText, streamAiJson } from "@/lib/ai-stream.client";
+import { streamAiText, streamAiJson } from "@/lib/ai-stream";
 import { toast } from "sonner";
 import {
   AudioLines,

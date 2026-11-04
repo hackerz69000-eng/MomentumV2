@@ -6,7 +6,7 @@ import { Loader2, Search as SearchIcon, Sparkles } from "lucide-react";
 import { z } from "zod";
 import { looksLikeQuestion, searchAll, terms, type Hit } from "@/lib/global-search";
 import { prepareSearchAnswerStream } from "@/lib/explain.functions";
-import { streamAiText } from "@/lib/ai-stream.client";
+import { streamAiText } from "@/lib/ai-stream";
 import { PageHeader } from "@/components/PageHeader";
 import { btnGhost, btnPrimary, ErrorBox, inputCls } from "@/components/set/ui";
 

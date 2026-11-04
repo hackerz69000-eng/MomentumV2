@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, BookOpenCheck, Check, ChevronRight, Loader2, Network, RefreshCw, Sparkles } from "lucide-react";
 import type { SetWithCards } from "@/lib/queries";
 import { prepareConceptConnectionsStream } from "@/lib/study.functions";
-import { streamAiJson } from "@/lib/ai-stream.client";
+import { streamAiJson } from "@/lib/ai-stream";
 import { toast } from "sonner";
 
 type SavedMap = { id: string; title: string; setId: string; createdAt: string; concepts: Concept[] };
