@@ -25,7 +25,7 @@ export const prepareAudioStudyStream = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), mode: modeSchema, requestKey: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }) => {
     const sb = context.supabase;
-    const { data: duplicate } = await sb.from("audio_study_sessions").select("*").eq("request_key", data.requestKey).maybeSingle();
+    const { data: duplicate } = await sb.from("audio_study_sessions").select("*").eq("request_key", data.requestKey).eq("user_id", context.userId).maybeSingle();
     if (duplicate?.status === "ready") return { existingSession: duplicate as SessionRow };
     const set = await loadSet(sb, data.setId);
     const [{ data: cards }, { data: attempts }, { data: lectures }, mistakes] = await Promise.all([
@@ -56,11 +56,11 @@ export const saveAudioStudyStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ sessionId: z.string().uuid(), title: z.string().min(1).max(160), sections: z.array(z.object({ title: z.string().min(1).max(120), topic: z.string().max(80), narration: z.string().min(1).max(3900) })).min(2).max(12) }).parse(d))
   .handler(async ({ data, context }) => {
-    const { data: session, error: readError } = await context.supabase.from("audio_study_sessions").select("id").eq("id", data.sessionId).single();
+    const { data: session, error: readError } = await context.supabase.from("audio_study_sessions").select("id").eq("id", data.sessionId).eq("user_id", context.userId).single();
     if (readError || !session) throw new Error("The audio lesson session couldn't be found.");
     const sections = data.sections.map((section) => ({ title: section.title, topic: section.topic || section.title, narration: section.narration }));
     const script = sections.map((section) => `## ${section.title}\n\n${section.narration}`).join("\n\n");
-    const { data: saved, error } = await context.supabase.from("audio_study_sessions").update({ title: data.title, script, sections, status: "ready", audio_error: null, updated_at: new Date().toISOString() }).eq("id", session.id).select("*").single();
+    const { data: saved, error } = await context.supabase.from("audio_study_sessions").update({ title: data.title, script, sections, status: "ready", audio_error: null, updated_at: new Date().toISOString() }).eq("id", session.id).eq("user_id", context.userId).select("*").single();
     if (error || !saved) throw new Error("The lesson was written but couldn't be saved. Please try again.");
     return { session: saved };
   });
@@ -69,7 +69,7 @@ export const failAudioStudyStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ sessionId: z.string().uuid(), error: z.string().min(1).max(500) }).parse(d))
   .handler(async ({ data, context }) => {
-    const { error } = await context.supabase.from("audio_study_sessions").update({ status: "error", audio_error: data.error, updated_at: new Date().toISOString() }).eq("id", data.sessionId);
+    const { error } = await context.supabase.from("audio_study_sessions").update({ status: "error", audio_error: data.error, updated_at: new Date().toISOString() }).eq("id", data.sessionId).eq("user_id", context.userId);
     if (error) throw new Error("Couldn't mark the failed audio session for retry.");
     return { ok: true };
   });
@@ -87,6 +87,7 @@ export const generateAudioSpeech = createServerFn({ method: "POST" })
       .from("audio_study_sessions")
       .select("*")
       .eq("id", data.sessionId)
+      .eq("user_id", context.userId)
       .single();
     if (error || !session?.script) throw new Error("The saved lesson script couldn't be found.");
     const sections = (session.sections as AudioSection[] | null) ?? [];
@@ -107,7 +108,8 @@ export const generateAudioSpeech = createServerFn({ method: "POST" })
           status: "ready",
           updated_at: new Date().toISOString(),
         })
-        .eq("id", session.id);
+        .eq("id", session.id)
+        .eq("user_id", context.userId);
       return { paths, complete };
     };
     const merge = (p: string) => Array.from(new Set([...(session.audio_paths ?? []), p])).sort();
@@ -170,7 +172,8 @@ export const generateAudioSpeech = createServerFn({ method: "POST" })
           status: "audio_error",
           updated_at: new Date().toISOString(),
         })
-        .eq("id", session.id);
+        .eq("id", session.id)
+        .eq("user_id", context.userId);
       throw new Error(`Audio generation failed: ${message}`);
     }
   });
@@ -218,7 +221,7 @@ export const prepareAudioStudyQuizStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ sessionId: z.string().uuid(), sectionIndex: z.number().int().min(0).max(20) }).parse(d))
   .handler(async ({ data, context }) => {
-    const { data: session } = await context.supabase.from("audio_study_sessions").select("*").eq("id", data.sessionId).single();
+    const { data: session } = await context.supabase.from("audio_study_sessions").select("*").eq("id", data.sessionId).eq("user_id", context.userId).single();
     if (!session) throw new Error("This audio session couldn't be found.");
     const set = await loadSet(context.supabase, session.set_id);
     const sections = (session.sections as AudioSection[] | null) ?? [];
@@ -237,7 +240,7 @@ export const saveAudioStudyQuizStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ sessionId: z.string().uuid(), sectionIndex: z.number().int().min(0).max(20), question: z.string().min(1).max(1000), topic: z.string().max(80), model: z.string().min(1).max(3000) }).parse(d))
   .handler(async ({ data, context }) => {
-    const { data: session, error } = await context.supabase.from("audio_study_sessions").select("id,set_id").eq("id", data.sessionId).single();
+    const { data: session, error } = await context.supabase.from("audio_study_sessions").select("id,set_id").eq("id", data.sessionId).eq("user_id", context.userId).single();
     if (error || !session) throw new Error("This audio session couldn't be found.");
     const { error: saveError } = await context.supabase.from("audio_study_events").insert({ user_id: context.userId, session_id: session.id, kind: "quiz_question", content: data.question, context: { sectionIndex: data.sectionIndex, topic: data.topic, model: data.model } });
     if (saveError) throw new Error("The quiz question was created but couldn't be saved.");

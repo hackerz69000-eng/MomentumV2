@@ -19,8 +19,8 @@ RULES: Use only what is in the transcript. If you add anything not said in the l
 
 const idIn = (d: unknown) => z.object({ lectureId: z.string().uuid() }).parse(d);
 
-async function loadLecture(sb: any, id: string) {
-  const { data, error } = await sb.from("lectures").select("*").eq("id", id).single();
+async function loadLecture(sb: any, id: string, userId: string) {
+  const { data, error } = await sb.from("lectures").select("*").eq("id", id).eq("user_id", userId).single();
   if (error || !data) throw new Error("Lecture not found");
   if (!data.transcript?.trim()) throw new Error("This lecture has no transcript yet.");
   return data as {
@@ -35,7 +35,7 @@ async function loadLecture(sb: any, id: string) {
 export const prepareLectureNotesStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth]).inputValidator(idIn)
   .handler(async ({ data, context }) => {
-    const lec = await loadLecture(context.supabase, data.lectureId);
+    const lec = await loadLecture(context.supabase, data.lectureId, context.userId);
     const set = await loadSet(context.supabase, lec.set_id);
     return { system: LECTURE_NOTES + ci(set), messages: [{ role: "user" as const, content: `STUDY SET: ${set.name} (${set.subject || "general"})\nLECTURE: ${lec.title}\n\nTRANSCRIPT:\n${clip(lec.transcript, 80000)}` }] };
   });
@@ -44,8 +44,8 @@ export const saveLectureNotesStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ lectureId: z.string().uuid(), notes: z.string().min(20).max(100000) }).parse(d))
   .handler(async ({ data, context }) => {
-    const lec = await loadLecture(context.supabase, data.lectureId);
-    const { error } = await context.supabase.from("lectures").update({ notes: data.notes, updated_at: new Date().toISOString() }).eq("id", lec.id);
+    const lec = await loadLecture(context.supabase, data.lectureId, context.userId);
+    const { error } = await context.supabase.from("lectures").update({ notes: data.notes, updated_at: new Date().toISOString() }).eq("id", lec.id).eq("user_id", context.userId);
     if (error) throw new Error("Lecture notes were generated but couldn't be saved.");
     return { notes: data.notes };
   });
@@ -53,7 +53,7 @@ export const saveLectureNotesStream = createServerFn({ method: "POST" })
 export const prepareLectureGuideStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth]).inputValidator(idIn)
   .handler(async ({ data, context }) => {
-    const lec = await loadLecture(context.supabase, data.lectureId);
+    const lec = await loadLecture(context.supabase, data.lectureId, context.userId);
     const set = await loadSet(context.supabase, lec.set_id);
     return {
       system: `You write a structured study guide in Markdown from ONE lecture transcript. Start with "# Study Guide: ${lec.title.replace(/"/g, "")}". Use "## " sections: Main Topics, Key Concepts, Definitions, Key Facts, Examples, What the Teacher Emphasized, Likely Test Questions, Quick Review. Only use the lecture; label anything else "(Additional context)". No preamble.${ci(set)}`,
@@ -65,9 +65,9 @@ export const saveLectureGuideStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ lectureId: z.string().uuid(), guide: z.string().min(20).max(100000) }).parse(d))
   .handler(async ({ data, context }) => {
-    const lec = await loadLecture(context.supabase, data.lectureId);
+    const lec = await loadLecture(context.supabase, data.lectureId, context.userId);
     const set = await loadSet(context.supabase, lec.set_id);
-    const { error } = await context.supabase.from("lectures").update({ guide: data.guide, updated_at: new Date().toISOString() }).eq("id", lec.id);
+    const { error } = await context.supabase.from("lectures").update({ guide: data.guide, updated_at: new Date().toISOString() }).eq("id", lec.id).eq("user_id", context.userId);
     if (error) throw new Error("The study guide was generated but couldn't be saved.");
     await context.supabase.from("study_activity").insert({ user_id: context.userId, set_id: set.id, kind: "guide", count: 1, meta: { lecture: lec.id } });
     return { guide: data.guide };
@@ -76,7 +76,7 @@ export const saveLectureGuideStream = createServerFn({ method: "POST" })
 export const prepareLectureCardsStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth]).inputValidator(idIn)
   .handler(async ({ data, context }) => {
-    const lec = await loadLecture(context.supabase, data.lectureId);
+    const lec = await loadLecture(context.supabase, data.lectureId, context.userId);
     const set = await loadSet(context.supabase, lec.set_id);
     return {
       system: `You create flashcards from a lecture transcript. Return ONLY JSON: {"cards":[{"q":"question or term","a":"concise answer","t":"short topic name (2-4 words)"}]}. 10-20 high-value cards on concepts, definitions, facts and things the teacher emphasized. Only use what the lecture says. Answers under 40 words.${ci(set)}`,
@@ -88,7 +88,7 @@ export const saveLectureCardsStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ lectureId: z.string().uuid(), cards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(100) })).min(1).max(25) }).parse(d))
   .handler(async ({ data, context }) => {
-    const lec = await loadLecture(context.supabase, data.lectureId);
+    const lec = await loadLecture(context.supabase, data.lectureId, context.userId);
     const set = await loadSet(context.supabase, lec.set_id);
     const cards = data.cards.filter((card, index, all) => all.findIndex((other) => other.q.trim().toLowerCase() === card.q.trim().toLowerCase()) === index);
     if (!cards.length) throw new Error("No valid flashcards were provided.");

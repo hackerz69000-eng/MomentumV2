@@ -1,14 +1,16 @@
 import { useServerFn } from "@tanstack/react-start";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Headphones, Lightbulb, Loader2, RefreshCw, X } from "lucide-react";
+import { Headphones, Lightbulb, Loader2, Play, RefreshCw, Square, X } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { prepareExplainPassageStream, regenerateNotes } from "@/lib/study.functions";
 import { streamAiText, streamPreparedNotes } from "@/lib/ai-stream";
 import type { StudySet } from "@/lib/queries";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
+import { splitSpeechChunks } from "@/lib/speech-text";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,6 +47,7 @@ function splitSections(md: string) {
   return parts.map((p) => p.trim()).filter(Boolean);
 }
 
+
 export function Notes({ set }: { set: StudySet }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -52,6 +55,97 @@ export function Notes({ set }: { set: StudySet }) {
   const [busy, setBusy] = useState(false);
   const [streamedNotes, setStreamedNotes] = useState("");
   const streamController = useRef<AbortController | null>(null);
+  const speechController = useRef<AbortController | null>(null);
+  const speechAudio = useRef<HTMLAudioElement | null>(null);
+  const speechUrl = useRef<string | null>(null);
+  const [speechState, setSpeechState] = useState<"idle" | "preparing" | "playing">("idle");
+  const [speechProgress, setSpeechProgress] = useState(0);
+  const stopSpeech = () => {
+    speechController.current?.abort();
+    speechController.current = null;
+    speechAudio.current?.pause();
+    speechAudio.current = null;
+    if (speechUrl.current) URL.revokeObjectURL(speechUrl.current);
+    speechUrl.current = null;
+    setSpeechState("idle");
+    setSpeechProgress(0);
+  };
+  useEffect(() => () => {
+    const controller = speechController.current;
+    speechController.current = null;
+    controller?.abort();
+    speechAudio.current?.pause();
+    if (speechUrl.current) URL.revokeObjectURL(speechUrl.current);
+  }, []);
+  const listenToNotes = async () => {
+    if (speechState !== "idle") { stopSpeech(); return; }
+    if (!set.notes?.trim()) { toast.error("There are no saved notes to read aloud yet."); return; }
+    const chunks = splitSpeechChunks(set.notes);
+    if (!chunks.length) { toast.error("There isn't any readable note text to play."); return; }
+    const controller = new AbortController();
+    speechController.current = controller;
+    setSpeechState("preparing");
+    setSpeechProgress(0);
+    try {
+      const { data, error } = await supabase.auth.getSession();
+      if (error || !data.session?.access_token) throw new Error("Please sign in again.");
+      for (let index = 0; index < chunks.length; index += 1) {
+        if (controller.signal.aborted) break;
+        setSpeechState("preparing");
+        const response = await fetch("/api/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` },
+          body: JSON.stringify({ text: chunks[index] }),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({})) as { error?: string };
+          throw new Error(payload.error || `Speech generation failed (${response.status}).`);
+        }
+        const blob = await response.blob();
+        if (!blob.size) throw new Error("Text-to-speech returned an empty audio file.");
+        if (controller.signal.aborted) break;
+        if (speechUrl.current) URL.revokeObjectURL(speechUrl.current);
+        const url = URL.createObjectURL(blob);
+        speechUrl.current = url;
+        const audio = new Audio(url);
+        speechAudio.current = audio;
+        setSpeechState("playing");
+        setSpeechProgress(index + 1);
+        await new Promise<void>((resolve, reject) => {
+          const cleanup = () => {
+            audio.removeEventListener("ended", onEnded);
+            audio.removeEventListener("error", onError);
+            controller.signal.removeEventListener("abort", onAbort);
+          };
+          const onEnded = () => { cleanup(); resolve(); };
+          const onError = () => { cleanup(); reject(new Error("The generated audio couldn't be played.")); };
+          const onAbort = () => { cleanup(); audio.pause(); resolve(); };
+          audio.addEventListener("ended", onEnded, { once: true });
+          audio.addEventListener("error", onError, { once: true });
+          controller.signal.addEventListener("abort", onAbort, { once: true });
+          audio.play().catch((error: unknown) => { cleanup(); reject(error); });
+        });
+        URL.revokeObjectURL(url);
+        if (speechUrl.current === url) speechUrl.current = null;
+        if (controller.signal.aborted) break;
+      }
+      if (!controller.signal.aborted) toast.success("Finished reading your notes.");
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError") && !controller.signal.aborted) {
+        toast.error(error instanceof Error ? error.message : "Couldn't read your notes aloud.");
+      }
+    } finally {
+      if (speechController.current === controller) {
+        speechController.current = null;
+        speechAudio.current = null;
+        if (speechUrl.current) URL.revokeObjectURL(speechUrl.current);
+        speechUrl.current = null;
+        setSpeechState("idle");
+        setSpeechProgress(0);
+      }
+    }
+  };
   const run = async () => {
     streamController.current?.abort();
     const controller = new AbortController();
@@ -81,6 +175,11 @@ export function Notes({ set }: { set: StudySet }) {
           or deeper take.
         </p>
         <div className="flex gap-2">
+          <button type="button" onClick={listenToNotes} disabled={!set.notes?.trim() || speechState !== "idle"} className={btnGhost}>
+            {speechState === "idle" ? <Play className="size-4" /> : <Loader2 className="size-4 animate-spin" />}
+            {speechState === "idle" ? "Listen to notes" : speechState === "preparing" ? `Preparing ${speechProgress + 1}…` : `Playing ${speechProgress}…`}
+          </button>
+          {speechState !== "idle" && <button type="button" onClick={stopSpeech} className={btnGhost} aria-label="Stop reading notes"><Square className="size-4" /> Stop</button>}
           <button
             onClick={() =>
               navigate({ to: "/sets/$id", params: { id: set.id }, search: { tab: "audio" } })

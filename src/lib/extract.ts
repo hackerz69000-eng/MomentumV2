@@ -129,8 +129,8 @@ async function extractPptx(file: File, ocr: Ocr, onMsg: (m: string) => void, inc
     .sort((a, b) => Number(a.match(/\d+/)![0]) - Number(b.match(/\d+/)![0]));
   const out: string[] = [];
   let visualsAnalyzed = 0;
-  // Keep visual interpretation bounded: descriptions are useful context, but
-  // analyzing every embedded picture adds latency and unnecessary model calls.
+  // Keep visual interpretation bounded while sampling more than just the opening slides.
+  // A hard cap prevents decks with many decorative images from triggering unbounded calls.
   for (const [i, p] of slides.entries()) {
     const xml = await zip.file(p)!.async("string");
     const doc = new DOMParser().parseFromString(xml, "application/xml");
@@ -159,7 +159,7 @@ async function extractPptx(file: File, ocr: Ocr, onMsg: (m: string) => void, inc
 
     // PowerPoint keeps pictures separately from slide text. Follow the slide's
     // relationship references so diagrams are described in the context of the slide.
-    if (includeVisualDescriptions && i < 20 && visualsAnalyzed < 4) {
+    if (includeVisualDescriptions && i < 40 && visualsAnalyzed < 8) {
       const slideNumber = p.match(/slide(\d+)\.xml$/)?.[1];
       const relsPath = slideNumber ? `ppt/slides/_rels/slide${slideNumber}.xml.rels` : "";
       const relsFile = relsPath ? zip.file(relsPath) : null;
@@ -174,7 +174,7 @@ async function extractPptx(file: File, ocr: Ocr, onMsg: (m: string) => void, inc
           const slideDoc = new DOMParser().parseFromString(xml, "application/xml");
           const blips = Array.from(slideDoc.getElementsByTagName("a:blip"));
           for (const blip of blips.slice(0, 3)) {
-            if (visualsAnalyzed >= 4) break;
+            if (visualsAnalyzed >= 8) break;
             const relId = blip.getAttribute("r:embed") ?? blip.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed");
             const target = relId ? byId.get(relId) : "";
             if (!target || target.startsWith("http")) continue;
@@ -220,6 +220,9 @@ async function extractPptx(file: File, ocr: Ocr, onMsg: (m: string) => void, inc
       }
     }
   }
+  if (includeVisualDescriptions && (slides.length > 40 || visualsAnalyzed >= 8)) {
+    out.push("[Visual analysis was capped at eight embedded images across the first 40 slides. Slide text and speaker notes were still extracted from the full presentation.]");
+  }
   return out.join("\n\n");
 }
 
@@ -249,7 +252,9 @@ async function renderPdfPages(file: File, maxPages = 20, sampleAcrossDocument = 
   const pages: Array<{ page: number; data: string }> = [];
   const pageCount = Math.min(pdf.numPages, maxPages);
   const pageNumbers = sampleAcrossDocument && pdf.numPages > pageCount
-    ? [...new Set([1, Math.ceil(pdf.numPages / 2), pdf.numPages])].slice(0, pageCount)
+    ? [...new Set(Array.from({ length: pageCount }, (_, index) =>
+        Math.round(1 + (index * (pdf.numPages - 1)) / Math.max(1, pageCount - 1)),
+      ))]
     : Array.from({ length: pageCount }, (_, index) => index + 1);
   for (const pageNo of pageNumbers) {
     const page = await pdf.getPage(pageNo) as any;
@@ -312,9 +317,9 @@ export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void,
     if (hasReadableExtractedText && includeVisualDescriptions) {
       try {
         onMsg(`Checking a small sample of pages for lecture figures in ${f.name}…`);
-        // Analyze only three representative pages. Full-page visual analysis across
-        // long PDFs is slow and costly; text extraction still covers the whole file.
-        const pages = await renderPdfPages(f, 3, true);
+        // Sample up to six pages evenly across the document. Full-page visual analysis
+        // across every page is slow and costly; text extraction still covers the whole file.
+        const pages = await renderPdfPages(f, 6, true);
         const visualNotes: Array<{ page: number; description: string }> = [];
         for (const page of pages) {
           const pageMatch = text.match(new RegExp(`## Page ${page.page}\\s*([\\s\\S]*?)(?=\\n## Page \\d+|$)`, "i"));

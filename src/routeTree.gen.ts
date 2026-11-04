@@ -22,6 +22,7 @@ import { Route as AuthenticatedTrashRouteImport } from './routes/_authenticated/
 import { Route as AuthenticatedAdminProgressionRouteImport } from './routes/_authenticated/admin-progression'
 import { Route as AuthenticatedTurnitinRouteImport } from './routes/_authenticated/turnitin'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
+import { Route as ApiSpeakRouteImport } from './routes/api/speak'
 import { Route as ApiAiStreamRouteImport } from './routes/api/ai-stream'
 import { Route as ApiSimilarityDiscoveryRouteImport } from './routes/api/similarity-discovery'
 import { Route as AuthenticatedAssignmentIndexRouteImport } from './routes/_authenticated/assignment.index'
@@ -95,6 +96,11 @@ const ApiTranscribeRoute = ApiTranscribeRouteImport.update({
   path: '/api/transcribe',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiSpeakRoute = ApiSpeakRouteImport.update({
+  id: '/api/speak',
+  path: '/api/speak',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAiStreamRoute = ApiAiStreamRouteImport.update({
   id: '/api/ai-stream',
   path: '/api/ai-stream',
@@ -151,6 +157,7 @@ export interface FileRoutesByFullPath {
   '/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/speak': typeof ApiSpeakRoute
   '/api/ai-stream': typeof ApiAiStreamRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
   '/assignment/$id': typeof AuthenticatedAssignmentIdRoute
@@ -173,6 +180,7 @@ export interface FileRoutesByTo {
   '/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/speak': typeof ApiSpeakRoute
   '/api/ai-stream': typeof ApiAiStreamRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
   '/assignment/$id': typeof AuthenticatedAssignmentIdRoute
@@ -196,6 +204,7 @@ export interface FileRoutesById {
   '/_authenticated/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/_authenticated/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/speak': typeof ApiSpeakRoute
   '/api/ai-stream': typeof ApiAiStreamRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
   '/_authenticated/assignment/$id': typeof AuthenticatedAssignmentIdRoute
@@ -220,6 +229,7 @@ export interface FileRouteTypes {
     | '/admin-progression'
     | '/turnitin'
     | '/api/transcribe'
+    | '/api/speak'
     | '/api/ai-stream'
     | '/api/similarity-discovery'
     | '/assignment/$id'
@@ -242,6 +252,7 @@ export interface FileRouteTypes {
     | '/admin-progression'
     | '/turnitin'
     | '/api/transcribe'
+    | '/api/speak'
     | '/api/ai-stream'
     | '/api/similarity-discovery'
     | '/assignment/$id'
@@ -265,6 +276,7 @@ export interface FileRouteTypes {
     | '/_authenticated/admin-progression'
     | '/_authenticated/turnitin'
     | '/api/transcribe'
+    | '/api/speak'
     | '/api/ai-stream'
     | '/api/similarity-discovery'
     | '/_authenticated/assignment/$id'
@@ -280,6 +292,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
   ApiTranscribeRoute: typeof ApiTranscribeRoute
+  ApiSpeakRoute: typeof ApiSpeakRoute
   ApiSimilarityDiscoveryRoute: typeof ApiSimilarityDiscoveryRoute
 }
 
@@ -368,6 +381,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/turnitin'
       preLoaderRoute: typeof AuthenticatedTurnitinRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/api/speak': {
+      id: '/api/speak'
+      path: '/api/speak'
+      fullPath: '/api/speak'
+      preLoaderRoute: typeof ApiSpeakRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/transcribe': {
       id: '/api/transcribe'
@@ -479,6 +499,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
   ApiTranscribeRoute: ApiTranscribeRoute,
+  ApiSpeakRoute: ApiSpeakRoute,
   ApiAiStreamRoute: ApiAiStreamRoute,
   ApiSimilarityDiscoveryRoute: ApiSimilarityDiscoveryRoute,
 }
