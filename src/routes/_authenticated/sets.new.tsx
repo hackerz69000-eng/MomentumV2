@@ -102,6 +102,9 @@ function NewSet() {
       }
 
       setStage("generating");
+      streamController.current?.abort();
+      const controller = new AbortController();
+      streamController.current = controller;
 
       // Create the real Supabase study set first. This keeps the set ID used by
       // Quiz, Exam, Recall, Tutor, Notes and Flashcards consistent everywhere.
@@ -156,6 +159,7 @@ function NewSet() {
         await process({ data: { setId: targetId, generatedNotes: notes, generatedCards: cards } });
       } else throw new Error("Couldn't prepare study set processing.");
 
+      streamController.current = null;
       toast.success("Study set created.");
       qc.invalidateQueries({ queryKey: ["sets"] });
       navigate({ to: "/sets/$id", params: { id: targetId } });
@@ -163,6 +167,7 @@ function NewSet() {
       const message = err instanceof DOMException && err.name === "AbortError" ? "Generation cancelled. Your new study set can be retried." : err instanceof Error ? err.message : "Something went wrong";
       if (createdSetId) await supabase.from("study_sets").update({ status: "error", error: message.slice(0, 500) }).eq("id", createdSetId);
       toast.error(message);
+      streamController.current = null;
       setStage(null);
     }
   };
