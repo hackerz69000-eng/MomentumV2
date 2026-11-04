@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { ArrowLeft, ArrowRight, Loader2, Pencil, Plus, Shuffle, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { prepareRegenerateCardsStream, saveRegenerateCardsStream } from "@/lib/study.functions";
+import { newStudyGenerationToken, releaseStudyGeneration, startStudyGenerationHeartbeat } from "@/lib/study-generation-lock";
 import { streamAiJson } from "@/lib/ai-stream";
 import { trashRow } from "@/lib/trash";
 import { cardStats, isDue, schedule, shuffle, type Flashcard, type Rating } from "@/lib/stats";
@@ -252,9 +253,12 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
     streamController.current?.abort();
     const controller = new AbortController();
     streamController.current = controller;
+    const lockToken = newStudyGenerationToken();
+    let stopHeartbeat: (() => void) | null = null;
     setBusy(true);
     try {
-      const prompt = await prepareRegen({ data: { setId } });
+      const prompt = await prepareRegen({ data: { setId, lockToken } });
+      stopHeartbeat = startStudyGenerationHeartbeat(setId, lockToken, () => controller.abort());
       setStreamedJson("");
       const cards = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedJson((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The generated flashcards were not valid.");
@@ -262,14 +266,16 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
         if (!valid.length) throw new Error("No useful flashcards could be generated from the supplied study material.");
         return valid;
       }});
-      await saveRegen({ data: { setId, cards } });
+      await saveRegen({ data: { setId, cards, lockToken, generationKey: prompt.generationKey, sourceRevision: prompt.sourceRevision } });
       await qc.invalidateQueries({ queryKey: ["cards", setId] });
       setOrder(null);
       setI(0);
       toast.success("New flashcards generated");
     } catch (e) {
+      await releaseStudyGeneration(setId, lockToken, e instanceof Error ? e.message : "Flashcard generation failed.");
       toast.error(e instanceof DOMException && e.name === "AbortError" ? "Flashcard generation cancelled. Existing cards are unchanged." : e instanceof Error ? e.message : "Failed");
     }
+    stopHeartbeat?.();
     streamController.current = null;
     setBusy(false);
   };

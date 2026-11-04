@@ -8,6 +8,11 @@ export type SetRow = {
   custom_instructions: string;
   notes?: string | null;
   study_guide?: string | null;
+  generation_checkpoint?: import("@/integrations/supabase/types").Json;
+  generation_source_revision?: string;
+  study_source_version?: string | null;
+  notes_source_version?: string | null;
+  cards_source_version?: string | null;
 };
 
 export async function loadSet(

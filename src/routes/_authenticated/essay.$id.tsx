@@ -5,7 +5,8 @@ import { useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { ocrFile } from "@/lib/study.functions";
-import { ACCEPT, MAX_BYTES, extractFile, fileKind } from "@/lib/extract";
+import { ACCEPT, MAX_BYTES, extractFileCached, fileKind } from "@/lib/extract";
+import { useAuth } from "@/hooks/use-auth";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 import { gradeEssay, type EssayResult } from "@/lib/writing.functions";
@@ -64,6 +65,7 @@ function EssayPage() {
 
 function Editor({ row }: { row: Row }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
   const gradeFn = useServerFn(gradeEssay);
   const [f, setF] = useState({
     title: row.title,
@@ -144,6 +146,7 @@ function Editor({ row }: { row: Row }) {
           <SetPicker value={f.set_id} onChange={(v) => set("set_id", v)} />
           <UploadText
             label="Upload instructions (PDF, Word, text or photo)"
+            userId={user?.id}
             onText={(t) =>
               set("instructions", f.instructions.trim() ? `${f.instructions}\n\n${t}` : t)
             }
@@ -172,6 +175,7 @@ function Editor({ row }: { row: Row }) {
           />
           <UploadText
             label="Upload your essay (PDF, Word, text or photo)"
+            userId={user?.id}
             onText={(t) => set("essay", f.essay.trim() ? `${f.essay}\n\n${t}` : t)}
           />
           <Field
@@ -212,7 +216,7 @@ function Editor({ row }: { row: Row }) {
   );
 }
 
-function UploadText({ label, onText }: { label: string; onText: (t: string) => void }) {
+function UploadText({ label, onText, userId }: { label: string; onText: (t: string) => void; userId?: string | undefined }) {
   const ocr = useServerFn(ocrFile);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -228,7 +232,7 @@ function UploadText({ label, onText }: { label: string; onText: (t: string) => v
       return;
     }
     try {
-      const t = await extractFile(file, ocr, setMsg);
+      const t = (await extractFileCached(file, userId, ocr, setMsg)).text;
       if (!t) throw new Error("No text was found in that file.");
       onText(t);
       toast.success(`Added text from ${file.name} — check it below.`);

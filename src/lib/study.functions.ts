@@ -5,6 +5,9 @@ import { aiImage, parseJson, clip, splitTextIntoChunks } from "./ai.server";
 import { setStats, type Attempt, type AttemptResult, type Flashcard } from "./stats";
 import { activityStats, dayKey } from "./activity";
 import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server";
+import type { Json } from "@/integrations/supabase/types";
+import { assertGenerationClaimed, assertGenerationSourceRevision } from "./study-generation-guards";
+import { studySourceVersion } from "./study-source-version";
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -203,135 +206,183 @@ export const processSet = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({
     setId: z.string().min(1).max(200),
     prepareOnly: z.boolean().optional(),
+    lockToken: z.string().uuid().optional(),
+    generationKey: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    sourceRevision: z.string().uuid().optional(),
     generatedNotes: z.string().min(50).max(250000).optional(),
     generatedCards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(80).optional() })).min(1).max(20).optional(),
-  }).parse(d))
+  }).refine((value) => value.prepareOnly ? Boolean(value.lockToken) : Boolean(value.lockToken && value.generationKey && value.sourceRevision), "Generation lease information is missing.").parse(d))
   .handler(async ({ data, context }) => {
     const supabase = context.supabase;
-    const set = await loadSet(supabase, data.setId);
     try {
-      const { error: statusError } = await supabase
-        .from("study_sets")
-        .update({ status: "processing", error: null })
-        .eq("id", set.id);
-      if (statusError) throw new Error("Couldn't start processing this study set. Please try again.");
-
       if (data.prepareOnly) {
+        const { data: claimed, error: claimError } = await supabase.rpc("claim_study_set_generation", {
+          p_set_id: data.setId,
+          p_lock_token: data.lockToken!,
+        });
+        assertGenerationClaimed(claimed, claimError);
+        const set = await loadSet(supabase, data.setId);
+        const { error: statusError } = await supabase.from("study_sets")
+          .update({ status: "processing", error: null })
+          .eq("id", set.id).eq("user_id", context.userId);
+        if (statusError) throw new Error("Couldn't start processing this study set. Please try again.");
+        const generationKey = await studySourceVersion(set);
+        const sourceRevision = set.generation_source_revision;
+        if (!sourceRevision) throw new Error("Study source version is missing. Apply the study safety migration, then retry.");
         const notesPlan = prepareNotesStreamPrompts(set);
         const notesPrompts = notesPlan.prompts;
         const notesHeader = notesPlan.header;
         const cardsNotes = set.notes?.trim() ? `GENERATED STUDY NOTES:\n${clip(set.notes, 50000)}\n\n` : "";
         const cardsSystem = CARDS_SYSTEM + ci(set);
         const cardsMessages = [{ role: "user" as const, content: `STUDY SET: ${set.name || "Study Set"} (${set.subject || "general"})\n\n${cardsNotes}SOURCE MATERIAL (authoritative; verify every card against it):\n${clip(set.material_text, 50000)}` }];
-        return { notesPrompts, notesHeader, readingPlan: notesPlan.readingPlan, cardsSystem, cardsMessages };
+        const checkpoint = set.generation_checkpoint && typeof set.generation_checkpoint === "object" && !Array.isArray(set.generation_checkpoint)
+          ? set.generation_checkpoint as Record<string, unknown> : {};
+        const reusable = checkpoint["generationKey"] === generationKey && checkpoint["sourceRevision"] === sourceRevision;
+        const cachedNotes = reusable && typeof checkpoint["notes"] === "string" ? checkpoint["notes"] : null;
+        const cachedCards = reusable && Array.isArray(checkpoint["cards"]) ? checkpoint["cards"] : null;
+        return { notesPrompts, notesHeader, readingPlan: notesPlan.readingPlan, cardsSystem, cardsMessages, generationKey, sourceRevision, lockToken: data.lockToken!, cachedNotes, cachedCards };
       }
 
-      // Generate everything before replacing saved content, so an AI failure never
-      // destroys the student's existing notes or cards.
-      if (!data.generatedNotes || !data.generatedCards) {
+      if (!data.generatedNotes || !data.generatedCards || !data.generationKey || !data.sourceRevision || !data.lockToken) {
         throw new Error("Study Set processing requires completed browser-streamed notes and flashcards. No server-side generation fallback is available.");
       }
-      const notes = data.generatedNotes;
-      const cards = data.generatedCards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "" }));
-      const { data: oldCards, error: readError } = await supabase.from("flashcards").select("*").eq("set_id", set.id);
-      if (readError) throw new Error("Couldn't safely replace the existing flashcards.");
-      if (oldCards?.length) {
-        const { error: archiveError } = await supabase.from("trash").insert({
-          user_id: context.userId,
-          kind: "flashcards",
-          label: `${oldCards.length} replaced flashcards — ${set.name}`,
-          set_id: set.id,
-          data: { rows: oldCards },
-        });
-        if (archiveError) throw new Error("Couldn't back up the existing flashcards, so they were left unchanged.");
-      }
-      const { error: deleteError } = await supabase.from("flashcards").delete().eq("set_id", set.id);
-      if (deleteError) throw new Error("Couldn't replace the old flashcards. Your existing cards were kept.");
-      const { error: insertError } = await supabase.from("flashcards").insert(
-        cards.map((c, i) => ({
-          set_id: set.id,
-          user_id: context.userId,
-          question: c.q,
-          answer: c.a,
-          topic: (c.t ?? "").slice(0, 60),
-          position: i,
-        })),
-      );
-      if (insertError) throw new Error("New flashcards couldn't be saved. Your previous cards are in Recently Deleted.");
-      const { error: saveSetError } = await supabase
-        .from("study_sets")
-        .update({ notes, status: "ready", error: null, updated_at: new Date().toISOString() })
-        .eq("id", set.id);
-      if (saveSetError) throw new Error("The study materials were generated, but the set status couldn't be saved. Refresh and check the set before retrying.");
+      const set = await loadSet(supabase, data.setId);
+      assertGenerationSourceRevision(data.sourceRevision, set.generation_source_revision ?? "");
+      const { data: committed, error: commitError } = await supabase.rpc("commit_study_set_generation", {
+        p_set_id: data.setId,
+        p_lock_token: data.lockToken,
+        p_generation_key: data.generationKey,
+        p_source_revision: data.sourceRevision,
+        p_notes: data.generatedNotes,
+        p_cards: data.generatedCards as Json,
+      });
+      if (commitError) throw new Error(commitError.message || "Couldn't safely save the generated study resources.");
+      if (!committed) throw new Error("This generation lease expired or was replaced. Retry to continue safely.");
       return { ok: true };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Processing failed";
-      await supabase.from("study_sets").update({ status: "error", error: msg }).eq("id", set.id);
+      if (data.lockToken) {
+        await supabase.rpc("release_study_set_generation", {
+          p_set_id: data.setId,
+          p_lock_token: data.lockToken,
+          p_error: msg,
+          p_mark_set_error: true,
+        });
+      }
       throw new Error(msg);
     }
   });
 
-export const regenerateNotes = createServerFn({ method: "POST" })
+export const saveStudyGenerationCheckpoint = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), prepareOnly: z.boolean().optional(), generatedNotes: z.string().min(50).max(250000).optional() }).parse(d))
+  .inputValidator((d: unknown) => z.object({
+    setId: z.string().min(1).max(200),
+    generationKey: z.string().regex(/^[a-f0-9]{64}$/),
+    sourceRevision: z.string().uuid(),
+    lockToken: z.string().uuid(),
+    notes: z.string().min(50).max(250000).optional(),
+    cards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(80).optional() })).min(1).max(20).optional(),
+  }).refine((value) => Boolean(value.notes) !== Boolean(value.cards), "Save exactly one completed generation step.").parse(d))
   .handler(async ({ data, context }) => {
     const set = await loadSet(context.supabase, data.setId);
-    if (data.prepareOnly) {
-      const notesPlan = prepareNotesStreamPrompts(set);
-      return { notesPrompts: notesPlan.prompts, notesHeader: notesPlan.header, readingPlan: notesPlan.readingPlan };
-    }
-    if (!data.generatedNotes) throw new Error("Notes must be generated through the browser streaming workflow before they can be saved.");
-    const notes = data.generatedNotes;
-    // Preserve the previous notes before overwriting them.
-    if (set.notes?.trim()) {
-      const { error: archiveError } = await context.supabase.from("trash").insert({
-        user_id: context.userId,
-        kind: "notes",
-        label: `Previous notes — ${set.name}`,
-        set_id: set.id,
-        data: { notes: set.notes },
+    const currentKey = await studySourceVersion(set);
+    if (currentKey !== data.generationKey) throw new Error("Study material changed during generation. Retry to use the latest source.");
+    assertGenerationSourceRevision(data.sourceRevision, set.generation_source_revision ?? "");
+    const checkpoint = data.notes ? { notes: data.notes } : { cards: data.cards! };
+    const { data: saved, error } = await context.supabase.rpc("save_study_generation_checkpoint", {
+      p_set_id: set.id,
+      p_lock_token: data.lockToken,
+      p_generation_key: currentKey,
+      p_source_revision: data.sourceRevision,
+      p_checkpoint: checkpoint as Json,
+    });
+    if (error || !saved) throw new Error(error?.message || "Generation lease expired. Retry to continue safely.");
+    return { ok: true };
+  });
+
+export const regenerateNotes = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({
+    setId: z.string().min(1).max(200),
+    prepareOnly: z.boolean().optional(),
+    lockToken: z.string().uuid().optional(),
+    generationKey: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    sourceRevision: z.string().uuid().optional(),
+    generatedNotes: z.string().min(50).max(250000).optional(),
+  }).refine((value) => value.prepareOnly ? Boolean(value.lockToken) : Boolean(value.lockToken && value.generationKey && value.sourceRevision && value.generatedNotes), "Generation lease information is missing.").parse(d))
+  .handler(async ({ data, context }) => {
+    try {
+      if (data.prepareOnly) {
+        const { data: claimed, error: claimError } = await context.supabase.rpc("claim_study_set_generation", { p_set_id: data.setId, p_lock_token: data.lockToken! });
+        assertGenerationClaimed(claimed, claimError);
+        const set = await loadSet(context.supabase, data.setId);
+        const sourceRevision = set.generation_source_revision;
+        if (!sourceRevision) throw new Error("Study source version is missing. Apply the study safety migration, then retry.");
+        const notesPlan = prepareNotesStreamPrompts(set);
+        return { notesPrompts: notesPlan.prompts, notesHeader: notesPlan.header, readingPlan: notesPlan.readingPlan, generationKey: await studySourceVersion(set), sourceRevision, lockToken: data.lockToken! };
+      }
+      const set = await loadSet(context.supabase, data.setId);
+      assertGenerationSourceRevision(data.sourceRevision!, set.generation_source_revision ?? "");
+      const { data: saved, error } = await context.supabase.rpc("commit_study_set_generation", {
+        p_set_id: set.id,
+        p_lock_token: data.lockToken!,
+        p_generation_key: data.generationKey!,
+        p_source_revision: data.sourceRevision!,
+        p_notes: data.generatedNotes!,
+        p_cards: null,
       });
-      if (archiveError) throw new Error("Couldn't back up your previous notes, so they were left unchanged.");
+      if (error || !saved) throw new Error(error?.message || "This generation lease expired. Retry to continue safely.");
+      return { notes: data.generatedNotes! };
+    } catch (error) {
+      if (data.lockToken) await context.supabase.rpc("release_study_set_generation", { p_set_id: data.setId, p_lock_token: data.lockToken, p_error: error instanceof Error ? error.message : "Notes generation failed.", p_mark_set_error: false });
+      throw error;
     }
-    const { error: saveError } = await context.supabase
-      .from("study_sets")
-      .update({ notes, updated_at: new Date().toISOString() })
-      .eq("id", set.id);
-    if (saveError) throw new Error("New notes were generated but couldn't be saved. Your previous notes are still available.");
-    return { notes };
   });
 
 export const prepareRegenerateCardsStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator(idInput)
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), lockToken: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }) => {
-    const set = await loadSet(context.supabase, data.setId);
-    const notesContext = set.notes?.trim() ? `GENERATED STUDY NOTES:\n${clip(set.notes, 50000)}\n\n` : "";
-    return {
-      system: CARDS_SYSTEM + ci(set),
-      messages: [{ role: "user" as const, content: `STUDY SET: ${set.name || "Study Set"} (${set.subject || "general"})\n\n${notesContext}SOURCE MATERIAL (authoritative; verify every card against it):\n${clip(set.material_text, 50000)}` }],
-    };
+    const { data: claimed, error: claimError } = await context.supabase.rpc("claim_study_set_generation", { p_set_id: data.setId, p_lock_token: data.lockToken });
+    assertGenerationClaimed(claimed, claimError);
+    try {
+      const set = await loadSet(context.supabase, data.setId);
+      const sourceRevision = set.generation_source_revision;
+      if (!sourceRevision) throw new Error("Study source version is missing. Apply the study safety migration, then retry.");
+      const notesContext = set.notes?.trim() ? `GENERATED STUDY NOTES:\n${clip(set.notes, 50000)}\n\n` : "";
+      return {
+        system: CARDS_SYSTEM + ci(set),
+        messages: [{ role: "user" as const, content: `STUDY SET: ${set.name || "Study Set"} (${set.subject || "general"})\n\n${notesContext}SOURCE MATERIAL (authoritative; verify every card against it):\n${clip(set.material_text, 50000)}` }],
+        generationKey: await studySourceVersion(set),
+        sourceRevision,
+        lockToken: data.lockToken,
+      };
+    } catch (error) {
+      await context.supabase.rpc("release_study_set_generation", { p_set_id: data.setId, p_lock_token: data.lockToken, p_error: error instanceof Error ? error.message : "Flashcard generation failed.", p_mark_set_error: false });
+      throw error;
+    }
   });
 
 export const saveRegenerateCardsStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), cards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(80).optional() })).min(1).max(20) }).parse(d))
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), lockToken: z.string().uuid(), generationKey: z.string().regex(/^[a-f0-9]{64}$/), sourceRevision: z.string().uuid(), cards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(80).optional() })).min(1).max(20) }).parse(d))
   .handler(async ({ data, context }) => {
     const sb = context.supabase;
-    const set = await loadSet(sb, data.setId);
-    const cards = data.cards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "" })).filter((card) => card.q && card.a);
-    if (!cards.length) throw new Error("No useful flashcards could be generated from the supplied study material.");
-    const { data: old, error: readError } = await sb.from("flashcards").select("*").eq("set_id", set.id);
-    if (readError) throw new Error("Couldn't safely replace the existing flashcards.");
-    if (old?.length) {
-      const { error: archiveError } = await sb.from("trash").insert({ user_id: context.userId, kind: "flashcards", label: `${old.length} replaced flashcards — ${set.name}`, set_id: set.id, data: { rows: old } });
-      if (archiveError) throw new Error("Couldn't back up the existing flashcards, so they were left unchanged.");
+    try {
+      const set = await loadSet(sb, data.setId);
+      assertGenerationSourceRevision(data.sourceRevision, set.generation_source_revision ?? "");
+      const cards = data.cards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "" })).filter((card) => card.q && card.a);
+      if (!cards.length) throw new Error("No useful flashcards could be generated from the supplied study material.");
+      const { data: saved, error } = await sb.rpc("commit_study_set_generation", {
+        p_set_id: set.id, p_lock_token: data.lockToken, p_generation_key: data.generationKey,
+        p_source_revision: data.sourceRevision, p_notes: null, p_cards: cards as Json,
+      });
+      if (error || !saved) throw new Error(error?.message || "This generation lease expired. Retry to continue safely.");
+      return { ok: true };
+    } catch (error) {
+      await sb.rpc("release_study_set_generation", { p_set_id: data.setId, p_lock_token: data.lockToken, p_error: error instanceof Error ? error.message : "Flashcard generation failed.", p_mark_set_error: false });
+      throw error;
     }
-    const { error: deleteError } = await sb.from("flashcards").delete().eq("set_id", set.id);
-    if (deleteError) throw new Error("Couldn't replace the old flashcards. Your existing cards were kept.");
-    const { error: insertError } = await sb.from("flashcards").insert(cards.map((card, i) => ({ set_id: set.id, user_id: context.userId, question: card.q, answer: card.a, topic: card.t.slice(0, 60), position: i })));
-    if (insertError) throw new Error("New flashcards couldn't be saved. Your previous cards are in Recently Deleted.");
-    return { ok: true };
   });
 
 export type QuizQuestion = {

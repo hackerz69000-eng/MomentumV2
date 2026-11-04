@@ -14,6 +14,44 @@ export const ACCEPT = [
 // Per-file client-side reading upload cap. Keep UI copy and validation aligned.
 export const MAX_BYTES = 100 * 1024 * 1024;
 const MAX_EMBEDDED_IMAGE_BYTES = 16 * 1024 * 1024;
+export const EXTRACTION_VERSION = 1;
+const MAX_HASHED_FILE_BYTES = 32 * 1024 * 1024;
+const MAX_CACHED_TEXT_CHARS = 1_000_000;
+const QUIZ_VISUAL_CACHE_CONTEXT = "quiz-visual-assets-v1";
+
+export type CachedExtractionResult = {
+  text: string;
+  fileSha256: string | null;
+  cacheHit: boolean;
+  visualDescriptions: { location: string; description: string }[];
+};
+
+async function sha256Bytes(bytes: ArrayBuffer): Promise<string | null> {
+  try {
+    if (!globalThis.crypto?.subtle) return null;
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return null;
+  }
+}
+
+async function sha256Text(value: string): Promise<string | null> {
+  return sha256Bytes(new TextEncoder().encode(value).buffer as ArrayBuffer);
+}
+
+export async function fileSha256(file: File): Promise<string | null> {
+  if (file.size > MAX_HASHED_FILE_BYTES) return null;
+  return sha256Bytes(await file.arrayBuffer());
+}
+
+function findVisualDescriptions(text: string) {
+  const matches = text.matchAll(/### Figure\/diagram reference \((Page|Slide) ([^)]+)\)\s*\n([\s\S]*?)(?=\n### Figure\/diagram reference \(|\n## Page \d+\s*\n|$)/g);
+  return Array.from(matches, (match) => ({
+    location: `${match[1]} ${match[2]}`,
+    description: (match[3] ?? "").replace(/\n\n\*\*Lecture connection:\*\*[\s\S]*$/, "").trim(),
+  })).filter((item) => item.description);
+}
 
 export function fileKind(f: File): "pdf" | "docx" | "pptx" | "txt" | "image" | null {
   // Prefer the filename extension as browser MIME types are sometimes blank or incorrect,
@@ -404,6 +442,119 @@ export async function extractQuizVisuals(file: File, limit = 3): Promise<QuizVis
   return visuals;
 }
 
+type CachedQuizVisual = { path: string; name: string; kind: QuizVisual["kind"]; sourceIndex: number };
+
+function dataUrlToBlob(data: string): Blob | null {
+  const match = /^data:image\/(?:jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(data);
+  if (!match?.[1]) return null;
+  const binary = atob(match[1]);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: data.slice(5, data.indexOf(";")) });
+}
+
+/** Returns cached quiz image data, or null when this file has not been cached. */
+export async function loadCachedQuizVisuals(
+  userId: string,
+  sourceSha256: string,
+  limit = 3,
+): Promise<QuizVisual[] | null> {
+  const contextSha256 = await sha256Text(QUIZ_VISUAL_CACHE_CONTEXT);
+  if (!contextSha256) return null;
+  try {
+    const { data, error } = await supabase
+      .from("study_file_extractions")
+      .select("visual_assets")
+      .eq("user_id", userId)
+      .eq("file_sha256", sourceSha256)
+      .eq("extraction_version", EXTRACTION_VERSION)
+      .eq("context_sha256", contextSha256)
+      .gt("expires_at", new Date().toISOString())
+      .maybeSingle();
+    if (error || !data || !Array.isArray(data["visual_assets"])) return null;
+    const assets = data["visual_assets"].filter((asset): asset is CachedQuizVisual =>
+      !!asset && typeof asset === "object" &&
+      "path" in asset && typeof asset["path"] === "string" &&
+      "name" in asset && typeof asset["name"] === "string" &&
+      "kind" in asset && ["image", "pdf", "pptx", "docx"].includes(String(asset["kind"])) &&
+      "sourceIndex" in asset && Number.isInteger(asset["sourceIndex"]),
+    ).slice(0, limit);
+    const visuals: QuizVisual[] = [];
+    for (const asset of assets) {
+      const { data: blob, error: downloadError } = await supabase.storage.from("study-files").download(asset["path"]);
+      if (downloadError || !blob) return null;
+      visuals.push({ data: await readDataUrl(blob), name: asset["name"], kind: asset["kind"], sourceIndex: asset["sourceIndex"] });
+    }
+    return visuals;
+  } catch {
+    return null;
+  }
+}
+
+/** Write a private visual cache object without requiring Storage UPDATE permission. */
+export async function uploadQuizCacheAsset(
+  upload: () => Promise<{ error: { message?: string } | null }>,
+  confirmExisting: () => Promise<boolean>,
+): Promise<boolean> {
+  const { error } = await upload();
+  if (!error) return true;
+  if (await confirmExisting()) return false;
+  throw error;
+}
+
+/** Extracts quiz images once and stores private compressed copies for reuse. */
+export async function extractQuizVisualsCached(
+  file: File,
+  userId: string,
+  limit = 3,
+  knownSha256?: string | null,
+): Promise<{ visuals: QuizVisual[]; fileSha256: string | null; cacheHit: boolean }> {
+  const sourceSha256 = knownSha256 ?? await fileSha256(file);
+  if (!sourceSha256) return { visuals: await extractQuizVisuals(file, limit), fileSha256: null, cacheHit: false };
+  const cached = await loadCachedQuizVisuals(userId, sourceSha256, limit);
+  if (cached) return { visuals: cached, fileSha256: sourceSha256, cacheHit: true };
+
+  const visuals = await extractQuizVisuals(file, limit);
+  const contextSha256 = await sha256Text(QUIZ_VISUAL_CACHE_CONTEXT);
+  if (!contextSha256) return { visuals, fileSha256: sourceSha256, cacheHit: false };
+  const uploaded: string[] = [];
+  const assets: CachedQuizVisual[] = [];
+  try {
+    for (const [index, visual] of visuals.entries()) {
+      const blob = dataUrlToBlob(visual.data);
+      if (!blob) throw new Error("Could not prepare a cached quiz image.");
+      const path = `${userId}/_engine-cache/${sourceSha256}/v${EXTRACTION_VERSION}/quiz-${index + 1}.jpg`;
+      const storage = supabase.storage.from("study-files");
+      // The cache path is deterministic for this content hash/version. Reuse an
+      // existing private object after confirming SELECT access; never require
+      // UPDATE permission just to refresh cache metadata.
+      const created = await uploadQuizCacheAsset(
+        () => storage.upload(path, blob, { contentType: "image/jpeg" }),
+        async () => {
+          const { data: existing, error: lookupError } = await storage.createSignedUrl(path, 60);
+          return !lookupError && Boolean(existing?.signedUrl);
+        },
+      );
+      if (created) uploaded.push(path);
+      assets.push({ path, name: visual.name, kind: visual.kind, sourceIndex: visual.sourceIndex });
+    }
+    const { error } = await supabase.from("study_file_extractions").upsert({
+      user_id: userId,
+      file_sha256: sourceSha256,
+      extraction_version: EXTRACTION_VERSION,
+      context_sha256: contextSha256,
+      extracted_text: "",
+      visual_descriptions: [],
+      visual_assets: assets,
+      expires_at: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
+    }, { onConflict: "user_id,file_sha256,extraction_version,context_sha256" });
+    if (error) throw error;
+  } catch {
+    if (uploaded.length) await supabase.storage.from("study-files").remove(uploaded).catch(() => undefined);
+  }
+  return { visuals, fileSha256: sourceSha256, cacheHit: false };
+}
+
 export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void, lectureContext = "", includeVisualDescriptions = true): Promise<string> {
   const kind = fileKind(f);
   if (kind === "pdf") {
@@ -507,9 +658,71 @@ export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void,
   throw new Error(`${f.name} isn't a supported file type.`);
 }
 
+/** Reuse successful extraction for identical file bytes, version and OCR context. */
+export async function extractFileCached(
+  file: File,
+  userId: string | undefined,
+  ocr: Ocr,
+  onMsg: (message: string) => void,
+  lectureContext = "",
+  includeVisualDescriptions = true,
+): Promise<CachedExtractionResult> {
+  const fileHash = await fileSha256(file);
+  const contextSha256 = await sha256Text(lectureContext);
+  if (!userId || !fileHash || !contextSha256) {
+    const text = await extractFile(file, ocr, onMsg, lectureContext, includeVisualDescriptions);
+    return { text, fileSha256: fileHash, cacheHit: false, visualDescriptions: findVisualDescriptions(text) };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("study_file_extractions")
+      .select("extracted_text,visual_descriptions")
+      .eq("user_id", userId)
+      .eq("file_sha256", fileHash)
+      .eq("extraction_version", EXTRACTION_VERSION)
+      .eq("context_sha256", contextSha256)
+      .gt("expires_at", new Date().toISOString())
+      .maybeSingle();
+    if (!error && data?.extracted_text) {
+      const visualDescriptions = Array.isArray(data.visual_descriptions)
+        ? data["visual_descriptions"].filter((item): item is { location: string; description: string } =>
+            !!item && typeof item === "object" && "location" in item && typeof item["location"] === "string" && "description" in item && typeof item["description"] === "string",
+          )
+        : [];
+      onMsg(`Reused saved extraction for ${file.name}.`);
+      return { text: data["extracted_text"], fileSha256: fileHash, cacheHit: true, visualDescriptions };
+    }
+  } catch {
+    // The cache is an optimization. If its optional migration has not been
+    // applied or the service is unavailable, normal extraction still works.
+  }
+
+  const text = await extractFile(file, ocr, onMsg, lectureContext, includeVisualDescriptions);
+  const visualDescriptions = findVisualDescriptions(text);
+  if (text && text.length <= MAX_CACHED_TEXT_CHARS) {
+    try {
+      await supabase.from("study_file_extractions").upsert({
+        user_id: userId,
+        file_sha256: fileHash,
+        extraction_version: EXTRACTION_VERSION,
+        context_sha256: contextSha256,
+        extracted_text: text,
+        visual_descriptions: visualDescriptions,
+        visual_assets: [],
+        expires_at: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
+      }, { onConflict: "user_id,file_sha256,extraction_version,context_sha256" });
+    } catch {
+      // A failed optional cache write must not discard successfully extracted text.
+    }
+  }
+  return { text, fileSha256: fileHash, cacheHit: false, visualDescriptions };
+}
+
 /** Keeps the original file attached to the study set (private storage). Failures are reported but non-fatal. */
-export async function storeOriginal(userId: string, setId: string, f: File, chars: number) {
+export async function storeOriginal(userId: string, setId: string, f: File, chars: number, knownSha256?: string | null) {
   const path = `${userId}/${setId}/${Date.now()}-${f.name.replace(/[^\w.-]+/g, "_")}`;
+  const contentSha256 = knownSha256 ?? await fileSha256(f);
   const { error } = await supabase.storage
     .from("study-files")
     .upload(path, f, { contentType: f.type || "application/octet-stream" });
@@ -524,6 +737,7 @@ export async function storeOriginal(userId: string, setId: string, f: File, char
       mime: f.type,
       size: f.size,
       chars,
+      ...(contentSha256 ? { content_sha256: contentSha256 } : {}),
     });
   if (metadataError) {
     // Avoid leaving an untracked private-storage object if metadata persistence fails.

@@ -20,7 +20,8 @@ import {
 import { fetchCards, fetchSet, fetchSets, type StudySet } from "@/lib/queries";
 import { computeProgress } from "@/lib/progress";
 import { supabase } from "@/integrations/supabase/client";
-import { prepareTutorStream, saveTutorStreamReply, processSet } from "@/lib/study.functions";
+import { prepareTutorStream, saveTutorStreamReply, processSet, saveStudyGenerationCheckpoint } from "@/lib/study.functions";
+import { newStudyGenerationToken, releaseStudyGeneration, startStudyGenerationHeartbeat } from "@/lib/study-generation-lock";
 import { streamAiText, streamAiJson, streamPreparedNotes } from "@/lib/ai-stream";
 import { setStats, type Attempt } from "@/lib/stats";
 import { cn } from "@/lib/utils";
@@ -332,6 +333,7 @@ function SetPage() {
 function Processing({ set }: { set: StudySet }) {
   const qc = useQueryClient();
   const process = useServerFn(processSet);
+  const saveCheckpoint = useServerFn(saveStudyGenerationCheckpoint);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
   const streamController = useRef<AbortController | null>(null);
@@ -344,27 +346,33 @@ function Processing({ set }: { set: StudySet }) {
     streamController.current?.abort();
     const controller = new AbortController();
     streamController.current = controller;
+    const lockToken = newStudyGenerationToken();
+    let stopHeartbeat: (() => void) | null = null;
     setBusy(true);
     setProgress("");
     try {
-      const prepared = await process({ data: { setId: set.id, prepareOnly: true } });
+      const prepared = await process({ data: { setId: set.id, prepareOnly: true, lockToken } });
       if ("notesPrompts" in prepared && "cardsSystem" in prepared && "cardsMessages" in prepared && prepared.notesPrompts && prepared.cardsSystem && Array.isArray(prepared.cardsMessages)) {
-        const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setProgress, onDelta: (chunk) => setProgress((old) => `${old}\n${chunk}`.slice(-900)) });
+        stopHeartbeat = startStudyGenerationHeartbeat(set.id, lockToken, () => controller.abort());
+        const notes = prepared.cachedNotes ?? await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setProgress, onDelta: (chunk) => setProgress((old) => `${old}\n${chunk}`.slice(-900)) });
+        if (!prepared.cachedNotes) await saveCheckpoint({ data: { setId: set.id, generationKey: prepared.generationKey, sourceRevision: prepared.sourceRevision, lockToken, notes } });
         setProgress("Generating flashcards…");
-        const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgress((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
+        const cards = prepared.cachedCards ?? await streamAiJson({ system: prepared.cardsSystem, messages: [...prepared.cardsMessages, { role: "user" as const, content: `Use these newly generated notes as a coverage guide, but verify every card against the authoritative source material already provided.\n\nGENERATED NOTES:\n${notes.slice(0, 50000)}` }], signal: controller.signal, onDelta: (chunk) => setProgress((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
           if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");
           const valid = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim() })).filter((item) => item.q && item.a).slice(0, 20);
           if (!valid.length) throw new Error("No useful flashcards could be generated.");
           return valid;
         }});
-        await process({ data: { setId: set.id, generatedNotes: notes, generatedCards: cards } });
+        if (!prepared.cachedCards) await saveCheckpoint({ data: { setId: set.id, generationKey: prepared.generationKey, sourceRevision: prepared.sourceRevision, lockToken, cards } });
+        await process({ data: { setId: set.id, generationKey: prepared.generationKey, sourceRevision: prepared.sourceRevision, lockToken, generatedNotes: notes, generatedCards: cards } });
       } else throw new Error("Couldn't prepare study set processing.");
       toast.success("Study set ready");
     } catch (e) {
       const message = e instanceof DOMException && e.name === "AbortError" ? "Generation cancelled. Your study set can be retried." : e instanceof Error ? e.message : "Failed";
-      await supabase.from("study_sets").update({ status: "error", error: message.slice(0, 500) }).eq("id", set.id);
+      await releaseStudyGeneration(set.id, lockToken, message, true);
       toast.error(message);
     }
+    stopHeartbeat?.();
     streamController.current = null;
     setBusy(false);
     qc.invalidateQueries({ queryKey: ["set", set.id] });

@@ -6,7 +6,8 @@ import { useRef, useState } from "react";
 import { ArrowLeft, BookOpen, CheckCircle2, Clock3, FileText, FileUp, Loader2, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { ocrFile } from "@/lib/study.functions";
-import { ACCEPT, MAX_BYTES, extractFile, fileKind } from "@/lib/extract";
+import { ACCEPT, MAX_BYTES, extractFileCached, fileKind } from "@/lib/extract";
+import { useAuth } from "@/hooks/use-auth";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 import { assignmentStep, type AssignmentStep } from "@/lib/writing.functions";
@@ -119,6 +120,7 @@ function getAssignmentTimeSuggestions(instructions: string): StepTimeSuggestions
 
 function Editor({ row }: { row: Row }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
   const stepFn = useServerFn(assignmentStep);
   const ocr = useServerFn(ocrFile);
   const [uploadCategory, setUploadCategory] = useState<"instructions" | "allowed-source" | "supporting-material" | "draft">("instructions");
@@ -167,7 +169,7 @@ function Editor({ row }: { row: Row }) {
         if (!fileKind(file)) { fileErrors.push(`${file.name}: unsupported file type. Use PDF, DOCX, PPTX, TXT, Markdown, or PNG/JPG/WEBP images.`); continue; }
         if (file.size > MAX_BYTES) { fileErrors.push(`${file.name}: this file is over 100 MB. Split it into smaller files and try again.`); continue; }
         try {
-          const text = (await extractFile(file, ocr, (m) => setUploadMessage(m))).trim();
+          const text = (await extractFileCached(file, user?.id, ocr, (m) => setUploadMessage(m))).text.trim();
           if (!text) throw new Error("No readable text was found. If this is a scanned PDF, try a clearer scan or upload the permitted pages separately.");
           if (categoryForBatch === "instructions") {
             setF((prev) => ({ ...prev, instructions: `${prev.instructions.trim()}${prev.instructions.trim() ? "\n\n" : ""}--- Uploaded assignment file: ${file.name} ---\n${text}` }));

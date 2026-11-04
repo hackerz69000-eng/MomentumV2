@@ -11,7 +11,7 @@ type StreamChunk = {
 };
 
 /** Streams NVIDIA chat-completion text into the browser without exposing the API key. */
-export async function streamAiText(options: {
+async function streamAiTextUnlocked(options: {
   system: string;
   messages: StreamMessage[];
   task?: "fast" | "reasoning" | "vision";
@@ -98,6 +98,43 @@ export async function streamAiText(options: {
   }
   if (!result.trim()) throw new Error("NVIDIA returned an empty response. Please try again.");
   return result;
+}
+
+// Bound browser-triggered provider concurrency to protect the small personal
+// deployment from accidental parallel requests across UI actions.
+let activeAiStreams = 0;
+const queuedAiStreams: Array<() => void> = [];
+const MAX_PARALLEL_AI_STREAMS = 2;
+
+async function enterAiStream(signal?: AbortSignal): Promise<() => void> {
+  if (signal?.aborted) throw new DOMException("The request was stopped.", "AbortError");
+  if (activeAiStreams >= MAX_PARALLEL_AI_STREAMS) {
+    await new Promise<void>((resolve, reject) => {
+      const resume = () => { signal?.removeEventListener("abort", cancel); resolve(); };
+      const cancel = () => {
+        const index = queuedAiStreams.indexOf(resume);
+        if (index >= 0) queuedAiStreams.splice(index, 1);
+        reject(new DOMException("The request was stopped.", "AbortError"));
+      };
+      queuedAiStreams.push(resume);
+      signal?.addEventListener("abort", cancel, { once: true });
+    });
+    if (signal?.aborted) throw new DOMException("The request was stopped.", "AbortError");
+  } else activeAiStreams += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const resume = queuedAiStreams.shift();
+    if (resume) resume();
+    else activeAiStreams = Math.max(0, activeAiStreams - 1);
+  };
+}
+
+export async function streamAiText(options: Parameters<typeof streamAiTextUnlocked>[0]): Promise<string> {
+  const release = await enterAiStream(options.signal);
+  try { return await streamAiTextUnlocked(options); }
+  finally { release(); }
 }
 
 

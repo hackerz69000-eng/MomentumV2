@@ -19,7 +19,7 @@ import { ExplainWhy } from "./ExplainWhy";
 import { adaptivePlan, shuffle, type Attempt, type TopicRow } from "@/lib/stats";
 import { recordStudySessionCompletion } from "@/components/DailyStreak";
 import { updateLocalSetProgress } from "@/lib/local-store";
-import { extractQuizVisuals } from "@/lib/extract";
+import { extractQuizVisuals, extractQuizVisualsCached, loadCachedQuizVisuals } from "@/lib/extract";
 import { attachQuizVisuals, scoreQuizAnswer, serializeQuizAnswer } from "@/lib/quiz-results";
 import type { StudySet } from "@/lib/queries";
 import { cn } from "@/lib/utils";
@@ -135,7 +135,7 @@ export function QuizRunner({
     queryKey: ["quiz-image-files", set?.id],
     enabled: !!set && !comprehensive && settings.includeImages,
     queryFn: async () => {
-      const { data, error } = await supabase.from("study_files").select("id,name,path,mime,size").eq("set_id", set!.id).order("created_at");
+      const { data, error } = await supabase.from("study_files").select("id,name,path,mime,size,content_sha256").eq("set_id", set!.id).order("created_at");
       if (error) throw error;
       return (data ?? []).filter((file) => ["image/png", "image/jpeg", "image/webp", "application/pdf", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"].includes(file.mime.toLowerCase()) || /\.(png|jpe?g|webp|pdf|pptx|docx)$/i.test(file.name)).slice(0, 10);
     },
@@ -232,11 +232,23 @@ export function QuizRunner({
         if (!sources.length) throw new Error("No saved image, PDF, or PowerPoint uploads are available for this study set. Add a lecture file in Materials first.");
         for (const source of sources) {
           if (quizImages.length >= 3) break;
-          const { data: blob, error: downloadError } = await supabase.storage.from("study-files").download(source.path);
-          if (downloadError || !blob) continue;
           try {
-            const file = new File([blob], source.name, { type: source.mime || blob.type });
-            const visuals = await extractQuizVisuals(file, 3 - quizImages.length);
+            let visuals = source.content_sha256 && user?.id
+              ? await loadCachedQuizVisuals(user.id, source.content_sha256, 3 - quizImages.length)
+              : null;
+            if (!visuals) {
+              const { data: blob, error: downloadError } = await supabase.storage.from("study-files").download(source.path);
+              if (downloadError || !blob) continue;
+              const file = new File([blob], source.name, { type: source.mime || blob.type });
+              const extracted = user?.id
+                ? await extractQuizVisualsCached(file, user.id, 3 - quizImages.length, source.content_sha256)
+                : { visuals: await extractQuizVisuals(file, 3 - quizImages.length), fileSha256: null, cacheHit: false };
+              visuals = extracted.visuals;
+              if (extracted.fileSha256 && extracted.fileSha256 !== source.content_sha256 && user?.id) {
+                await supabase.from("study_files").update({ content_sha256: extracted.fileSha256 }).eq("id", source.id).eq("set_id", set!.id);
+              }
+            }
+            if (!visuals) continue;
             if (!visuals.length) continue;
             const { data: signed, error: signedError } = await supabase.storage.from("study-files").createSignedUrl(source.path, 3600);
             if (signedError || !signed?.signedUrl) continue;

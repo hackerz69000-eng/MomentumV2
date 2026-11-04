@@ -35,6 +35,15 @@ Before deploying this version, run `drizzle/migrations/0011_reading_companion_so
 
 PDF extraction now preserves page headings where the PDF parser returns individual pages. Page citations are only shown when a page marker exists in the extracted text; the AI is instructed not to invent page numbers.
 
+## Study engine extraction cache and recovery
+
+Before deploying the Stage 1/2 study-engine upgrade, run these additive SQL migrations in timestamp order in the Supabase SQL Editor:
+
+1. `supabase/migrations/20261104000000_study_engine_cache_and_checkpoints.sql`
+2. `supabase/migrations/20261105000000_study_generation_safety.sql`
+
+They add a per-user extraction cache, source-version fields, retry checkpoints, short-lived study-set generation leases, and transaction-safe result commits. The safety migration uses a two-minute database lease renewed every 30 seconds while a browser is actively generating. If a tab closes, its lease expires and another tab can retry. Source-changing edits update a database revision, and the final transaction checks that revision before saving notes or cards. The migrations do not delete or rewrite existing study sets, notes, flashcards, attempts, or original uploads. They are written to tolerate repeated application of these statements in the normal case; still inspect the SQL Editor result and your schema before retrying any migration that reports an error. Do not deploy this application version until both migrations succeed. Cache entries stop being reused after 90 days, but there is no scheduled cleanup job; expired cache rows and private visual files remain until manually cleaned up. The AI streaming limit is two streams per browser tab only; it is not a global cap across tabs/devices, and it does not cover server-side OCR calls.
+
 ## Optional image-based quiz questions
 
 In a Study Set quiz or exam, select **Include questions about lecture images** to ask questions grounded in saved PNG, JPEG, or WebP uploads, sampled PDF pages, or embedded Word and PowerPoint figures. The option is off by default. Momentum skips visuals it cannot extract, uses at most three visuals per quiz, and keeps image references with saved results so learners can review them later. Image data is not copied into saved quiz results. Configure `NVIDIA_VISION_MODEL` for visual question generation; the project default is listed in `.env.example`.
