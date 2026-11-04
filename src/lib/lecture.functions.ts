@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { aiText, parseJson, clip } from "./ai.server";
+import { clip } from "./ai.server";
 import { loadSet, ci } from "./set-helpers.server";
 
 const LECTURE_NOTES = `You turn a lecture transcript into organized, easy-to-study lecture notes in Markdown. Never write one big summary paragraph.
@@ -73,25 +73,6 @@ export const saveLectureGuideStream = createServerFn({ method: "POST" })
     return { guide: data.guide };
   });
 
-export const lectureNotes = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator(idIn)
-  .handler(async ({ data, context }) => {
-    const lec = await loadLecture(context.supabase, data.lectureId);
-    const set = await loadSet(context.supabase, lec.set_id);
-    const notes = await aiText(LECTURE_NOTES + ci(set), [
-      {
-        role: "user",
-        content: `STUDY SET: ${set.name} (${set.subject || "general"})\nLECTURE: ${lec.title}\n\nTRANSCRIPT:\n${clip(lec.transcript, 80000)}`,
-      },
-    ]);
-    await context.supabase
-      .from("lectures")
-      .update({ notes, updated_at: new Date().toISOString() })
-      .eq("id", lec.id);
-    return { notes };
-  });
-
 export const prepareLectureCardsStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth]).inputValidator(idIn)
   .handler(async ({ data, context }) => {
@@ -119,86 +100,3 @@ export const saveLectureCardsStream = createServerFn({ method: "POST" })
   });
 
 /** Adds lecture-based flashcards to the set (keeps existing cards). */
-export const lectureCards = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator(idIn)
-  .handler(async ({ data, context }) => {
-    const sb = context.supabase;
-    const lec = await loadLecture(sb, data.lectureId);
-    const set = await loadSet(sb, lec.set_id);
-    const text = await aiText(
-      `You create flashcards from a lecture transcript. Return ONLY JSON: {"cards":[{"q":"question or term","a":"concise answer","t":"short topic name (2-4 words)"}]}. 10-20 high-value cards on concepts, definitions, facts and things the teacher emphasized. Only use what the lecture says. Answers under 40 words.${ci(set)}`,
-      [
-        {
-          role: "user",
-          content: `LECTURE: ${lec.title}\nTRANSCRIPT:\n${clip(lec.transcript, 60000)}`,
-        },
-      ],
-    );
-    const parsed = parseJson<{ cards?: unknown }>(text);
-    const rawCards = parsed && typeof parsed === "object" && Array.isArray(parsed.cards) ? parsed.cards : [];
-    const seenQuestions = new Set<string>();
-    const cards = rawCards
-      .filter((c): c is { q: string; a: string; t?: string } =>
-        !!c && typeof c === "object" && typeof (c as any).q === "string" && typeof (c as any).a === "string" &&
-        (c as any).q.trim().length > 0 && (c as any).a.trim().length > 0)
-      .filter((c) => {
-        const key = c.q.trim().toLowerCase();
-        if (seenQuestions.has(key)) return false;
-        seenQuestions.add(key);
-        return true;
-      })
-      .map((c) => ({ q: c.q.trim(), a: c.a.trim(), t: typeof c.t === "string" ? c.t.trim() : "" }))
-      .slice(0, 25);
-    if (!cards.length) throw new Error("No flashcards could be generated.");
-    const { count } = await sb
-      .from("flashcards")
-      .select("id", { count: "exact", head: true })
-      .eq("set_id", set.id);
-    const { error } = await sb
-      .from("flashcards")
-      .insert(
-        cards.map((c, i) => ({
-          set_id: set.id,
-          user_id: context.userId,
-          question: c.q,
-          answer: c.a,
-          topic: (c.t ?? lec.title).slice(0, 60),
-          position: (count ?? 0) + i,
-          is_custom: false,
-        })),
-      );
-    if (error) throw new Error(error.message);
-    return { added: cards.length };
-  });
-
-export const lectureGuide = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator(idIn)
-  .handler(async ({ data, context }) => {
-    const lec = await loadLecture(context.supabase, data.lectureId);
-    const set = await loadSet(context.supabase, lec.set_id);
-    const guide = await aiText(
-      `You write a structured study guide in Markdown from ONE lecture transcript. Start with "# Study Guide: ${lec.title.replace(/"/g, "")}". Use "## " sections: Main Topics, Key Concepts, Definitions, Key Facts, Examples, What the Teacher Emphasized, Likely Test Questions, Quick Review. Only use the lecture; label anything else "(Additional context)". No preamble.${ci(set)}`,
-      [
-        {
-          role: "user",
-          content: `TRANSCRIPT:\n${clip(lec.transcript, 70000)}\n\nLECTURE NOTES (if any):\n${clip(lec.notes ?? "", 10000)}`,
-        },
-      ],
-    );
-    await context.supabase
-      .from("lectures")
-      .update({ guide, updated_at: new Date().toISOString() })
-      .eq("id", lec.id);
-    await context.supabase
-      .from("study_activity")
-      .insert({
-        user_id: context.userId,
-        set_id: set.id,
-        kind: "guide",
-        count: 1,
-        meta: { lecture: lec.id },
-      });
-    return { guide };
-  });

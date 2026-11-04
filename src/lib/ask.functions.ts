@@ -1,7 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { aiText } from "./ai.server";
 import { loadSet, ci } from "./set-helpers.server";
 
 export const NOT_FOUND = "I couldn't find that in your study materials.";
@@ -132,101 +131,4 @@ export const saveAskMaterialsStreamReply = createServerFn({ method: "POST" })
     const { error } = await sb.from("material_messages").insert({ set_id: data.setId, user_id: context.userId, role: "assistant", content: data.reply, sources: { refs, notFound, general: !!data.general } });
     if (error) throw new Error("Couldn't save the streamed answer.");
     return { ok: true };
-  });
-
-export const askMaterials = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) =>
-    z
-      .object({
-        setId: z.string().min(1).max(200),
-        content: z.string().min(1).max(4000),
-        general: z.boolean().optional(),
-      })
-      .parse(d),
-  )
-  .handler(async ({ data, context }) => {
-    const sb = context.supabase;
-    const set = await loadSet(sb, data.setId);
-    const { data: userMsg } = await sb
-      .from("material_messages")
-      .insert({
-        set_id: set.id,
-        user_id: context.userId,
-        role: "user",
-        content: data.general
-          ? `${data.content}\n\n_(general background requested)_`
-          : data.content,
-      })
-      .select("id")
-      .single();
-    try {
-      const [{ data: lectures }, { data: hist }] = await Promise.all([
-        sb
-          .from("lectures")
-          .select("title, transcript, notes")
-          .eq("set_id", set.id)
-          .neq("transcript", ""),
-        sb
-          .from("material_messages")
-          .select("role, content")
-          .eq("set_id", set.id)
-          .order("created_at", { ascending: false })
-          .limit(11),
-      ]);
-      const history = ((hist ?? []) as { role: string; content: string }[]).reverse().slice(0, -1);
-      const lastUser = history
-        .filter((m) => m.role === "user")
-        .slice(-2)
-        .map((m) => m.content)
-        .join(" ");
-      const chunks = pick(
-        chunkSources(set, (lectures ?? []) as never),
-        `${data.content} ${lastUser}`,
-      );
-      const block = chunks.map((c, i) => `[S${i + 1}] ${c.label}\n${c.text}`).join("\n\n---\n\n");
-
-      const system = data.general
-        ? `The student asked for GENERAL BACKGROUND knowledge (not from their materials). Start the answer with the line "**General background — not from your study materials.**" Then answer clearly and accurately in Markdown. If anything in their sources below relates, mention it with its [S#] tag. Don't overstate certainty.${ci(set)}\n\nSOURCES:\n${block}`
-        : `You are "Ask Your Materials" for the study set "${set.name}". Answer ONLY from the numbered SOURCES (the student's uploaded files, pasted material, lecture transcripts, generated notes and study guides).
-Rules:
-- Cite sources inline with their tags like [S2] right after the sentences they support. Every factual sentence needs a tag.
-- When the student asks "what did my teacher say", prefer lecture transcripts/notes. When asked "where in my notes", list the matching sources and quote a short phrase.
-- If the sources don't contain the answer, reply with exactly: "${NOT_FOUND}" — then one short sentence offering general background knowledge instead. Never guess or fill gaps from outside knowledge.
-- If only part is covered, answer that part with citations and say clearly which part isn't in the materials.
-- Examples must be based on the material; if you create a new illustrative example, label it "(Example based on your notes)".
-- Use clear Markdown, concise. Keep context from the conversation for follow-ups.${ci(set)}
-
-SOURCES:
-${block || "(no material)"}`;
-      const reply = await aiText(system, [
-        ...history.map((m) => ({
-          role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
-          content: m.content,
-        })),
-        { role: "user", content: data.content },
-      ], { task: "reasoning" });
-      const cited = [
-        ...new Set([...reply.matchAll(/\[S(\d+)\]/g)].map((m) => Number(m[1]))),
-      ].filter((n) => n >= 1 && n <= chunks.length);
-      const sources: SourceRef[] = cited.map((n) => ({
-        id: `S${n}`,
-        label: chunks[n - 1]!.label,
-        excerpt: chunks[n - 1]!.text.slice(0, 600),
-      }));
-      const notFound = !data.general && reply.includes(NOT_FOUND);
-      await sb
-        .from("material_messages")
-        .insert({
-          set_id: set.id,
-          user_id: context.userId,
-          role: "assistant",
-          content: reply,
-          sources: { refs: sources, notFound, general: !!data.general },
-        });
-      return { ok: true };
-    } catch (e) {
-      if (userMsg?.id) await sb.from("material_messages").delete().eq("id", userMsg.id);
-      throw e;
-    }
   });

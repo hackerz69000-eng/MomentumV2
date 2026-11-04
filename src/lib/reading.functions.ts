@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { aiText, parseJson, clip, splitTextIntoChunks } from "./ai.server";
+import { clip, splitTextIntoChunks } from "./ai.server";
 import { loadSet, ci } from "./set-helpers.server";
 
 const setIdInput = (data: unknown) => z.object({ setId: z.string().uuid() }).parse(data);
@@ -188,18 +188,6 @@ export const prepareReadingNotesAdditionsStream = createServerFn({ method: "POST
     })));
   });
 
-export const readingSummary = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth]).inputValidator(scopedInput)
-  .handler(async ({ data, context }) => {
-    const set = await loadSet(context.supabase, data.setId);
-    const sources = selectedSources(await collectSources(context.supabase, set), data.sourceKey);
-    const sourceText = sources.map((s, i) => `SOURCE ${i + 1}: ${s.title}\n${clip(s.text, 28000)}`).join("\n\n---\n\n");
-    const summary = await aiText(`You are Momentum's lecture-first Reading Companion. The Study Set's lecture/course material is the primary learning target; readings are supporting context that should make the lecture easier to understand, not replace it. Create a genuinely useful, actionable study workspace in clean Markdown using only the supplied course sources. This must feel like a guided learning tool, not a prose essay or wall of notes. Keep paragraphs to 2-4 sentences, use meaningful headings, bold key terms, and make each section useful for a specific student task. Prefer concise, information-dense explanations over repeating the same idea. Start with a concise title and a 2-3 sentence overview of the big idea. Then use these sections in this order: (1) Start here: 3-5 high-yield takeaways, each phrased as a complete, memorable claim; (2) Lecture concepts explained: group related ideas under short subheadings; explain what each means, how it connects to other concepts, and why it matters; use a causal chain or timeline only when supported by the sources; (3) Lecture vs. reading: when both source types exist, use a compact Markdown table with columns Topic, Lecture emphasis, Reading contribution, and Relationship (clarifies/adds/differs/not covered). Keep each cell concise; compare like with like; if one source type is missing, say so rather than implying a comparison was made; (4) Important terms: term — plain-language definition — why it matters; distinguish terms that are easy to confuse; (5) What the reading adds / what remains lecture-only: separate these clearly and only include supported items; (6) Common confusions: 2-4 likely mix-ups grounded in these sources, and how to tell the concepts apart; if no genuine confusions are supported, say so; (7) Check your understanding: 5-7 varied questions, with answers in a separate Answer key section so the student can try first. Include a mix of retrieval, explain-in-your-own-words, application to a source-supported example, and compare/connect questions when sources support it. Avoid trivia-only or trick questions; make distractors plausible but clearly incorrect from the sources; (8) A 10-minute study path with concrete steps using this brief (e.g. closed-book recall, check, retry missed ideas), not generic motivational advice; (9) Source references. Cite source names and explicit page/slide/section markers present in the supplied text. Never invent page numbers, quotations, details, or source support. If no page marker exists, cite the source name and a short identifying heading or say the extracted text has no page-level markers. Do not invent facts. Explicitly flag gaps and genuine discrepancies without assuming either source is automatically correct. Distinguish lecture claims from reading claims and label any necessary inference as an inference. ${ci(set)}`,
-      [{ role: "user", content: `STUDY SET: ${set.name} (${set.subject || "General"})\n\nSOURCES:\n${sourceText}` }]);
-    return { summary };
-  });
-
-
 const implementInput = (data: unknown) => z.object({ setId: z.string().uuid(), additions: z.string().trim().min(10).max(30000) }).parse(data);
 
 function mergeNotesWithoutReplacing(existing: string, additions: string) {
@@ -238,31 +226,6 @@ function mergeNotesWithoutReplacing(existing: string, additions: string) {
   return merged;
 }
 
-export const readingImplementIntoNotes = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth]).inputValidator(setIdInput)
-  .handler(async ({ data, context }) => {
-    const set = await loadSet(context.supabase, data.setId);
-    const sources = (await collectSources(context.supabase, set)).filter((source) => source.kind === "reading" && source.key !== "current-notes");
-    if (!sources.length) throw new Error("Upload or connect a reading PDF first.");
-    const existingNotes = clip(set.notes ?? "", 18000) || "(No notes yet)";
-    const readingChunks = sources.flatMap((source) => splitTextIntoChunks(source.text, 10000).map((text, index, all) => ({ title: source.title, part: index + 1, total: all.length, text })));
-    const additionParts: string[] = [];
-    const seen = new Set<string>();
-    const normalize = (value: string) => value.toLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
-    for (const chunk of readingChunks) {
-      const result = await aiText(`You are an academic note editor comparing ONE PART of a reading with existing notes. Return ONLY Markdown containing important information from this part that is genuinely absent from the notes. Match existing headings when possible; otherwise add a concise topic heading. Preserve definitions, explanations, conditions, examples, exceptions, formulas, and relationships. Never invent facts. Do not include citations/source references. Do not rewrite existing notes. If this part adds nothing, return exactly NO_NEW_INFORMATION. This is part ${chunk.part} of ${chunk.total} for ${chunk.title}; analyze this part completely and do not assume other parts contain the same information. ${ci(set)}`,
-        [{ role: "user", content: `EXISTING NOTES (reference only; never replace):\n${existingNotes}\n\nREADING: ${chunk.title} (part ${chunk.part}/${chunk.total})\n${chunk.text}` }]);
-      if (!result.trim() || /NO_NEW_INFORMATION/i.test(result.trim())) continue;
-      for (const section of result.trim().split(/(?=^#{1,3}\s+)/m).map((x) => x.trim()).filter(Boolean)) {
-        const key = normalize(section);
-        if (key.length > 20 && !seen.has(key)) { seen.add(key); additionParts.push(section); }
-      }
-    }
-    const additions = additionParts.join("\n\n").trim();
-    if (!additions) return { additions: "", message: "Your notes already cover the useful information in these readings." };
-    return { additions: additions.slice(0, 29000) };
-  });
-
 export const readingApplyNotesAdditions = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth]).inputValidator(implementInput)
   .handler(async ({ data, context }) => {
@@ -285,33 +248,6 @@ export const readingAskPrepare = createServerFn({ method: "POST" })
       system: `You are a careful course tutor. Treat the Study Set's uploaded lecture/course material as the primary source and use optional readings to clarify it. Answer using only the supplied Study Set reading and lecture content. Format the response for scanning: lead with a direct answer, then explain in short paragraphs or bullets, and finish with a brief source note when possible. Ground claims in sources and explicit page/slide/section labels when available; clearly say if sources do not contain the answer. Never invent page numbers. Distinguish source facts from explanation. ${ci(set)}`,
       messages: [{ role: "user" as const, content: `QUESTION: ${data.question}\n\nCOURSE SOURCES:\n${sourceText}` }],
     };
-  });
-
-// Compatibility server function for callers that still require a completed response.
-export const readingAsk = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth]).inputValidator(askInput)
-  .handler(async ({ data, context }) => {
-    const prepared = await readingAskPrepare({ data });
-    const answer = await aiText(prepared.system, prepared.messages);
-    return { answer };
-  });
-
-export const readingGenerateCards = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth]).inputValidator(setIdInput)
-  .handler(async ({ data, context }) => {
-    const set = await loadSet(context.supabase, data.setId);
-    const sources = selectedSources(await collectSources(context.supabase, set));
-    if (!sources.length) throw new Error("Add reading material or connect a lecture first.");
-    const text = await aiText(`Create up to 15 high-value flashcards for this lecture-first Study Set. Prioritize the primary lecture/course material, using optional readings to clarify confusing concepts and add useful context. Use only source-supported facts. Include source name and page/slide marker in topic when provided. Return ONLY JSON: {"cards":[{"q":"question","a":"answer","t":"topic"}]}. Avoid duplicates and vague prompts. ${ci(set)}`,
-      [{ role: "user", content: `SET: ${set.name}\nSOURCES:\n${sources.map((s) => `${s.title}\n${clip(s.text, 16000)}`).join("\n\n---\n\n")}` }]);
-    const parsed = parseJson<{ cards?: unknown }>(text);
-    const rawCards = parsed && typeof parsed === "object" && Array.isArray(parsed.cards) ? parsed.cards : [];
-    const cards = rawCards.filter((c): c is { q: string; a: string; t?: string } =>
-      !!c && typeof c === "object" && typeof (c as any).q === "string" && typeof (c as any).a === "string" &&
-      (c as any).q.trim().length > 0 && (c as any).a.trim().length > 0)
-      .map((c) => ({ q: c.q.trim(), a: c.a.trim(), t: typeof c.t === "string" ? c.t.trim() : "" })).slice(0, 15);
-    if (!cards.length) throw new Error("No flashcards could be generated from these sources.");
-    return { cards };
   });
 
 export const readingSaveCards = createServerFn({ method: "POST" })

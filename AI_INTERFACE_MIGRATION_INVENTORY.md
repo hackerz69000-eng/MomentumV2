@@ -2,7 +2,7 @@
 
 ## Original review baseline
 
-The original review identified 39 server-side AI call sites after the shared SSE transport and browser streaming helpers were introduced. Those call sites were then reviewed by workflow rather than mechanically replaced: several are multi-stage server pipelines whose source chunking, validation, idempotency, or persistence must remain server-owned.
+The original review identified 39 remaining direct server-side AI call sites. The migration now routes all feature-level model generation through the authenticated browser SSE endpoint. Server functions retain source loading, prompt preparation, deterministic validation, ownership checks, and database persistence; obsolete non-streaming compatibility generation endpoints were removed.
 
 ## Browser-streamed user-facing workflows
 
@@ -17,6 +17,7 @@ The original review identified 39 server-side AI call sites after the shared SSE
 | Universal Search | Existing | Server-loaded source context |
 | Notes passage explanations | Migrated | Server-prepared source prompt |
 | Mistake explanation and pattern analysis | Migrated | Server-prepared mistake and set context |
+| Mistake Bank similar-question practice | Migrated | Server prepares source-grounded prompt; browser streams and validates all three questions |
 | Flashcard regeneration | Migrated | Server archives old cards, then replaces them |
 | Reading Companion summary | Migrated | Server gathers and labels source material |
 | Reading-to-notes additions | Migrated | Server prepares reading chunks; user reviews before applying |
@@ -38,20 +39,19 @@ The original review identified 39 server-side AI call sites after the shared SSE
 | Audio Study quiz grading | Migrated | Structured JSON validation; existing attempt persistence retained |
 | Assignment Helper understand / brainstorm / outline / feedback | Migrated | Server loads assignment and persists each step |
 | Essay grading | Migrated | Server loads essay/material, validates result, and persists grade |
-| Regular quiz / practice exam | Migrated initial batch | Browser streams first batch; server performs review, chunked top-ups, and final validation |
-| Comprehensive exam | Migrated initial batch per source set | Browser streams first batch per set; server completes remaining batches and validates count |
-| Initial Study Set processing | Migrated for single- and multi-chunk sources without optional readings | Optional-reading enrichment uses server-managed chunk pipeline; archive-before-replace persistence retained |
-| Notes regeneration | Migrated for single- and multi-chunk sources without optional readings | Optional-reading enrichment uses server-managed chunk pipeline |
+| Regular quiz / practice exam | Fully browser-streamed in batches of up to five | Browser requests successive prompts for every source chunk, streams every batch and the AI review, and submits the complete structured result; server performs schema/uniqueness/count checks and returns the finalized questions |
+| Comprehensive exam | Fully browser-streamed in batches of up to five per source set | Browser streams every batch for every source chunk in every selected set; server enforces per-set and overall requested counts |
+| Initial Study Set processing | Fully browser-streamed, including optional readings | Browser streams lecture chunks, reading-enrichment chunks, final integration, and flashcards; server retains archive-before-replace persistence |
+| Notes regeneration | Fully browser-streamed, including optional readings | Browser streams lecture chunks, reading-enrichment chunks, and final integration; server retains note archival and persistence |
 
-## Server-managed pipelines retained intentionally
+## Server-managed responsibilities retained intentionally
 
-These are not silent non-streaming fallbacks. They use the shared NVIDIA SSE transport (`stream: true`) but do not expose each internal model delta directly to the browser because they coordinate multiple dependent calls and persistence steps:
+- Source loading and user-owned material retrieval.
+- Prompt construction and source scoping.
+- Deterministic response-schema, uniqueness, and count validation.
+- Authenticated persistence, archival, idempotency, and activity updates.
 
-- Initial Study Set processing (`processSet`) with optional-reading enrichment: multi-stage notes and structured flashcard generation, with existing set-status and persistence behavior.
-- Optional-reading Notes regeneration: lecture-first chunk generation, reading comparison, and final integration.
-- Quiz/exam validation and top-ups after the browser-streamed initial batch.
-
-The legacy exported server handlers remain available for compatibility, but the migrated UI components use the prepare/stream/finalize functions documented above.
+These are not model-generation fallbacks. All feature-level model generation streams through the authenticated browser SSE endpoint. Obsolete direct-generation compatibility handlers were removed so UI workflows cannot silently fall back to server-side generation.
 
 ## Transport and correctness work
 
@@ -59,6 +59,7 @@ The legacy exported server handlers remain available for compatibility, but the 
 - `/api/ai-stream` verifies Supabase authentication before proxying provider SSE. NVIDIA credentials are never sent to the browser.
 - `streamAiText()` supports cancellation and forwards incremental text.
 - `streamAiJson<T>()` parses completed streamed JSON and runs feature-specific validation before data is accepted.
+- The 39 original direct feature-level `aiText()` call sites are no longer invoked by feature handlers; `aiText()` remains only as a tested shared server transport utility, not as a feature-generation fallback.
 - Persistent writes remain authenticated server operations; user-owned source data is loaded server-side.
 - Flashcard replacement archives prior cards before deleting them. Additive lecture/reading card workflows preserve existing cards and remove duplicates.
 

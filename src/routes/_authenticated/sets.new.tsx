@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { processSet, ocrFile } from "@/lib/study.functions";
-import { streamAiText, streamAiJson } from "@/lib/ai-stream.client";
+import { streamAiJson, streamPreparedNotes } from "@/lib/ai-stream.client";
 import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { cn } from "@/lib/utils";
 
@@ -144,16 +144,8 @@ function NewSet() {
 
       // Gemini generates the notes first, then flashcards from those notes.
       const prepared = await process({ data: { setId: targetId, prepareOnly: true } });
-      if ("serverManaged" in prepared) await process({ data: { setId: targetId } });
-      else if ("notesPrompts" in prepared) {
-        setProgressMsg("Generating study notes…");
-        const noteParts: string[] = [];
-        for (const prompt of prepared.notesPrompts) {
-          let streamed = "";
-          const part = await streamAiText({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => { streamed += chunk; setProgressMsg(`Generating study notes…\n${streamed.slice(-600)}`); } });
-          noteParts.push(part.trim());
-        }
-        const notes = prepared.notesHeader ? `${prepared.notesHeader}\n\n${noteParts.join("\n\n---\n\n")}` : noteParts[0] ?? "";
+      if ("notesPrompts" in prepared) {
+        const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setProgressMsg, onDelta: (chunk) => setProgressMsg((old) => `${old}\n${chunk}`.slice(-900)) });
         setProgressMsg("Generating flashcards…");
         const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgressMsg((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
           if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");

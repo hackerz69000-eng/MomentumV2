@@ -11,7 +11,7 @@ import {
   prepareExplainMistakeStream,
   prepareMistakePatternsStream,
   prepareGradeShortAnswersStream,
-  similarQuestions,
+  prepareSimilarQuestionsStream,
   type QuizQuestion,
 } from "@/lib/study.functions";
 import { nextStatus, recordResults, MASTERED_AFTER } from "@/lib/mistakes";
@@ -145,7 +145,7 @@ function MistakeCard({ m, setId, startOpen }: { m: Mistake; setId: string; start
   const qc = useQueryClient();
   const { user } = useAuth();
   const explainFn = useServerFn(prepareExplainMistakeStream);
-  const similarFn = useServerFn(similarQuestions);
+  const similarFn = useServerFn(prepareSimilarQuestionsStream);
   const gradePrepare = useServerFn(prepareGradeShortAnswersStream);
   const [openCard, setOpenCard] = useState(!!startOpen);
   const [mode, setMode] = useState<null | "retry" | "similar">(startOpen ? "retry" : null);
@@ -244,7 +244,29 @@ function MistakeCard({ m, setId, startOpen }: { m: Mistake; setId: string; start
     setBusy("similar");
     setMode("similar");
     try {
-      setSimilar((await similarFn({ data: { mistakeId: m.id, count: 3 } })).questions);
+      const prompt = await similarFn({ data: { mistakeId: m.id, count: 3 } });
+      const questions = await streamAiJson({ system: prompt.system, messages: prompt.messages, validate: (value) => {
+        if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The generated questions were not valid.");
+        const rows = (value as { questions: unknown[] }).questions;
+        if (rows.length !== 3) throw new Error("The AI did not generate all three requested questions.");
+        return rows.map((row) => {
+          if (!row || typeof row !== "object") throw new Error("A generated question was malformed.");
+          const q = row as Record<string, unknown>;
+          const type = q.type;
+          const options = Array.isArray(q.options) ? q.options.map(String) : [];
+          const answer = Number(q.answer);
+          const question = String(q.question ?? "").trim();
+          const answerText = String(q.answerText ?? "").trim();
+          const explanation = String(q.explanation ?? "").trim();
+          if (!question || !explanation || (type !== "mc" && type !== "tf" && type !== "short") ||
+            (type === "mc" && (options.length !== 4 || !Number.isInteger(answer) || answer < 0 || answer > 3)) ||
+            (type === "tf" && (options.length !== 2 || !Number.isInteger(answer) || answer < 0 || answer > 1)) ||
+            (type === "short" && (!answerText || options.length))) throw new Error("A generated question failed validation.");
+          return { type, question, options: type === "short" ? [] : options, answer: type === "short" ? -1 : answer, answerText: type === "short" ? answerText : options[answer], explanation, topic: String(q.topic ?? "General") } as QuizQuestion;
+        });
+      }});
+      setSimilar(questions);
+
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't write questions");
       setMode(null);

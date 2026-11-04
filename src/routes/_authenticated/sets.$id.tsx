@@ -21,7 +21,7 @@ import { fetchCards, fetchSet, fetchSets, type StudySet } from "@/lib/queries";
 import { computeProgress } from "@/lib/progress";
 import { supabase } from "@/integrations/supabase/client";
 import { prepareTutorStream, saveTutorStreamReply, processSet } from "@/lib/study.functions";
-import { streamAiText, streamAiJson } from "@/lib/ai-stream.client";
+import { streamAiText, streamAiJson, streamPreparedNotes } from "@/lib/ai-stream.client";
 import { setStats, type Attempt } from "@/lib/stats";
 import { cn } from "@/lib/utils";
 import { ErrorBox } from "@/components/set/ui";
@@ -348,12 +348,8 @@ function Processing({ set }: { set: StudySet }) {
     setProgress("");
     try {
       const prepared = await process({ data: { setId: set.id, prepareOnly: true } });
-      if ("serverManaged" in prepared) await process({ data: { setId: set.id } });
-      else if ("notesPrompts" in prepared) {
-        const noteParts: string[] = [];
-        setProgress("Generating notes…");
-        for (const prompt of prepared.notesPrompts) noteParts.push((await streamAiText({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setProgress((old) => `${old}${chunk}`.slice(-700)) })).trim());
-        const notes = prepared.notesHeader ? `${prepared.notesHeader}\n\n${noteParts.join("\n\n---\n\n")}` : noteParts[0] ?? "";
+      if ("notesPrompts" in prepared) {
+        const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setProgress, onDelta: (chunk) => setProgress((old) => `${old}\n${chunk}`.slice(-900)) });
         setProgress("Generating flashcards…");
         const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgress((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
           if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");

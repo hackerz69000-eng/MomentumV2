@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { aiText, clip, parseJson } from "./ai.server";
+import { clip } from "./ai.server";
 import { ci, loadSet, openMistakes } from "./set-helpers.server";
 import { setStats, type Attempt, type Flashcard } from "./stats";
 import type { Tables } from "@/integrations/supabase/types";
@@ -76,126 +76,6 @@ export const failAudioStudyStream = createServerFn({ method: "POST" })
 
 type SessionRow = Tables<"audio_study_sessions">;
 
-export const generateAudioStudy = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) =>
-    z
-      .object({ setId: z.string().min(1).max(200), mode: modeSchema, requestKey: z.string().uuid() })
-      .parse(d),
-  )
-  .handler(async ({ data, context }) => {
-    const sb = context.supabase;
-    const { data: duplicate } = await sb
-      .from("audio_study_sessions")
-      .select("*")
-      .eq("request_key", data.requestKey)
-      .maybeSingle();
-    if (duplicate) return { session: duplicate };
-    const set = await loadSet(sb, data.setId);
-    const [{ data: cards }, { data: attempts }, { data: lectures }, mistakes] = await Promise.all([
-      sb.from("flashcards").select("*").eq("set_id", set.id),
-      sb.from("quiz_attempts").select("*").eq("set_id", set.id),
-      sb.from("lectures").select("title, transcript").eq("set_id", set.id).eq("in_material", true),
-      openMistakes(sb, set.id, 20),
-    ]);
-    const stats = setStats((cards ?? []) as Flashcard[], (attempts ?? []) as Attempt[], mistakes);
-    if (data.mode === "weak" && !stats.topics.length && !mistakes.length)
-      throw new Error(
-        "Complete a quiz, Active Recall, or some flashcards before starting a Weak Topics lesson.",
-      );
-    const { data: created, error: createError } = await sb
-      .from("audio_study_sessions")
-      .insert({
-        user_id: context.userId,
-        set_id: set.id,
-        mode: data.mode,
-        status: "generating",
-        title: `${set.name} audio lesson`,
-        request_key: data.requestKey,
-      })
-      .select("*")
-      .single();
-    if (createError || !created)
-      throw new Error("Couldn't start the audio lesson. Please try again.");
-
-    const performance = [
-      `Weak topics: ${stats.weak.map((t) => `${t.topic} (${t.accuracy}%, ${t.samples} samples)`).join(", ") || "none supported yet"}`,
-      `Improving topics: ${
-        stats.topics
-          .filter((t) => t.status === "Improving")
-          .map((t) => t.topic)
-          .join(", ") || "none"
-      }`,
-      `Strong topics: ${
-        stats.topics
-          .filter((t) => t.status === "Strong")
-          .map((t) => t.topic)
-          .join(", ") || "none"
-      }`,
-      `Open mistakes: ${mistakes.map((m) => `[${m.topic}] missed ${m.wrong_count}x — ${m.question.slice(0, 180)}`).join(" | ") || "none"}`,
-    ].join("\n");
-    const lectureText = (lectures ?? [])
-      .filter((l) => l.transcript?.trim())
-      .map((l) => `## ${l.title}\n${l.transcript}`)
-      .join("\n\n");
-    try {
-      const text = await aiText(
-        `You create a one-tutor spoken Audio Study lesson from a student's own materials. ${MODE[data.mode]}
-Return ONLY JSON: {"title":"short lesson title","sections":[{"title":"short section title","topic":"2-5 word topic","narration":"spoken narration"}]}.
-Use 4–10 logically ordered sections: brief introduction, concepts with explanation and examples, useful relationships or distinctions, then a concise recap. Write for speech: natural, conversational prose; no Markdown, tables, stage directions, citations read aloud, fake dialogue, two-host banter, filler, or word-for-word note reading. Use the student's terminology. Prioritize important and testable information rather than treating every detail equally. Each narration must be under 3600 characters so it can be voiced independently. Do not mention performance data unless this is Weak Topics mode. In Weak Topics mode, prioritize repeated evidence over one isolated miss and don't waste most of the lesson reteaching mastered basics.${ci(set)}
-
-PERFORMANCE EVIDENCE:
-${performance}`,
-        [
-          {
-            role: "user",
-            content: `SET: ${set.name} (${set.subject || "general"})\n\nNOTES:\n${clip(set.notes ?? "", 12000)}\n\nSTUDY GUIDE:\n${clip(set.study_guide ?? "", 12000)}\n\nINCLUDED LECTURES:\n${clip(lectureText, 12000)}\n\nPRIMARY MATERIAL:\n${clip(set.material_text, 42000)}`,
-          },
-        ],
-      );
-      const parsed = parseJson<{ title?: string; sections?: unknown }>(text);
-      const rawSections = Array.isArray(parsed?.sections) ? parsed.sections.filter((section): section is Partial<AudioSection> => !!section && typeof section === "object") : [];
-      const sections = rawSections
-        .filter((s) => typeof s.title === "string" && !!s.title.trim() && typeof s.narration === "string" && !!s.narration.trim())
-        .map((s) => ({
-          title: String(s.title).slice(0, 120),
-          topic: String(s.topic ?? s.title).slice(0, 80),
-          narration: String(s.narration).slice(0, 3900),
-        }))
-        .slice(0, 12);
-      if (sections.length < 2)
-        throw new Error("The lesson outline was incomplete. Please try again.");
-      const script = sections.map((s) => `## ${s.title}\n\n${s.narration}`).join("\n\n");
-      const { data: saved, error } = await sb
-        .from("audio_study_sessions")
-        .update({
-          title: String(parsed.title ?? `${set.name} audio lesson`).slice(0, 160),
-          script,
-          sections,
-          status: "ready",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", created.id)
-        .select("*")
-        .single();
-      if (error || !saved)
-        throw new Error("The lesson was written but couldn't be saved. Please try again.");
-      return { session: saved };
-    } catch (error) {
-      await sb
-        .from("audio_study_sessions")
-        .update({
-          status: "error",
-          audio_error: error instanceof Error ? error.message : "Lesson generation failed",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", created.id);
-      throw error;
-    }
-  });
-
-// Voices ONE section per call: a whole lesson takes longer than a single server request may run,
-// so the client calls this once per section and each finished section is saved immediately.
 export const generateAudioSpeech = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) =>
@@ -334,16 +214,6 @@ export const saveAudioStudyAsk = createServerFn({ method: "POST" })
     return { saved: true };
   });
 
-export const askAudioStudy = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => interactionInput.parse(d))
-  .handler(async ({ data }) => {
-    const prepared = await prepareAudioStudyAsk({ data });
-    const reply = await aiText(prepared.system, prepared.messages);
-    await saveAudioStudyAsk({ data: { sessionId: data.sessionId, question: data.question, reply, sectionIndex: data.sectionIndex } });
-    return { reply };
-  });
-
 export const prepareAudioStudyQuizStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ sessionId: z.string().uuid(), sectionIndex: z.number().int().min(0).max(20) }).parse(d))
@@ -372,49 +242,4 @@ export const saveAudioStudyQuizStream = createServerFn({ method: "POST" })
     const { error: saveError } = await context.supabase.from("audio_study_events").insert({ user_id: context.userId, session_id: session.id, kind: "quiz_question", content: data.question, context: { sectionIndex: data.sectionIndex, topic: data.topic, model: data.model } });
     if (saveError) throw new Error("The quiz question was created but couldn't be saved.");
     return { question: data.question, topic: data.topic, model: data.model };
-  });
-
-export const audioStudyQuiz = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) =>
-    z
-      .object({ sessionId: z.string().uuid(), sectionIndex: z.number().int().min(0).max(20) })
-      .parse(d),
-  )
-  .handler(async ({ data, context }) => {
-    const { data: session } = await context.supabase
-      .from("audio_study_sessions")
-      .select("*")
-      .eq("id", data.sessionId)
-      .single();
-    if (!session) throw new Error("This audio session couldn't be found.");
-    const set = await loadSet(context.supabase, session.set_id);
-    const sections = (session.sections as AudioSection[] | null) ?? [];
-    const section = sections[Math.min(data.sectionIndex, Math.max(0, sections.length - 1))];
-    if (!section) throw new Error("Play part of the lesson before asking for a quiz.");
-    const text = await aiText(
-      `Write ONE active-recall question about the lesson section below. It must be answerable from the source material with one clear expected answer. Return ONLY JSON: {"question":"","topic":"","model":""}. No multiple choice, no yes/no, no trick question.${ci(set)}\nSOURCE MATERIAL:\n${clip(set.material_text, 30000)}`,
-      [
-        {
-          role: "user",
-          content: `CURRENT LESSON SECTION:\n${section.title}\n${section.narration}`,
-        },
-      ],
-    );
-    const q = parseJson<{ question?: string; topic?: string; model?: string }>(text);
-    if (!q.question || !q.model)
-      throw new Error("Couldn't create a reliable question. Please try again.");
-    const question = String(q.question).slice(0, 1000);
-    const topic = String(q.topic ?? section.topic).slice(0, 80);
-    const model = String(q.model).slice(0, 3000);
-    await context.supabase
-      .from("audio_study_events")
-      .insert({
-        user_id: context.userId,
-        session_id: session.id,
-        kind: "quiz_question",
-        content: question,
-        context: { sectionIndex: data.sectionIndex, topic, model },
-      });
-    return { question, topic, model };
   });

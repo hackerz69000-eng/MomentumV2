@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { aiText, parseJson, clip } from "./ai.server";
+import { parseJson, clip } from "./ai.server";
 import { loadSet, ci } from "./set-helpers.server";
 import { restrictAssignmentSource } from "./assignment-source-scope";
 
@@ -101,7 +101,8 @@ Give three small, concrete actions the student can take now.
 Formatting rules: no tables, raw HTML, pipe characters used as table layout, or <br> tags. Use actual Markdown headings, bullet lists, and numbered lists. Put each list item on a separate line. Use short paragraphs (usually 1–3 sentences), whitespace between sections, and plain language. Do not create an official-looking rubric from inferred criteria. Never invent the assignment topic/options, citation details, source claims, page numbers, lecture dates, deadlines, or submission rules. If important prompt text or source files are missing, name what's missing and still help with what is supported.${mat.instr}`;
       const messages: { role: "user" | "assistant"; content: string }[] = [{ role: "user", content: brief }];
       if (data.prepareOnly) return { system, messages };
-      const out = data.generatedText ?? await aiText(system, messages);
+      if (!data.generatedText) throw new Error("This assignment step must be browser-streamed before it can be saved.");
+      const out = data.generatedText;
       const { error: saveError } = await sb.from("assignments").update({ understanding: out, updated_at: now }).eq("id", a.id);
       if (saveError) throw new Error("The guide was generated but could not be saved. Please try again.");
       return { text: out };
@@ -140,7 +141,8 @@ ${clip(a.understanding ?? "", 7000)}`,
           },
         ];
       if (data.prepareOnly) return { system, messages };
-      const out = data.generatedText ?? await aiText(system, messages);
+      if (!data.generatedText) throw new Error("This assignment step must be browser-streamed before it can be saved.");
+      const out = data.generatedText;
       const { error: saveError } = await sb.from("assignments").update({ brainstorm: out, updated_at: now }).eq("id", a.id);
       if (saveError) throw new Error("Your brainstorm was generated but could not be saved. Please try again.");
       return { text: out };
@@ -175,7 +177,8 @@ If the brainstorm is empty, still help using the prompt and supplied material. R
           },
         ];
       if (data.prepareOnly) return { system, messages };
-      const out = data.generatedText ?? await aiText(system, messages);
+      if (!data.generatedText) throw new Error("This assignment step must be browser-streamed before it can be saved.");
+      const out = data.generatedText;
       const { error: saveError } = await sb.from("assignments").update({ outline: out, updated_at: now }).eq("id", a.id);
       if (saveError) throw new Error("Your outline was generated but could not be saved. Please try again.");
       return { text: out };
@@ -207,7 +210,8 @@ OUTLINE:\n${clip(a.outline ?? "(none)", 5000)}
 CURRENT DRAFT:\n${clip(a.draft, 25000)}`;
       const messages: { role: "user" | "assistant"; content: string }[] = [...chat.slice(-8), { role: "user", content: q }];
       if (data.prepareOnly) return { system, messages };
-      const out = data.generatedText ?? await aiText(system, messages);
+      if (!data.generatedText) throw new Error("This assignment step must be browser-streamed before it can be saved.");
+      const out = data.generatedText;
     const next = [...chat, { role: "user", content: q }, { role: "assistant", content: out }].slice(
       -30,
     );
@@ -286,7 +290,8 @@ export const gradeEssay = createServerFn({ method: "POST" })
     const system = GRADER + mat.instr;
     const messages = [{ role: "user" as const, content: clip(`ASSIGNMENT INSTRUCTIONS / ESSAY QUESTION:\n${clip(e.instructions || "(not provided)", 10000)}\n\nRUBRIC:\n${clip(e.rubric || "(not provided)", 10000)}\n\nTEACHER INSTRUCTIONS:\n${clip(e.teacher_notes || "(not provided)", 5000)}\n\nREQUIRED SOURCES / MATERIALS:\n${clip(e.sources || "(not provided)", 15000)}${mat.text}\n\nSTUDENT ESSAY (${e.essay.trim().split(/\s+/).length} words):\n${clip(e.essay, 60000)}`, 150000) }];
     if (data.prepareOnly) return { system, messages, task: "reasoning" as const };
-    const text = data.generatedText ?? await aiText(system, messages, { task: "reasoning" });
+    if (!data.generatedText) throw new Error("Essay grading must be browser-streamed before the result can be saved.");
+    const text = data.generatedText;
     const parsed = parseJson<Partial<EssayResult>>(text);
     const r = parsed && typeof parsed === "object" ? parsed : {};
     const arr = (x: unknown) => (Array.isArray(x) ? x.map(String).filter(Boolean) : []);

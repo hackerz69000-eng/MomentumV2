@@ -9,6 +9,7 @@ import { useAuth } from "@/hooks/use-auth";
 import {
   generateComprehensive,
   generateQuiz,
+  prepareQuizReviewStream,
   prepareGradeShortAnswersStream,
   type QuizQuestion,
 } from "@/lib/study.functions";
@@ -98,6 +99,7 @@ export function QuizRunner({
   const { user } = useAuth();
   const gen = useServerFn(generateQuiz);
   const genComp = useServerFn(generateComprehensive);
+  const reviewPrepare = useServerFn(prepareQuizReviewStream);
   const gradePrepare = useServerFn(prepareGradeShortAnswersStream);
   const comprehensive = kind === "comprehensive";
   const exam = kind !== "quiz";
@@ -215,22 +217,70 @@ export function QuizRunner({
       setStreamedQuestions("");
       if (comprehensive) {
         const input = { setIds: (sets ?? []).map((s) => s.id), count: settings.count, difficulty: settings.difficulty, types: settings.types, questionGuidance: settings.questionGuidance.trim() || undefined };
-        const prepared = await genComp({ data: { ...input, prepareOnly: true } });
-        if (!("prompts" in prepared)) throw new Error("Couldn't prepare the comprehensive exam.");
-        const generatedBySet: { setId: string; generatedText: string }[] = [];
-        for (const prompt of prepared.prompts) {
-          const generatedText = await streamAiText({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk) });
-          generatedBySet.push({ setId: prompt.setId, generatedText });
+        let batchPlan = await genComp({ data: { ...input, prepareOnly: true } });
+        if (!("prompts" in batchPlan)) throw new Error("Couldn't prepare the comprehensive exam.");
+        const generatedBySet = new Map<string, Map<number, unknown[]>>();
+        let rounds = 0;
+        while (true) {
+          if (++rounds > 12) throw new Error("Comprehensive exam generation exceeded the safe batch limit. Please retry.");
+          if (!batchPlan.prompts.length) break;
+          let progress = 0;
+          for (const prompt of batchPlan.prompts) {
+            const batch = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk), validate: (value) => {
+              if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The generated exam batch was not valid JSON.");
+              return (value as { questions: unknown[] }).questions;
+            }});
+            if (!batch.length) throw new Error(`NVIDIA returned an empty question batch for ${prompt.setName}.`);
+            const acceptedBatch = batch.slice(0, prompt.batchCount);
+            const parts = generatedBySet.get(prompt.setId) ?? new Map<number, unknown[]>();
+            const current = parts.get(prompt.partIndex) ?? [];
+            parts.set(prompt.partIndex, [...current, ...acceptedBatch]);
+            generatedBySet.set(prompt.setId, parts);
+            progress += acceptedBatch.length;
+          }
+          if (!progress) throw new Error("Comprehensive exam generation made no progress.");
+          const prior = [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, generatedText: JSON.stringify({ parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) }) }));
+          batchPlan = await genComp({ data: { ...input, prepareOnly: true, generatedBySet: prior } });
+          if (!("prompts" in batchPlan)) throw new Error("Couldn't prepare the next comprehensive exam batch.");
         }
-        const generated = await genComp({ data: { ...input, generatedBySet } });
+        const generated = await genComp({ data: { ...input, generatedBySet: [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, generatedText: JSON.stringify({ parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) }) })) } });
         if (!("questions" in generated)) throw new Error("The comprehensive exam could not be finalized.");
         res = generated;
       } else {
         const input = { setId: set!.id, count: settings.count, difficulty: settings.difficulty, types: settings.types, exam, plan: plan.length ? plan : undefined, lectureId, questionGuidance: settings.questionGuidance.trim() || undefined };
-        const prepared = await gen({ data: { ...input, prepareOnly: true } });
-        if (!("system" in prepared)) throw new Error("Couldn't prepare quiz generation.");
+        const generatedByPart = new Map<number, unknown[]>();
         setStreamedQuestions("");
-        const generatedText = await streamAiText({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk) });
+        let rounds = 0;
+        while (true) {
+          if (++rounds > 20) throw new Error("Quiz generation exceeded the safe batch limit. Please retry.");
+          const priorText = generatedByPart.size ? JSON.stringify({ parts: [...generatedByPart.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) }) : undefined;
+          const prepared = await gen({ data: { ...input, prepareOnly: true, generatedText: priorText } });
+          if (!("prompts" in prepared) || !prepared.prompts.length) break;
+          let progress = 0;
+          for (const prompt of prepared.prompts) {
+            const batch = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk), validate: (value) => {
+              if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The generated quiz batch was not valid JSON.");
+              return (value as { questions: unknown[] }).questions;
+            }});
+            const acceptedBatch = batch.slice(0, prompt.batchCount);
+            if (!acceptedBatch.length) throw new Error("NVIDIA returned an empty quiz batch.");
+            generatedByPart.set(prompt.partIndex, [...(generatedByPart.get(prompt.partIndex) ?? []), ...acceptedBatch]);
+            progress += acceptedBatch.length;
+          }
+          if (!progress) throw new Error("Quiz generation made no progress.");
+        }
+        const generatedQuestions = [...generatedByPart.values()].flat();
+        if (generatedQuestions.length < input.count) throw new Error(`Only ${generatedQuestions.length} of ${input.count} questions were generated. Please retry.`);
+        let finalQuestions = generatedQuestions;
+        if (!exam) {
+          const reviewPrompt = await reviewPrepare({ data: { setId: input.setId, lectureId, questionGuidance: input.questionGuidance, questions: generatedQuestions } });
+          finalQuestions = await streamAiJson({ system: reviewPrompt.system, messages: reviewPrompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
+            if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The quiz review response was not valid.");
+            return (value as { questions: unknown[] }).questions;
+          }});
+          if (finalQuestions.length !== input.count) throw new Error(`The quiz review returned ${finalQuestions.length} of ${input.count} questions. Nothing was saved; please retry.`);
+        }
+        const generatedText = JSON.stringify({ parts: [{ partIndex: 0, questions: finalQuestions }] });
         const generated = await gen({ data: { ...input, generatedText } });
         if (!("questions" in generated)) throw new Error("The quiz questions could not be finalized.");
         res = generated;

@@ -2,7 +2,7 @@
 
 ## Provider transport
 
-- NVIDIA text generation is performed server-side with `stream: true` and consumed as SSE by `aiText()` or forwarded to the browser through `/api/ai-stream`.
+- Feature-level NVIDIA text generation is streamed to the browser through the authenticated `/api/ai-stream` proxy. The shared server-side `aiText()` transport remains covered by isolated transport tests but is not called by feature handlers.
 - The NVIDIA API key remains server-only. Browser streams require a valid Supabase access token; the route verifies it before forwarding the request.
 - Browser callers use `streamAiText()` for prose and `streamAiJson<T>()` for structured output. Structured output is parsed and feature-validated before the result is saved or used.
 - SSE readers preserve token whitespace, support LF/CRLF event framing and final buffered events, propagate provider errors, reject incomplete streams, and clean up readers on cancellation.
@@ -21,19 +21,13 @@ The following user-facing workflows now prepare their prompts on the server, str
 - Reading Companion summaries and reading-to-notes additions.
 - Audio Study lesson script generation, section quiz generation, and quiz grading.
 - Assignment Helper understand/brainstorm/outline/feedback steps and essay grading.
-- Regular quiz generation and comprehensive exam generation stream an initial validated batch per set in the browser; server-side validation, chunked top-ups, and large-batch orchestration remain on the server.
-- Initial Study Set processing streams notes (including sequential long-source chunks) and structured flashcards in the browser when no optional-reading enrichment is present. Optional-reading enrichment uses the server-managed chunk pipeline.
-- Notes regeneration streams in the browser for single- and multi-chunk sources when there is no optional-reading enrichment. Optional-reading enrichment uses the server-managed chunk pipeline to preserve lecture-first integration order.
+- Regular quiz generation and comprehensive exam generation stream every batch in the browser across the source material's chunks. The browser requests successive batches of up to five questions, streams the regular quiz review, and authenticated finalizers enforce exact requested counts and schema constraints.
+- Initial Study Set processing streams notes, sequential lecture chunks, optional-reading enrichment chunks, final lecture-first integration, and structured flashcards in the browser.
+- Notes regeneration streams lecture chunks, optional-reading enrichment chunks, and final lecture-first integration in the browser before authenticated archival and save.
 
-## Server-managed multi-stage workflows
+## Server-managed responsibilities
 
-Some workflows deliberately remain server-orchestrated because they coordinate multiple model calls, large source chunks, validation/retry loops, idempotency, and atomic database updates:
-
-- Initial Study Set processing (`processSet`) with optional-reading enrichment generates notes and cards server-side before replacing existing content.
-- Optional-reading Notes regeneration and initial-set enrichment.
-- Remaining quiz/exam batch top-ups and server-side quiz review/validation.
-
-These paths still use the shared NVIDIA SSE transport; they do not use the old non-streaming NVIDIA chat-completions response path. Their UI may show task progress rather than individual provider tokens.
+The server remains responsible for authenticated source retrieval, prompt construction, ownership checks, deterministic payload validation, archival, idempotency, and database writes. Model-generation stages for feature workflows are streamed to the browser through `/api/ai-stream`. Obsolete direct-generation compatibility endpoints were removed, and feature modules no longer invoke `aiText()` as a fallback.
 
 ## Structured output and persistence
 
@@ -46,10 +40,10 @@ These paths still use the shared NVIDIA SSE transport; they do not use the old n
 
 - Browser text streams accept `AbortSignal`; cancellation closes the reader and is not reported as a provider failure.
 - Failed or malformed structured output is rejected before finalization.
-- Server-managed generation keeps the existing model fallback/retry and error recovery behavior.
+- Provider failures are returned to the browser stream and surfaced by the feature UI; finalizers do not silently regenerate content server-side.
 
 ## Verification
 
-- All 171 TypeScript/TSX source files were syntax-transpiled successfully with the installed TypeScript compiler API.
+- All 171 TypeScript/TSX source files were syntax-transpiled successfully with the installed TypeScript compiler API; no feature module contains a direct `aiText()` invocation.
 - Full dependency installation timed out in this environment. Consequently, project typecheck, ESLint, Vitest, and production build could not be run here.
 - No live NVIDIA or Supabase credentials were available for end-to-end provider/auth/database tests.

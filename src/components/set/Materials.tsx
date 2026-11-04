@@ -1,7 +1,7 @@
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { streamAiText } from "@/lib/ai-stream.client";
+import { streamPreparedNotes } from "@/lib/ai-stream.client";
 import { toast } from "sonner";
 import { Download, FileText, Loader2, Plus, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -143,16 +143,8 @@ export function Materials({ set }: { set: StudySet }) {
     setMsg("Rewriting your notes with the new material…");
     try {
       const prepared = await renotes({ data: { setId: set.id, prepareOnly: true } });
-      if ("serverManaged" in prepared) {
-        await renotes({ data: { setId: set.id } });
-      } else if ("notesPrompts" in prepared) {
-        const noteParts: string[] = [];
-        for (const prompt of prepared.notesPrompts) {
-          let streamed = "";
-          const part = await streamAiText({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => { streamed += chunk; setMsg(`Updating notes…\n${streamed.slice(-900)}`); } });
-          noteParts.push(part.trim());
-        }
-        const notes = prepared.notesHeader ? `${prepared.notesHeader}\n\n${noteParts.join("\n\n---\n\n")}` : noteParts[0] ?? "";
+      if ("notesPrompts" in prepared) {
+        const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: (message) => setMsg(message), onDelta: (chunk) => setMsg((old) => `${old ?? ""}${chunk}`.slice(-900)) });
         await renotes({ data: { setId: set.id, generatedNotes: notes } });
       } else throw new Error("Couldn't prepare notes generation.");
       toast.success("Notes updated");

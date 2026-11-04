@@ -128,3 +128,57 @@ export async function streamAiJson<T>(options: {
   // explicit JSON-only instructions.
   return parseStreamedJson(text, options.validate);
 }
+
+/** Complete the lecture-first notes pipeline in the browser, including optional-reading enrichment. */
+export async function streamPreparedNotes(options: {
+  prepared: {
+    notesPrompts: { system: string; messages: StreamMessage[] }[];
+    notesHeader?: string;
+    readingPlan?: {
+      readingChunks: string[];
+      readingSystemPrefix: string;
+      readingSystemSuffix: string;
+      finalSystem: string;
+    };
+  };
+  signal?: AbortSignal;
+  onProgress?: (message: string) => void;
+  onDelta?: (chunk: string) => void;
+}): Promise<string> {
+  const { prepared, signal, onProgress, onDelta } = options;
+  const noteParts: string[] = [];
+  for (let i = 0; i < prepared.notesPrompts.length; i += 1) {
+    const prompt = prepared.notesPrompts[i]!;
+    onProgress?.(`Generating lecture notes (${i + 1}/${prepared.notesPrompts.length})…`);
+    const part = await streamAiText({ system: prompt.system, messages: prompt.messages, signal, onDelta });
+    noteParts.push(part.trim());
+  }
+  let notes = prepared.notesHeader
+    ? `${prepared.notesHeader}\n\n${noteParts.join("\n\n---\n\n")}`
+    : noteParts[0] ?? "";
+
+  if (prepared.readingPlan) {
+    const plan = prepared.readingPlan;
+    const additions: string[] = [];
+    for (let i = 0; i < plan.readingChunks.length; i += 1) {
+      onProgress?.(`Comparing optional reading (${i + 1}/${plan.readingChunks.length})…`);
+      const result = await streamAiText({
+        system: `${plan.readingSystemPrefix}${notes.slice(0, 18000)}${plan.readingSystemSuffix}`,
+        messages: [{ role: "user", content: `OPTIONAL READING PART ${i + 1}/${plan.readingChunks.length}:\n${plan.readingChunks[i]}` }],
+        signal,
+        onDelta,
+      });
+      const clean = result.trim();
+      if (clean && !/^NO RELEVANT NEW ADDITIONS\.?$/i.test(clean)) additions.push(clean);
+    }
+    onProgress?.("Integrating reading additions into the lecture notes…");
+    notes = await streamAiText({
+      system: plan.finalSystem,
+      messages: [{ role: "user", content: `EXISTING LECTURE NOTES:\n${notes.slice(0, 36000)}\n\nREADING ENRICHMENT CANDIDATES (some may overlap; deduplicate carefully):\n${additions.length ? additions.join("\n\n").slice(0, 20000) : "No useful new reading additions were identified. Preserve the lecture notes, clean up any repeated chunk headings if possible, and add one concise Key Takeaways section."}` }],
+      signal,
+      onDelta,
+    });
+  }
+  if (!notes.trim()) throw new Error("The notes stream returned no content.");
+  return notes;
+}

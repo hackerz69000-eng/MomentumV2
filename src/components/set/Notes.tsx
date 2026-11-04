@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Headphones, Lightbulb, Loader2, RefreshCw, X } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { prepareExplainPassageStream, regenerateNotes } from "@/lib/study.functions";
-import { streamAiText } from "@/lib/ai-stream.client";
+import { streamAiText, streamPreparedNotes } from "@/lib/ai-stream.client";
 import type { StudySet } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import {
@@ -59,16 +59,9 @@ export function Notes({ set }: { set: StudySet }) {
     setBusy(true);
     try {
       const prepared = await regen({ data: { setId: set.id, prepareOnly: true } });
-      if ("serverManaged" in prepared) {
-        await regen({ data: { setId: set.id } });
-      } else if ("notesPrompts" in prepared) {
+      if ("notesPrompts" in prepared) {
         setStreamedNotes("");
-        const noteParts: string[] = [];
-        for (const prompt of prepared.notesPrompts) {
-          const part = await streamAiText({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedNotes((old) => old + chunk) });
-          noteParts.push(part.trim());
-        }
-        const notes = prepared.notesHeader ? `${prepared.notesHeader}\n\n${noteParts.join("\n\n---\n\n")}` : noteParts[0] ?? "";
+        const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setStreamedNotes, onDelta: (chunk) => setStreamedNotes((old) => `${old}${chunk}`) });
         await regen({ data: { setId: set.id, generatedNotes: notes } });
       } else throw new Error("Couldn't prepare note generation.");
       await qc.invalidateQueries({ queryKey: ["set", set.id] });
