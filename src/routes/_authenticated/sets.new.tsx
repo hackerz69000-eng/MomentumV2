@@ -166,7 +166,7 @@ function NewSet() {
           <p className="text-soft text-sm mt-2">
             {stage === "reading"
               ? progressMsg || "Extracting text…"
-              : "Writing notes and generating flashcards. This usually takes 20–60 seconds."}
+              : "Generating your notes and flashcards in parallel. Larger uploads may take longer."}
           </p>
         </div>
       </main>

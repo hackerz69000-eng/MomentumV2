@@ -46,10 +46,10 @@ QUALITY:
 - Do not include a preamble or commentary about being an AI.
 - Use only information supported by the provided material.`;
 
-const CARDS_SYSTEM = `You create high-value review flashcards from the GENERATED STUDY NOTES below. Return ONLY JSON:
+const CARDS_SYSTEM = `You create high-value review flashcards from the supplied STUDY MATERIAL and, when available, GENERATED STUDY NOTES. Treat the original source material as authoritative. Return ONLY JSON:
 {"cards":[{"q":"question or prompt","a":"concise answer","t":"short topic name (2-4 words)"}]}
 
-Create up to 20 cards, but never pad the deck with weak or generic cards. Every card must test something explicitly stated in the notes.
+Create up to 20 cards, but never pad the deck with weak or generic cards. Every card must test something explicitly supported by the supplied source material and notes, when available.
 Prioritize:
 1. core definitions and terminology
 2. important mechanisms, processes, steps, formulas, and cause/effect relationships
@@ -90,6 +90,26 @@ function splitPrimaryAndOptionalReadings(material: string): { lecture: string; r
   return { lecture: primary, readings: readings || null };
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(items.length, Math.max(1, concurrency));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = nextIndex++;
+        if (index >= items.length) return;
+        results[index] = await worker(items[index], index);
+      }
+    }),
+  );
+  return results;
+}
+
 async function makeNotes(set: {
   name: string;
   subject: string;
@@ -104,24 +124,24 @@ async function makeNotes(set: {
     // markers and accidentally turn readings into a separate notes section.
     if (separated.readings && sourceChunks.length > 1) {
       const lectureChunks = splitTextIntoChunks(separated.lecture, 16000);
-      const lectureParts: string[] = [];
-      for (let i = 0; i < lectureChunks.length; i++) {
+      const lectureParts = await mapWithConcurrency(lectureChunks, 3, async (chunk, i) => {
         const part = await aiText(
           `${NOTES_SYSTEM}${ci(set)}\n\nPRIMARY LECTURE CHUNK MODE: This is lecture part ${i + 1} of ${lectureChunks.length}. Use this lecture chunk only to build the main note structure and order. Preserve important facts, definitions, examples, formulas, exceptions, and relationships. Do not create a readings section. Do not claim this chunk is the whole course. Do not add Key Takeaways until the final integration.`,
-          [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\nPRIMARY LECTURE PART ${i + 1}/${lectureChunks.length}:\n${lectureChunks[i]}` }],
+          [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\nPRIMARY LECTURE PART ${i + 1}/${lectureChunks.length}:\n${chunk}` }],
         );
-        lectureParts.push(part.trim());
-      }
+        return part.trim();
+      });
       let lectureNotes = `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${lectureParts.join("\n\n---\n\n")}`;
       const readingChunks = splitTextIntoChunks(separated.readings, 12000);
-      const enrichmentParts: string[] = [];
-      for (let i = 0; i < readingChunks.length; i++) {
-        const additions = await aiText(
+      const enrichmentResults = await mapWithConcurrency(readingChunks, 3, async (chunk, i) => {
+        return aiText(
           `You are a careful academic cross-reference editor. Return only concise Markdown enrichment candidates grouped by the EXACT existing lecture topic they belong to. Compare the optional reading with the lecture notes. Include only material that is relevant, useful, supported by this reading, and not already present in the lecture notes. Do not create a separate readings section, rewrite the lecture notes, repeat facts, or add unrelated background. Preserve reading filename and printed page numbers when present; never invent page numbers. If this chunk contains no useful new information matching an existing lecture topic, return exactly: NO RELEVANT NEW ADDITIONS.\n\nEXISTING LECTURE NOTES (structure and order are authoritative):\n${clip(lectureNotes, 18000)}${ci(set)}`,
-          [{ role: "user", content: `OPTIONAL READING PART ${i + 1}/${readingChunks.length}:\n${readingChunks[i]}` }],
+          [{ role: "user", content: `OPTIONAL READING PART ${i + 1}/${readingChunks.length}:\n${chunk}` }],
         );
-        if (additions.trim() && !/^NO RELEVANT NEW ADDITIONS\.?$/i.test(additions.trim())) enrichmentParts.push(additions.trim());
-      }
+      });
+      const enrichmentParts = enrichmentResults
+        .map((additions) => additions.trim())
+        .filter((additions) => additions && !/^NO RELEVANT NEW ADDITIONS\.?$/i.test(additions));
       {
         lectureNotes = await aiText(
           `${NOTES_SYSTEM}${ci(set)}\n\nFINAL INTEGRATION MODE: Edit the supplied lecture notes. Preserve their exact major topic order and headings. Integrate only new, relevant reading details into the matching existing sections; do not add a standalone readings section, do not duplicate lecture content, and do not create a detached visual gallery. Preserve source filenames and page references supplied in the candidate additions. Keep all important lecture content. Finish with one Key Takeaways section. Return the complete revised notes only.`,
@@ -134,14 +154,13 @@ async function makeNotes(set: {
       return await aiText(NOTES_SYSTEM + ci(set), [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\n\nMATERIAL (complete source):\n${sourceChunks[0] ?? ""}` }]);
     }
     // Process every source chunk independently so a large reading never has its tail silently clipped.
-    const noteParts: string[] = [];
-    for (let i = 0; i < sourceChunks.length; i++) {
+    const noteParts = await mapWithConcurrency(sourceChunks, 3, async (chunk, i) => {
       const part = await aiText(
         `${NOTES_SYSTEM}${ci(set)}\n\nLONG-SOURCE MODE: This is part ${i + 1} of ${sourceChunks.length}. Make thorough notes ONLY for this part. Preserve its important definitions, explanations, examples, formulas, exceptions and relationships. Do not claim this is the whole course, do not add a Key Takeaways section, and do not refer to missing parts. Use meaningful headings so this part can be combined with the others.`,
-        [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\nSOURCE PART ${i + 1}/${sourceChunks.length}:\n${sourceChunks[i]}` }],
+        [{ role: "user", content: `Study set: ${set.name} (${set.subject || "general"})\nSOURCE PART ${i + 1}/${sourceChunks.length}:\n${chunk}` }],
       );
-      noteParts.push(part.trim());
-    }
+      return part.trim();
+    });
     // Preserve every chunk's output; avoid a second huge AI call that could time out again.
     return `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*\n\n${noteParts.join("\n\n---\n\n")}`;
   } catch (err) {
@@ -155,18 +174,18 @@ async function makeCards(set: {
   name?: string;
   subject?: string;
   material_text: string;
-  notes: string;
+  notes?: string;
   custom_instructions?: string;
 }) {
+  const notesContext = set.notes?.trim()
+    ? `GENERATED STUDY NOTES:\n${clip(set.notes, 50000)}\n\n`
+    : "";
   const text = await aiText(CARDS_SYSTEM + ci(set), [
     {
       role: "user",
       content: `STUDY SET: ${set.name || "Study Set"} (${set.subject || "general"})
 
-GENERATED STUDY NOTES:
-${clip(set.notes, 50000)}
-
-SOURCE MATERIAL FOR VERIFICATION:
+${notesContext}SOURCE MATERIAL (authoritative; verify every card against it):
 ${clip(set.material_text, 50000)}`,
     },
   ]);
@@ -180,7 +199,7 @@ ${clip(set.material_text, 50000)}`,
     .slice(0, 20);
 
   if (!cards.length) {
-    throw new Error("No useful flashcards could be generated from the study notes.");
+    throw new Error("No useful flashcards could be generated from the supplied study material.");
   }
   return cards;
 }
@@ -202,8 +221,10 @@ export const processSet = createServerFn({ method: "POST" })
 
       // Generate everything before replacing saved content, so an AI failure never
       // destroys the student's existing notes or cards.
-      const notes = await makeNotes(set);
-      const cards = await makeCards({ ...set, notes });
+      const [notes, cards] = await Promise.all([
+        makeNotes(set),
+        makeCards(set),
+      ]);
       const { data: oldCards, error: readError } = await supabase.from("flashcards").select("*").eq("set_id", set.id);
       if (readError) throw new Error("Couldn't safely replace the existing flashcards.");
       if (oldCards?.length) {
@@ -1073,7 +1094,7 @@ export const ocrFile = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const task = data.task ?? "transcribe";
-    // PDF pages are rendered to JPEGs in the browser before they reach Bytez.
+    // PDF pages are rendered to JPEGs in the browser before they reach NVIDIA NIM.
     const system = task === "describe_visuals"
       ? `You are a careful visual-learning assistant helping a student understand lecture material. Inspect the supplied document/image for meaningful visual content: diagrams, charts, graphs, maps, timelines, equations, labelled illustrations, tables, photographs, and visual examples. Describe what is visibly present, including labels, axes, arrows, comparisons, trends, and relationships. Explain what the visual is showing and how it connects to the lecture context supplied below. Use page/slide markers only when they are visible or reliably available. Do not merely repeat surrounding text; do not guess unreadable labels or unsupported meanings. Clearly mark uncertainty. If there are no meaningful visuals, say exactly: No meaningful visual content detected.
 
@@ -1083,11 +1104,15 @@ ${data.context?.trim() || "No extracted lecture text was supplied. Describe only
 
 LECTURE CONTEXT:
 ${data.context?.trim() || "No additional lecture context supplied; use only the provided file."}`;
-    const visionModel = process.env["BYTEZ_VISION_MODEL"]?.trim() || "Qwen/Qwen2.5-VL-7B-Instruct";
+    const visionModel = process.env["NVIDIA_VISION_MODEL"]?.trim() || "nvidia/nemotron-nano-12b-v2-vl";
     const prompt = task === "describe_visuals"
       ? `Analyze the visual content in ${data.filename}. Focus on the meaning of the visuals in relation to the supplied lecture context.`
       : `Read and explain the content of ${data.filename}, including its visuals.`;
-    const text = await aiImage(system, prompt, data.data, { model: visionModel, timeoutMs: 90_000 });
+    const text = await aiImage(system, prompt, data.data, {
+      model: visionModel,
+      timeoutMs: 90_000,
+      mediaType: data.mediaType,
+    });
     return { text };
   });
 

@@ -1,115 +1,146 @@
-const BYTEZ_MODEL = process.env["BYTEZ_MODEL"]?.trim() || "DataCanvas/Alaya-7B-Chat";
-const BYTEZ_URL = "https://api.bytez.com/models/v2";
+const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
+const NVIDIA_MODEL = process.env["NVIDIA_MODEL"]?.trim() || "stepfun-ai/step-3.5-flash";
+const NVIDIA_VISION_MODEL =
+  process.env["NVIDIA_VISION_MODEL"]?.trim() || "nvidia/nemotron-nano-12b-v2-vl";
 
 type ModelMessage = {
   role: "user" | "assistant";
   content: string | Array<Record<string, unknown>>;
 };
 
-class BytezError extends Error {
+class NvidiaError extends Error {
   statusCode?: number;
   constructor(message: string, statusCode?: number) {
     super(message);
-    this.name = "BytezError";
+    this.name = "NvidiaError";
     this.statusCode = statusCode;
   }
 }
 
 function providerDetail(body: string): string {
   try {
-    const parsed = JSON.parse(body) as { error?: { message?: string } | string; message?: string; detail?: string };
+    const parsed = JSON.parse(body) as {
+      error?: { message?: string } | string;
+      message?: string;
+    };
     if (typeof parsed.error === "string") return parsed.error;
     if (parsed.error?.message) return parsed.error.message;
     if (parsed.message) return parsed.message;
-    if (parsed.detail) return parsed.detail;
   } catch {
-    // Keep raw response when the provider does not return JSON.
+    // Keep the generic error if the provider response is not JSON.
   }
   return body.trim();
 }
 
-function bytezErrorMessage(status: number, body: string): string {
-  const detail = providerDetail(body).slice(0, 800);
-  if (status === 401 || status === 403) return "Bytez rejected the API key or model access. Check BYTEZ_API_KEY and the selected model in Bytez, then redeploy.";
-  if (status === 402) return "Bytez needs more credits or this model is not available on your current plan. Check your Bytez dashboard.";
-  if (status === 429) return "Bytez is rate-limiting requests. Wait a little and try again; avoid generating multiple quizzes at once.";
-  if (status === 413) return "The AI request is too large. Try fewer questions or a smaller source document.";
-  return `Bytez request failed${detail ? `: ${detail}` : ` (HTTP ${status}).`}`;
+function providerErrorMessage(status: number, body: string): string {
+  const detail = providerDetail(body).slice(0, 600);
+  if (status === 401 || status === 403) {
+    return "NVIDIA rejected the API key or model access. Check NVIDIA_API_KEY and your NVIDIA API Catalog access.";
+  }
+  if (status === 402) return "NVIDIA API access or usage limits are unavailable for this model. Check your NVIDIA account.";
+  if (status === 429) return "NVIDIA is rate-limiting requests. Wait a moment and try again.";
+  if (status === 413) return "The AI request is too large. Try a smaller source document.";
+  return `NVIDIA NIM request failed${detail ? `: ${detail}` : ` (HTTP ${status}).`}`;
 }
 
-function extractText(output: unknown): string {
-  if (typeof output === "string") return output.trim();
-  if (Array.isArray(output)) {
-    for (const item of output) {
-      if (typeof item === "string" && item.trim()) return item.trim();
-      if (item && typeof item === "object") {
-        const record = item as Record<string, unknown>;
-        if (typeof record.generated_text === "string" && record.generated_text.trim()) return record.generated_text.trim();
-        if (Array.isArray(record.generated_text)) {
-          const messages = record.generated_text as Array<Record<string, unknown>>;
-          const last = [...messages].reverse().find((message) => message.role === "assistant" && typeof message.content === "string");
-          if (typeof last?.content === "string" && last.content.trim()) return last.content.trim();
-        }
-        if (typeof record.text === "string" && record.text.trim()) return record.text.trim();
-      }
-    }
+function extractText(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "";
+  const root = payload as Record<string, unknown>;
+  const choices = Array.isArray(root.choices) ? root.choices : [];
+  const first = choices[0] as Record<string, unknown> | undefined;
+  const message = first?.message as Record<string, unknown> | undefined;
+  const content = message?.content;
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (!part || typeof part !== "object") return "";
+        const item = part as Record<string, unknown>;
+        return typeof item.text === "string" ? item.text : "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
   }
-  if (output && typeof output === "object") {
-    const record = output as Record<string, unknown>;
-    if (typeof record.generated_text === "string") return record.generated_text.trim();
-    if (Array.isArray(record.generated_text)) {
-      const messages = record.generated_text as Array<Record<string, unknown>>;
-      const last = [...messages].reverse().find((message) => message.role === "assistant" && typeof message.content === "string");
-      if (typeof last?.content === "string" && last.content.trim()) return last.content.trim();
-    }
-    if (typeof record.text === "string") return record.text.trim();
-    if (typeof record.content === "string") return record.content.trim();
-  }
+  if (typeof root.output_text === "string") return root.output_text.trim();
+  if (typeof root.text === "string") return root.text.trim();
   return "";
 }
 
-async function callBytez(
+function configuredTextModels(preferred?: string): string[] {
+  const configured = (process.env["NVIDIA_FALLBACK_MODELS"] ?? "")
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+  return [...new Set([preferred?.trim(), NVIDIA_MODEL, ...configured].filter(Boolean))] as string[];
+}
+
+async function callNvidia(
   system: string,
   messages: ModelMessage[],
   timeoutMs = 90_000,
-  model = BYTEZ_MODEL,
+  model = NVIDIA_MODEL,
 ): Promise<string> {
-  const apiKey = process.env["BYTEZ_API_KEY"]?.trim();
-  if (!apiKey) throw new BytezError("Bytez is not configured on the server. Set BYTEZ_API_KEY in Vercel, then redeploy.");
+  const apiKey = process.env["NVIDIA_API_KEY"]?.trim();
+  if (!apiKey) {
+    throw new NvidiaError("NVIDIA NIM is not configured. Set NVIDIA_API_KEY in Vercel, then redeploy.");
+  }
 
   let response: Response;
   try {
-    response = await fetch(`${BYTEZ_URL}/${model}`, {
+    response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
       method: "POST",
-      headers: { Authorization: apiKey, "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
       signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
+        model,
         messages: [
           { role: "system", content: system },
           ...messages.map((message) => ({ role: message.role, content: message.content })),
         ],
+        temperature: 0.2,
+        max_tokens: 6000,
         stream: false,
-        params: { temperature: 0.2, max_length: 6000 },
       }),
     });
   } catch (error) {
-    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-    throw new BytezError(timedOut
-      ? "The Bytez request timed out. Try fewer questions or a shorter response."
-      : "Couldn't connect to Bytez. Check the server connection and try again.", timedOut ? 408 : undefined);
+    const timedOut = error instanceof Error &&
+      (error.name === "TimeoutError" || error.name === "AbortError");
+    throw new NvidiaError(
+      timedOut
+        ? "The NVIDIA NIM request timed out. Try a shorter response or smaller source document."
+        : "Couldn't connect to NVIDIA NIM. Check the server connection and try again.",
+      timedOut ? 408 : undefined,
+    );
   }
 
   let body: string;
-  try { body = await response.text(); }
-  catch { throw new BytezError("Bytez returned an unreadable response.", 502); }
-  if (!response.ok) throw new BytezError(bytezErrorMessage(response.status, body), response.status);
+  try {
+    body = await response.text();
+  } catch {
+    throw new NvidiaError("NVIDIA NIM returned an unreadable response.", 502);
+  }
+  if (!response.ok) throw new NvidiaError(providerErrorMessage(response.status, body), response.status);
 
-  let payload: { output?: unknown; error?: unknown };
-  try { payload = JSON.parse(body) as { output?: unknown; error?: unknown }; }
-  catch { throw new BytezError("Bytez returned an invalid response.", 502); }
-  if (payload.error) throw new BytezError(typeof payload.error === "string" ? payload.error : "Bytez reported an inference error.", 502);
-  const text = extractText(payload.output);
-  if (!text) throw new BytezError("Bytez returned an empty or unrecognized response. Check that the selected model supports chat messages.", 502);
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    throw new NvidiaError("NVIDIA NIM returned an invalid response.", 502);
+  }
+  const root = payload as Record<string, unknown>;
+  if (root.error) {
+    throw new NvidiaError(
+      typeof root.error === "string" ? root.error : "NVIDIA NIM reported an inference error.",
+      502,
+    );
+  }
+  const text = extractText(payload);
+  if (!text) throw new NvidiaError("NVIDIA NIM returned an empty response. Check the selected model and try again.", 502);
   return text;
 }
 
@@ -136,23 +167,12 @@ QUALITY RULES:
 - Focus on important testable ideas rather than trivia.
 `;
 
-function configuredTextModels(preferred?: string): string[] {
-  // BYTEZ_FALLBACK_MODELS is an ordered comma-separated list. Put preferred
-  // models first; this is a fallback order, not a claim about live remaining credits.
-  const configured = (process.env["BYTEZ_FALLBACK_MODELS"] ?? "")
-    .split(",").map((model) => model.trim()).filter(Boolean);
-  const candidates = [preferred?.trim(), BYTEZ_MODEL, ...configured].filter((model): model is string => !!model);
-  return [...new Set(candidates)];
-}
-
 function shouldTryNextModel(error: unknown): boolean {
-  if (!(error instanceof BytezError)) return false;
+  if (!(error instanceof NvidiaError)) return false;
   const status = error.statusCode;
-  // These are model/request-specific or transient. Auth failures and account-wide
-  // credit errors should stop rather than hammer every model with the same problem.
   return status === 400 || status === 404 || status === 408 || status === 429 ||
     (typeof status === "number" && status >= 500) ||
-    /model does not exist|model.*catalog|yet to be added|empty or unrecognized response|invalid response|inference error|couldn't connect|timed out/i.test(error.message);
+    /model.*not found|unknown model|empty response|invalid response|inference error|couldn't connect|timed out/i.test(error.message);
 }
 
 export async function aiText(
@@ -161,9 +181,8 @@ export async function aiText(
   opts: { grounded?: boolean; retries?: number; timeoutMs?: number; model?: string } = {},
 ): Promise<string> {
   if (opts.grounded !== false) system += GROUNDING;
-
-  const delays = [1200, 3000];
-  const retryCount = Math.max(0, Math.min(delays.length, opts.retries ?? delays.length));
+  const retryDelays = [700];
+  const retryCount = Math.max(0, Math.min(retryDelays.length, opts.retries ?? 1));
   const timeoutMs = Math.max(1000, Math.min(90_000, opts.timeoutMs ?? 90_000));
   const models = configuredTextModels(opts.model);
   let lastError: unknown;
@@ -172,51 +191,49 @@ export async function aiText(
     const model = models[modelIndex];
     for (let attempt = 0; attempt <= retryCount; attempt += 1) {
       try {
-        return await callBytez(system, messages, timeoutMs, model);
+        return await callNvidia(system, messages, timeoutMs, model);
       } catch (error) {
         lastError = error;
-        const status = error instanceof BytezError ? error.statusCode : undefined;
-        const retryable = status === 408 || status === 429 || (typeof status === "number" && status >= 500) ||
-          (error instanceof BytezError && /invalid response|empty or unrecognized|unreadable response|couldn't connect|timed out/i.test(error.message));
+        const status = error instanceof NvidiaError ? error.statusCode : undefined;
+        const retryable = status === 408 || status === 429 ||
+          (typeof status === "number" && status >= 500);
         if (shouldTryNextModel(error) && modelIndex < models.length - 1) break;
         if (!retryable || attempt === retryCount) break;
-        await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+        await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt]));
       }
     }
-    // If this model failed for an error that cannot be fixed by another model,
-    // surface it immediately (for example invalid credentials or exhausted account credits).
-    if (lastError instanceof BytezError && !shouldTryNextModel(lastError)) throw lastError;
+    if (lastError instanceof NvidiaError && !shouldTryNextModel(lastError)) throw lastError;
   }
 
-  throw lastError instanceof Error ? lastError : new Error("All configured Bytez models failed. Check BYTEZ_FALLBACK_MODELS and try again.");
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("All configured NVIDIA NIM models failed. Check NVIDIA_FALLBACK_MODELS and try again.");
 }
 
-/** Call a Bytez vision model using its documented text + base64 multi-input schema. */
-export async function aiImage(system: string, prompt: string, base64Image: string, opts: { model?: string; timeoutMs?: number } = {}): Promise<string> {
-  const apiKey = process.env["BYTEZ_API_KEY"]?.trim();
-  if (!apiKey) throw new BytezError("Bytez is not configured on the server. Set BYTEZ_API_KEY in Vercel, then redeploy.");
-  const model = opts.model?.trim() || process.env["BYTEZ_VISION_MODEL"]?.trim() || "Qwen/Qwen2.5-VL-7B-Instruct";
-  let response: Response;
-  try {
-    response = await fetch(`${BYTEZ_URL}/${model}`, {
-      method: "POST",
-      headers: { Authorization: apiKey, "Content-Type": "application/json", Accept: "application/json" },
-      signal: AbortSignal.timeout(Math.max(1000, Math.min(90_000, opts.timeoutMs ?? 90_000))),
-      body: JSON.stringify({ text: `${system}\n\n${prompt}`, base64: base64Image, stream: false, params: { temperature: 0.2, max_length: 6000 } }),
-    });
-  } catch (error) {
-    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-    throw new BytezError(timedOut ? "The Bytez vision request timed out. Try a smaller image." : "Couldn't connect to Bytez vision. Please try again.", timedOut ? 408 : undefined);
-  }
-  const body = await response.text();
-  if (!response.ok) throw new BytezError(bytezErrorMessage(response.status, body), response.status);
-  let payload: { output?: unknown; error?: unknown };
-  try { payload = JSON.parse(body) as { output?: unknown; error?: unknown }; }
-  catch { throw new BytezError("Bytez vision returned an invalid response.", 502); }
-  if (payload.error) throw new BytezError(typeof payload.error === "string" ? payload.error : "Bytez vision inference failed.", 502);
-  const text = extractText(payload.output);
-  if (!text) throw new BytezError("Bytez vision returned an empty response. Check that the selected model supports image inputs.", 502);
-  return text;
+/** Call a NVIDIA NIM vision-language model with an OpenAI-compatible image message. */
+export async function aiImage(
+  system: string,
+  prompt: string,
+  base64Image: string,
+  opts: { model?: string; timeoutMs?: number; mediaType?: string } = {},
+): Promise<string> {
+  const model = opts.model?.trim() || NVIDIA_VISION_MODEL;
+  const mediaType = opts.mediaType || "image/jpeg";
+  const imageUrl = base64Image.startsWith("data:")
+    ? base64Image
+    : `data:${mediaType};base64,${base64Image}`;
+  return callNvidia(
+    system,
+    [{
+      role: "user",
+      content: [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: imageUrl } },
+      ],
+    }],
+    Math.max(1000, Math.min(90_000, opts.timeoutMs ?? 90_000)),
+    model,
+  );
 }
 
 /** Parse a complete JSON object/array from an AI response, tolerating fences and stray prose. */
@@ -225,8 +242,6 @@ export function parseJson<T>(text: string): T {
     throw new Error("The AI response was empty. Please try again.");
   }
   const cleaned = text.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
-  // Some models prepend bracketed labels such as [JSON] before the actual object.
-  // Try each possible root instead of failing permanently on the first brace/bracket.
   for (let start = 0; start < cleaned.length; start += 1) {
     if (cleaned[start] !== "{" && cleaned[start] !== "[") continue;
     const stack: string[] = [];
@@ -249,7 +264,6 @@ export function parseJson<T>(text: string): T {
           try {
             return JSON.parse(cleaned.slice(start, i + 1)) as T;
           } catch {
-            // Continue scanning: an earlier bracketed phrase may not be JSON.
             break;
           }
         }
@@ -270,7 +284,7 @@ export function splitTextIntoChunks(material: string, maxChars = 16000): string[
   const chunks: string[] = [];
   const safeMax = Number.isFinite(maxChars) ? Math.max(1, Math.floor(maxChars)) : 16000;
   let current = "";
-  const blocks = text.split(/\n\s*\n/); // prefer paragraph boundaries; further split oversized blocks below
+  const blocks = text.split(/\n\s*\n/);
   for (const block of blocks) {
     const part = block.trim();
     if (!part) continue;
