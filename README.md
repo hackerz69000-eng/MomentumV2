@@ -48,6 +48,10 @@ They add a per-user extraction cache, source-version fields, retry checkpoints, 
 
 In a Study Set quiz or exam, select **Include questions about lecture images** to ask questions grounded in saved PNG, JPEG, or WebP uploads, sampled PDF pages, or embedded Word and PowerPoint figures. The option is off by default. Momentum skips visuals it cannot extract, uses at most three visuals per quiz, and keeps image references with saved results so learners can review them later. Image data is not copied into saved quiz results. Configure `NVIDIA_VISION_MODEL` for visual question generation; the project default is listed in `.env.example`.
 
+## Large quiz generation
+
+Quizzes, practice exams, and comprehensive exams generate questions in sequential batches of five by default. Set the server-only `QUIZ_GENERATION_BATCH_SIZE` to a value from 3 to 6 to tune provider response size; other values are safely clamped. Each returned batch is validated and deduplicated before it counts toward progress. Completed batches are kept in the current browser so an interrupted request can resume with the same settings and unchanged material. Changing the source starts a fresh generation because old questions may no longer apply. Quiz generation itself does not create or replace quiz attempts; attempts are still written only after the student submits.
+
 ## Vercel deployment
 
 This repository is configured for Vercel/TanStack Start. The Vercel project should use the repository root with the default framework/build detection.
@@ -64,6 +68,7 @@ Set these environment variables in Vercel for the environments you deploy to:
 - `NVIDIA_REASONING_MODEL` (optional; defaults to `nvidia/nemotron-3-ultra-550b-a55b`)
 - `NVIDIA_FALLBACK_MODELS` (optional; comma-separated fallback chat model IDs)
 - `NVIDIA_VISION_MODEL` (optional; defaults to `nvidia/nemotron-3.5-super-vl-120b-a12b`)
+- `QUIZ_GENERATION_BATCH_SIZE` (optional server-only setting; default 5, safely limited to 3–6)
 - `DEEPGRAM_API_KEY` for microphone speech-to-text and Audio Study text-to-speech
 - `SUPABASE_SERVICE_ROLE_KEY` only if using server-only admin operations
 - `DATABASE_URL` only when running Drizzle migrations

@@ -8,6 +8,7 @@ import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server
 import type { Json } from "@/integrations/supabase/types";
 import { assertGenerationClaimed, assertGenerationSourceRevision } from "./study-generation-guards";
 import { studySourceVersion } from "./study-source-version";
+import { quizBatchSize } from "./quiz-generation";
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -486,19 +487,20 @@ export const generateQuiz = createServerFn({ method: "POST" })
     z
       .object({
         setId: z.string().min(1).max(200),
-        count: z.number().int().min(3).max(50),
+        count: z.number().int().min(3).max(60),
         difficulty: DIFF,
         types: z.array(QTYPE).min(1),
         exam: z.boolean().optional(),
         questionGuidance: z.string().max(2000).optional(),
         plan: z
           .array(z.object({ topic: z.string().max(80), count: z.number().int().min(1).max(50) }))
-          .max(30)
+          .max(100)
           .optional(),
         lectureId: lectureIdField,
         includeImages: z.boolean().optional(),
         prepareOnly: z.boolean().optional(),
         generatedText: z.string().min(20).max(100000).optional(),
+        sourceRevision: z.string().min(1).max(128).optional(),
       })
       .parse(d),
   )
@@ -515,8 +517,20 @@ export const generateQuiz = createServerFn({ method: "POST" })
         return new Map((parsed.parts ?? []).filter((part) => Number.isInteger(part.partIndex)).map((part) => [part.partIndex!, Array.isArray(part.questions) ? part.questions : []]));
       } catch { return new Map<number, unknown[]>(); }
     })();
-    const previouslyGenerated = data.generatedText ? parseQuestionParts(data.generatedText) : [];
-    const effectiveAvoid = [...avoid, ...previouslyGenerated.map((question) => question.question)];
+    const seenPrior = new Set(avoid.map(norm));
+    const validPriorParts = new Map<number, QuizQuestion[]>();
+    for (const [partIndex, rawQuestions] of priorParts) {
+      const accepted = parseQuestions(JSON.stringify({ questions: rawQuestions })).filter((question) => {
+        const key = norm(question.question);
+        if (!key || seenPrior.has(key)) return false;
+        seenPrior.add(key);
+        return true;
+      });
+      validPriorParts.set(partIndex, accepted);
+    }
+    const validPrior = [...validPriorParts.values()].flat();
+    const effectiveAvoid = [...avoid, ...validPrior.map((question) => question.question)];
+    const batchSize = quizBatchSize(process.env["QUIZ_GENERATION_BATCH_SIZE"]);
     let allocated = 0;
     const partTargets = sourceParts.map((_, index) => {
       const target = Math.ceil((data.count - allocated) / Math.max(1, sourceParts.length - index));
@@ -527,15 +541,16 @@ export const generateQuiz = createServerFn({ method: "POST" })
     const planText = data.plan?.length ? `\nADAPTIVE TOPIC PLAN — write this many questions per topic (use these exact topic names): ${data.plan.map((item) => `${item.topic}: ${item.count}`).join("; ")}. If a topic isn't in the material, use the closest topic.` : "";
     if (data.prepareOnly) {
       const prompts = sourceParts.flatMap((part, partIndex) => {
-        const already = priorParts.get(partIndex) ?? [];
-        const batchCount = Math.min(5, Math.max(0, (partTargets[partIndex] ?? 0) - already.length));
+        const already = validPriorParts.get(partIndex) ?? [];
+        const batchCount = Math.min(batchSize, Math.max(0, (partTargets[partIndex] ?? 0) - already.length));
         if (batchCount < 1) return [];
         const imageRules = data.includeImages ? ` The user also supplied up to three actual lecture images in this request. You may create image-based questions only when the visual is clear and supports a reliable answer. Such a question MUST include imageIndex (0-based index matching the supplied image order); include the image's source filename in the question's context where useful. Questions may test visible labels, relationships, axes, trends, or processes. If a visual is unclear, decorative, or irrelevant, do not use it. Never invent details. Return questions based on the source material and images together.` : "";
         const system = `You write ${data.exam ? "realistic practice exams" : "quizzes"} from study material. Return ONLY JSON: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"concise explanation of why the answer is right and the concept tested","topic":"short topic name (2-4 words)"}]}. Generate exactly ${batchCount} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}${data.difficulty === "mixed" ? " (blend easy, medium and hard)" : ""}. For mc/tf, answer is the zero-based correct option. For short, options must be [] and answer -1, with the model answer in answerText. Only use this source part. Vary the concepts tested. ${data.questionGuidance?.trim() ? `Student guidance: ${data.questionGuidance.trim().slice(0, 2000)}.` : ""}${imageRules}${QUALITY_RULES}${effectiveAvoid.length ? `\nDo not repeat recent or already generated questions:\n- ${effectiveAvoid.slice(0, 80).join("\n- ")}` : ""}${planText}${retest.length ? `\nMistake Bank concepts to retest with fresh wording:\n- ${retest.join("\n- ")}` : ""}${ci(set)}`;
         return [{ partIndex, batchCount, system, messages: [{ role: "user" as const, content: `STUDY SET: ${set.name}\nMATERIAL PART ${partIndex + 1}/${sourceParts.length}:\n${part}` }] }];
       });
-      return { prompts, complete: prompts.length === 0 };
+      return { prompts, complete: prompts.length === 0, sourceRevision: await studySourceVersion(set), avoidQuestions: avoid };
     }
+    if (data.sourceRevision) assertGenerationSourceRevision(data.sourceRevision, await studySourceVersion(set));
     const questions = parseQuestionParts(data.generatedText ?? "").filter((question) => !new Set(avoid.map(norm)).has(norm(question.question))).slice(0, data.count);
     if (questions.length !== data.count) throw new Error(`Momentum generated ${questions.length} of ${data.count} requested questions. Your material is preserved; retry generation to fill the missing questions.`);
     return { questions };
@@ -572,6 +587,7 @@ export const generateComprehensive = createServerFn({ method: "POST" })
         questionGuidance: z.string().max(2000).optional(),
         prepareOnly: z.boolean().optional(),
         generatedBySet: z.array(z.object({ setId: z.string().min(1).max(200), generatedText: z.string().min(20).max(100000) })).max(10).optional(),
+        sourceRevisions: z.record(z.string(), z.string().min(1).max(128)).optional(),
       })
       .parse(d),
   )
@@ -585,7 +601,10 @@ export const generateComprehensive = createServerFn({ method: "POST" })
       return { set, count };
     });
     const preparedPrompts: { setId: string; setName: string; partIndex: number; system: string; messages: { role: "user"; content: string }[]; batchCount: number }[] = [];
+    const sourceRevisions = Object.fromEntries(await Promise.all(sets.map(async (set) => [set.id, await studySourceVersion(set)] as const)));
+    const avoidQuestionsBySet: Record<string, string[]> = {};
     if (data.prepareOnly) {
+      const currentQuizSeen = new Set<string>();
       for (const { set, count } of allocations) {
         if (count < 1) continue;
         const avoid = await recentQuestions(context.supabase, set.id);
@@ -596,8 +615,21 @@ export const generateComprehensive = createServerFn({ method: "POST" })
             return new Map((parsed.parts ?? []).filter((part) => Number.isInteger(part.partIndex)).map((part) => [part.partIndex!, Array.isArray(part.questions) ? part.questions : []]));
           } catch { return new Map<number, unknown[]>(); }
         })();
-        const priorQuestions = priorText ? parseQuestionParts(priorText) : [];
-        const effectiveAvoid = [...avoid, ...priorQuestions.map((question) => question.question)];
+        const seenPrior = new Set([...avoid.map(norm), ...currentQuizSeen]);
+        const validPriorParts = new Map<number, QuizQuestion[]>();
+        for (const [partIndex, rawQuestions] of priorParts) {
+          const accepted = parseQuestions(JSON.stringify({ questions: rawQuestions })).filter((question) => {
+            const key = norm(question.question);
+            if (!key || seenPrior.has(key)) return false;
+            seenPrior.add(key);
+            return true;
+          });
+          validPriorParts.set(partIndex, accepted);
+        }
+        const validPrior = [...validPriorParts.values()].flat();
+        validPrior.forEach((question) => currentQuizSeen.add(norm(question.question)));
+        avoidQuestionsBySet[set.id] = [...avoid, ...[...currentQuizSeen].map((key) => key)];
+        const effectiveAvoid = [...avoid, ...validPrior.map((question) => question.question), ...[...currentQuizSeen]];
         const sourceParts = splitTextIntoChunks(set.material_text, 22000);
         if (!sourceParts.length) throw new Error(`Study set “${set.name}” has no readable source material.`);
         let allocatedForSet = 0;
@@ -608,23 +640,34 @@ export const generateComprehensive = createServerFn({ method: "POST" })
         });
         const typeDesc = data.types.map((type) => type === "mc" ? '"mc" (multiple choice, 4 options)' : type === "tf" ? '"tf" (true/false, options ["True","False"])' : '"short" (short answer, 1-2 sentence expected answer)').join(", ");
         for (let partIndex = 0; partIndex < sourceParts.length; partIndex += 1) {
-          const already = priorParts.get(partIndex) ?? [];
-          const batchCount = Math.min(5, Math.max(0, (partTargets[partIndex] ?? 0) - already.length));
+          const already = validPriorParts.get(partIndex) ?? [];
+          const batchCount = Math.min(quizBatchSize(process.env["QUIZ_GENERATION_BATCH_SIZE"]), Math.max(0, (partTargets[partIndex] ?? 0) - already.length));
           if (batchCount < 1) continue;
           const system = `You write realistic comprehensive practice exam questions from this study set. Return ONLY JSON: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"concise explanation","topic":"short topic name"}]}. Generate exactly ${batchCount} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}. For mc/tf, answer is the zero-based correct option. For short, options must be [] and answer -1, with the model answer in answerText. Only use this source part. Avoid duplicates and ensure one defensible correct answer. ${data.questionGuidance?.trim() ? `Student guidance: ${data.questionGuidance.trim().slice(0, 2000)}.` : ""}${QUALITY_RULES}${effectiveAvoid.length ? `\nDo not repeat recent or already generated questions:\n- ${effectiveAvoid.slice(0, 80).join("\n- ")}` : ""}${ci(set)}`;
           preparedPrompts.push({ setId: set.id, setName: set.name, partIndex, system, messages: [{ role: "user", content: `STUDY SET: ${set.name}\nMATERIAL PART ${partIndex + 1}/${sourceParts.length}:\n${sourceParts[partIndex]}` }], batchCount });
         }
       }
-      return { prompts: preparedPrompts };
+      return { prompts: preparedPrompts, sourceRevisions, avoidQuestionsBySet };
+    }
+    for (const set of sets) {
+      const expected = data.sourceRevisions?.[set.id];
+      if (expected) assertGenerationSourceRevision(expected, await studySourceVersion(set));
     }
     const generatedMap = new Map((data.generatedBySet ?? []).map((item) => [item.setId, item.generatedText]));
     const questions: QuizQuestion[] = [];
+    const currentQuizSeen = new Set<string>();
     for (const { set, count } of allocations) {
       if (count < 1) continue;
       const generatedText = generatedMap.get(set.id);
       const generated = generatedText ? parseQuestionParts(generatedText) : [];
       const avoid = await recentQuestions(context.supabase, set.id);
-      const unique = generated.filter((question) => !new Set(avoid.map(norm)).has(norm(question.question))).slice(0, count);
+      const recent = new Set(avoid.map(norm));
+      const unique = generated.filter((question) => {
+        const key = norm(question.question);
+        if (recent.has(key) || currentQuizSeen.has(key)) return false;
+        currentQuizSeen.add(key);
+        return true;
+      }).slice(0, count);
       if (unique.length !== count) throw new Error(`Momentum generated ${unique.length} of ${count} requested questions for “${set.name}”. Your material is preserved; retry generation to fill the missing questions.`);
       questions.push(...unique.map((question) => ({ ...question, setId: set.id })));
     }
