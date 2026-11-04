@@ -12,7 +12,7 @@ type ModelMessage = {
 };
 
 class NvidiaError extends Error {
-  statusCode?: number;
+  statusCode: number | undefined;
   constructor(message: string, statusCode?: number) {
     super(message);
     this.name = "NvidiaError";
@@ -49,24 +49,24 @@ function providerErrorMessage(status: number, body: string): string {
 function extractText(payload: unknown): string {
   if (!payload || typeof payload !== "object") return "";
   const root = payload as Record<string, unknown>;
-  const choices = Array.isArray(root.choices) ? root.choices : [];
+  const choices = Array.isArray(root["choices"]) ? root["choices"] : [];
   const first = choices[0] as Record<string, unknown> | undefined;
-  const message = first?.message as Record<string, unknown> | undefined;
-  const content = message?.content;
+  const message = first?.["message"] as Record<string, unknown> | undefined;
+  const content = message?.["content"];
   if (typeof content === "string") return content.trim();
   if (Array.isArray(content)) {
     return content
       .map((part) => {
         if (!part || typeof part !== "object") return "";
         const item = part as Record<string, unknown>;
-        return typeof item.text === "string" ? item.text : "";
+        return typeof item["text"] === "string" ? item["text"] : "";
       })
       .filter(Boolean)
       .join("\n")
       .trim();
   }
-  if (typeof root.output_text === "string") return root.output_text.trim();
-  if (typeof root.text === "string") return root.text.trim();
+  if (typeof root["output_text"] === "string") return root["output_text"].trim();
+  if (typeof root["text"] === "string") return root["text"].trim();
   return "";
 }
 
@@ -150,23 +150,23 @@ async function callNvidia(
     catch { return; }
     if (!payload || typeof payload !== "object") return;
     const root = payload as Record<string, unknown>;
-    if (root.error) {
-      const error = root.error;
+    if (root["error"]) {
+      const error = root["error"];
       const message = typeof error === "string" ? error :
         error && typeof error === "object" && "message" in error && typeof error.message === "string"
           ? error.message : "NVIDIA NIM reported an inference error.";
       throw new NvidiaError(message, 502);
     }
-    const choices = Array.isArray(root.choices) ? root.choices : [];
+    const choices = Array.isArray(root["choices"]) ? root["choices"] : [];
     const first = choices[0] as Record<string, unknown> | undefined;
-    const delta = first?.delta as Record<string, unknown> | undefined;
-    const content = delta?.content;
+    const delta = first?.["delta"] as Record<string, unknown> | undefined;
+    const content = delta?.["content"];
     if (typeof content === "string") result += content;
     else if (Array.isArray(content)) {
       result += content.map((part) => part && typeof part === "object" &&
         "text" in part && typeof part.text === "string" ? part.text : "").join("");
     }
-    if (first?.finish_reason) finished = true;
+    if (first?.["finish_reason"]) finished = true;
   };
 
   try {

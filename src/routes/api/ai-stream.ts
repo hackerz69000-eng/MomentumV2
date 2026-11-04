@@ -2,11 +2,12 @@ import { createFileRoute } from "@tanstack/react-router";
 import { verifySupabaseAccessToken } from "@/integrations/supabase/verify-token.server";
 
 const BASE_URL = "https://integrate.api.nvidia.com/v1";
-const MAX_BODY = 192_000;
+const MAX_BODY = 8_000_000;
 const MAX_MESSAGES = 24;
 const MAX_CONTENT = 160_000;
 
-type Message = { role: "user" | "assistant"; content: string };
+type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+type Message = { role: "user" | "assistant"; content: string | ContentPart[] };
 
 function json(data: unknown, status: number) {
   return new Response(JSON.stringify(data), {
@@ -40,23 +41,39 @@ export const Route = createFileRoute("/api/ai-stream")({
 
         const system = typeof body.system === "string" ? body.system.trim() : "";
         const messages = Array.isArray(body.messages) ? body.messages as Message[] : [];
-        const task = body.task === "reasoning" ? "reasoning" : body.task === "fast" || body.task == null ? "fast" : null;
-        const totalContent = system.length + messages.reduce((sum, message) =>
-          sum + (typeof message?.content === "string" ? message.content.length : 0), 0);
+        const task = body.task === "vision" ? "vision" : body.task === "reasoning" ? "reasoning" : body.task === "fast" || body.task == null ? "fast" : null;
+        const contentText = (content: Message["content"]) => typeof content === "string" ? content : JSON.stringify(content) ?? "";
+        const totalContent = system.length + messages.reduce((sum, message) => sum + (message?.content ? contentText(message.content).length : 0), 0);
+        const validContent = (content: unknown) => {
+          if (typeof content === "string") return Boolean(content.trim()) && content.length <= MAX_CONTENT;
+          if (!Array.isArray(content) || !content.length || content.length > 4) return false;
+          let images = 0;
+          return content.every((part) => {
+            if (part?.type === "text") return typeof part.text === "string" && part.text.length <= MAX_CONTENT;
+            if (part?.type === "image_url" && typeof part.image_url?.url === "string" && part.image_url.url.startsWith("data:image/jpeg;base64,")) {
+              images += 1;
+              return part.image_url.url.length <= 3_000_000;
+            }
+            return false;
+          }) && images > 0 && images <= 3;
+        };
         if (!task || !system || system.length > MAX_CONTENT || !messages.length || messages.length > MAX_MESSAGES ||
           totalContent > MAX_BODY ||
-          messages.some((m) => !m || !["user", "assistant"].includes(m.role) || typeof m.content !== "string" || !m.content.trim() || m.content.length > MAX_CONTENT)) {
+          messages.some((m) => !m || !["user", "assistant"].includes(m.role) || !validContent(m.content)) ||
+          (task === "vision" && !messages.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url")))) {
           return json({ error: "The AI prompt or conversation is invalid or too large." }, 400);
         }
 
         const apiKey = process.env["NVIDIA_API_KEY"]?.trim();
         if (!apiKey) return json({ error: "NVIDIA AI is not configured. Set NVIDIA_API_KEY in Vercel." }, 500);
-        const preferredModel = task === "reasoning"
+        const preferredModel = task === "vision"
+          ? process.env["NVIDIA_VISION_MODEL"]?.trim() || "nvidia/nemotron-3.5-super-vl-120b-a12b"
+          : task === "reasoning"
           ? process.env["NVIDIA_REASONING_MODEL"]?.trim() || "nvidia/nemotron-3-ultra-550b-a55b"
           : process.env["NVIDIA_MODEL"]?.trim() || "nvidia/nemotron-3.5-lightning-30b-a3b";
-        const fallbackModels = (process.env["NVIDIA_FALLBACK_MODELS"] ?? "stepfun-ai/step-3.5-flash")
+        const fallbackModels = task === "vision" ? [] : (process.env["NVIDIA_FALLBACK_MODELS"] ?? "stepfun-ai/step-3.5-flash")
           .split(",").map((item) => item.trim()).filter(Boolean);
-        const models = [...new Set([preferredModel, process.env["NVIDIA_MODEL"]?.trim(), ...fallbackModels].filter(Boolean))] as string[];
+        const models = [...new Set([preferredModel, ...(task === "vision" ? [] : [process.env["NVIDIA_MODEL"]?.trim(), ...fallbackModels])].filter(Boolean))] as string[];
         let upstream: Response | null = null;
         let lastError = "Couldn't connect to NVIDIA. Please try again.";
         for (let index = 0; index < models.length; index += 1) {

@@ -14,7 +14,7 @@ describe("local similarity pre-check", () => {
     expect(report.sources).toHaveLength(2);
     expect(report.percentage).toBeGreaterThan(0);
     expect(report.percentage).toBeLessThanOrEqual(100);
-    expect(report.coverageNote).toContain("does not search Turnitin's");
+    expect(report.coverageNote).toContain("does not have access to Turnitin's");
   });
 
   it("filters short matches and recalculates the visible match rate", () => {

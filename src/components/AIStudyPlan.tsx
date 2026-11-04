@@ -49,11 +49,11 @@ export function AIStudyPlan({ sets }: { sets: SetWithCards[] }) {
       const stats = setStats((cards ?? []) as Flashcard[], (attempts ?? []) as Attempt[], (mistakes ?? []) as Pick<Mistake, "topic" | "wrong_count" | "status">[]);
       const input = { setId: selected.id, examDate, today, minutesPerDay: minutes, weakTopics: stats.weak.slice(0, 6).map((x) => x.topic) };
       const prepared = await generate({ data: { ...input, prepareOnly: true } });
-      if (!("system" in prepared)) throw new Error("Couldn't prepare the study plan.");
+      if (!("system" in prepared) || !prepared.system || !Array.isArray(prepared.messages)) throw new Error("Couldn't prepare the study plan.");
       setStreamedPlan("");
       const days = await streamAiJson({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamedPlan((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object" || !Array.isArray((value as { days?: unknown }).days)) throw new Error("The study plan response was not valid.");
-        const result = (value as { days: unknown[] }).days.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ date: String(item.date ?? ""), title: String(item.title ?? ""), tasks: Array.isArray(item.tasks) ? item.tasks.map(String).slice(0, 6) : [] })).filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.date) && item.title && item.tasks.length);
+        const result = (value as { days: unknown[] }).days.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ date: String(item["date"] ?? ""), title: String(item["title"] ?? ""), tasks: Array.isArray(item["tasks"]) ? item["tasks"].map(String).slice(0, 6) : [] })).filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.date) && item.title && item.tasks.length);
         if (!result.length) throw new Error("Could not create a usable study plan. Please try again.");
         return result as PlanDay[];
       }});

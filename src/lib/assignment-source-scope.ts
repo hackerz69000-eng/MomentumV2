@@ -66,7 +66,7 @@ export function restrictAssignmentSource(text: string, scope: string): ScopedSou
 
   const named = s.match(/(?:section|part|heading)\s*[“"']?([^”"']{3,80})[”"']?/i);
   if (named) {
-    const target = named[1].trim().replace(/[.:;]+$/, "").toLowerCase();
+    const target = (named[1] ?? "").trim().replace(/[.:;]+$/, "").toLowerCase();
     const lines = text.split(/\r?\n/);
     const start = lines.findIndex((line) => line.replace(/^#{0,3}\s*/, "").trim().toLowerCase() === target);
     if (start < 0) {

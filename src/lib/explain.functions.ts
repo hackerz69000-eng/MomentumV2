@@ -30,7 +30,7 @@ export const prepareSearchAnswerStream = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     if (!data.snippets.length) throw new Error("I couldn't find this in your study materials.");
     const src = data.snippets.map((s, i) => `[S${i + 1}] ${s.label}\n${s.text}`).join("\n\n");
-    return { system: `Answer the student's search using ONLY the numbered sources from their Momentum content. Cite sources inline like [S1]. Be concise (under 180 words, Markdown). If the sources don't answer it, reply exactly \"I couldn't find this in your study materials.\" and nothing else.`, messages: [{ role: "user" as const, content: `SEARCH: ${data.query}\n\nSOURCES:\n${clip(src, 40000)}` }], task: "fast" as const };
+    return { system: `Answer the student's search using ONLY the numbered sources from their Momentum content. Cite sources inline like [S1]. Be concise (under 180 words, Markdown). If the sources don't answer it, reply exactly "I couldn't find this in your study materials." and nothing else.`, messages: [{ role: "user" as const, content: `SEARCH: ${data.query}\n\nSOURCES:\n${clip(src, 40000)}` }], task: "fast" as const };
   });
 
 /** "Explain why" for any answered question (quiz, exam, recall, mistake). */

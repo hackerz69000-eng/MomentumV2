@@ -1,6 +1,7 @@
 import { supabase } from "@/integrations/supabase/client";
 
-type StreamMessage = { role: "user" | "assistant"; content: string };
+export type StreamContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+type StreamMessage = { role: "user" | "assistant"; content: string | StreamContentPart[] };
 type StreamChunk = {
   choices?: Array<{
     delta?: { content?: string | Array<{ text?: string }> };
@@ -13,10 +14,10 @@ type StreamChunk = {
 export async function streamAiText(options: {
   system: string;
   messages: StreamMessage[];
-  task?: "fast" | "reasoning";
+  task?: "fast" | "reasoning" | "vision";
   jsonMode?: boolean;
-  signal?: AbortSignal;
-  onDelta?: (text: string) => void;
+  signal?: AbortSignal | undefined;
+  onDelta?: ((text: string) => void) | undefined;
 }): Promise<string> {
   const { data, error: sessionError } = await supabase.auth.getSession();
   if (sessionError) throw new Error("Couldn't verify your session. Please sign in again.");
@@ -157,7 +158,7 @@ export function parseStreamedJson<T>(text: string, validate: (value: unknown) =>
 export async function streamAiJson<T>(options: {
   system: string;
   messages: StreamMessage[];
-  task?: "fast" | "reasoning";
+  task?: "fast" | "reasoning" | "vision";
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
   validate: (value: unknown) => T;
@@ -179,13 +180,13 @@ export async function streamAiJson<T>(options: {
 export async function streamPreparedNotes(options: {
   prepared: {
     notesPrompts: { system: string; messages: StreamMessage[] }[];
-    notesHeader?: string;
+    notesHeader?: string | undefined;
     readingPlan?: {
       readingChunks: string[];
       readingSystemPrefix: string;
       readingSystemSuffix: string;
       finalSystem: string;
-    };
+    } | undefined;
   };
   signal?: AbortSignal;
   onProgress?: (message: string) => void;

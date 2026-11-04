@@ -92,20 +92,20 @@ export function StudyEverything({
     try {
       const input = { setId: set.id, minutes, today: dayKey(new Date().toISOString()), tzOffset: new Date().getTimezoneOffset() };
       const prepared = await plan({ data: { ...input, prepareOnly: true } });
-      if (!("system" in prepared)) throw new Error("Couldn't prepare the study session.");
+      if (!("system" in prepared) || !prepared.system || !Array.isArray(prepared.messages)) throw new Error("Couldn't prepare the study session.");
       setStreamedPlan("");
       const generated = await streamAiJson({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamedPlan((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object") throw new Error("The study session plan was not valid.");
         const item = value as { headline?: unknown; reason?: unknown; steps?: unknown };
         if (!Array.isArray(item.steps)) throw new Error("The study session plan did not contain steps.");
         const allowed = ["flashcards", "recall", "adaptive", "exam", "guide", "mistakes", "audio"];
-        const steps = item.steps.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object").filter((entry) => allowed.includes(String(entry.kind))).map((entry) => ({ kind: entry.kind as SessionStep["kind"], title: String(entry.title ?? entry.kind), why: String(entry.why ?? ""), minutes: Math.max(1, Math.min(90, Number(entry.minutes) || 5)), count: Math.max(0, Math.min(30, Math.round(Number(entry.count) || 0))), topics: Array.isArray(entry.topics) ? entry.topics.map(String).slice(0, 6) : [], difficulty: (["easy", "medium", "hard", "mixed"].includes(String(entry.difficulty)) ? String(entry.difficulty) : "mixed") as SessionStep["difficulty"] })).slice(0, 6);
+        const steps = item.steps.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object").filter((entry) => allowed.includes(String(entry["kind"]))).map((entry) => ({ kind: entry["kind"] as SessionStep["kind"], title: String(entry["title"] ?? entry["kind"]), why: String(entry["why"] ?? ""), minutes: Math.max(1, Math.min(90, Number(entry["minutes"]) || 5)), count: Math.max(0, Math.min(30, Math.round(Number(entry["count"]) || 0))), topics: Array.isArray(entry["topics"]) ? entry["topics"].map(String).slice(0, 6) : [], difficulty: (["easy", "medium", "hard", "mixed"].includes(String(entry["difficulty"])) ? String(entry["difficulty"]) : "mixed") as SessionStep["difficulty"] })).slice(0, 6);
         if (!steps.length) throw new Error("The study session plan did not contain usable steps.");
         return { headline: String(item.headline ?? "Here's your focused study session."), reason: String(item.reason ?? ""), steps };
       }});
       const r = await plan({ data: { ...input, generatedPlan: JSON.stringify(generated) } });
-      if (!("headline" in r)) throw new Error("The study session plan couldn't be finalized.");
-      setP(r);
+      if (!("headline" in r) || !Array.isArray(r.steps)) throw new Error("The study session plan couldn't be finalized.");
+      setP({ headline: r.headline, reason: r.reason ?? "", steps: r.steps });
       setStep(-1);
     } catch (e) {
       setError(e instanceof DOMException && e.name === "AbortError" ? "Planning cancelled. Nothing was saved." : e instanceof Error ? e.message : "Couldn't plan a session");

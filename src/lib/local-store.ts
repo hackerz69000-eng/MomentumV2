@@ -77,13 +77,14 @@ export function saveLocalSet(
   }
 
   const fullSet: StudySet = {
+    ...set,
     id: set.id,
     user_id: userId,
     name: set.name,
-    subject: set.subject ?? null,
-    description: set.description ?? null,
-    custom_instructions: set.custom_instructions ?? null,
-    material_text: set.material_text ?? null,
+    subject: set.subject ?? "",
+    description: set.description ?? "",
+    custom_instructions: set.custom_instructions ?? "",
+    material_text: set.material_text ?? "",
     material_source: set.material_source ?? "local",
     material_filename: set.material_filename ?? null,
     notes: set.notes ?? null,
@@ -91,13 +92,18 @@ export function saveLocalSet(
     error: null,
     quiz_score: set.quiz_score ?? null,
     quiz_total: set.quiz_total ?? null,
+    exam_date: set.exam_date ?? null,
+    minutes_per_day: set.minutes_per_day ?? null,
+    plan: set.plan ?? null,
+    study_guide: set.study_guide ?? null,
+    study_guide_at: set.study_guide_at ?? null,
     created_at: set.created_at ?? now,
     updated_at: now,
     folder_id: set.folder_id ?? null,
   };
 
   const existingIdx = sets.findIndex((s) => s.id === set.id);
-  if (existingIdx >= 0 && sets[existingIdx].user_id !== userId) {
+  if (existingIdx >= 0 && sets[existingIdx]?.user_id !== userId) {
     throw new Error("This study set belongs to a different account.");
   }
   if (existingIdx >= 0) {
@@ -115,10 +121,11 @@ export function saveLocalSet(
     user_id: userId,
     question: c.question,
     answer: c.answer,
-    topic: c.topic ?? null,
+    topic: c.topic ?? "",
     position: c.position ?? idx,
     status: "new",
     interval_days: 0,
+    ease_factor: 2.5,
     reps: 0,
     lapses: 0,
     due_at: now,

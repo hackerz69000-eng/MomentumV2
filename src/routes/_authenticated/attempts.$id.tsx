@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, CheckCircle2, XCircle, RotateCcw } from "lucide-react";
 import { ExplainWhy } from "@/components/set/ExplainWhy";
+import { QuizQuestionImage } from "@/components/set/QuizRunner";
 import { supabase } from "@/integrations/supabase/client";
 
 export const Route = createFileRoute("/_authenticated/attempts/$id")({
@@ -24,6 +25,10 @@ type ReviewAnswer = {
   correct_answer?: string;
   answer?: string;
   feedback?: string;
+  imageName?: string;
+  imagePath?: string;
+  imageKind?: "image" | "pdf" | "pptx" | "docx";
+  imageSourceIndex?: number;
 };
 
 function AttemptReviewPage() {
@@ -63,11 +68,12 @@ function AttemptReviewPage() {
           return <article key={`${i}-${question || "question"}`} className={`rounded-2xl bg-panel border p-5 space-y-3 ${a.correct ? "border-mint/30" : "border-destructive/30"}`}>
             <div className="flex items-center justify-between gap-3"><p className="eyebrow text-soft">Question {i + 1}{a.topic ? ` · ${a.topic}` : ""}</p>{a.correct ? <CheckCircle2 className="size-5 text-mint"/> : <XCircle className="size-5 text-destructive"/>}</div>
             <h2 className="font-semibold">{question || "Question text unavailable"}</h2>
+            {a.imagePath && <QuizQuestionImage path={a.imagePath} kind={a.imageKind} sourceIndex={a.imageSourceIndex} name={a.imageName} />}
             {Array.isArray(a.options) && a.options.length > 0 && <ul className="space-y-1 text-sm">{a.options.map((option, j) => <li key={j} className={`rounded-lg px-3 py-2 ${option === correctAnswer ? "bg-mint/10 text-mint" : option === given && !a.correct ? "bg-destructive/10 text-destructive" : "bg-foreground/5"}`}>{option}</li>)}</ul>}
             <p className="text-sm"><span className="text-soft">Your answer: </span><span className={a.correct ? "text-mint" : "text-destructive"}>{given || "Not answered"}</span></p>
             {!a.correct && <p className="text-sm"><span className="text-soft">Correct answer: </span><span className="text-mint">{correctAnswer || "Not saved"}</span></p>}
             {(a.explanation || a.feedback) && <p className="text-sm text-soft rounded-lg bg-foreground/5 p-3">{a.explanation || a.feedback}</p>}
-            {!a.correct && setId && <ExplainWhy setId={setId} question={question} options={a.options} correct={correctAnswer} given={given} topic={a.topic} />}
+            {!a.correct && setId && <ExplainWhy setId={setId} question={question} {...(a.options ? { options: a.options } : {})} correct={correctAnswer} given={given} {...(a.topic ? { topic: a.topic } : {})} />}
           </article>;
         })}
       </div>

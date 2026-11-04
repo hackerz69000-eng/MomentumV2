@@ -33,13 +33,13 @@ export function Plan({ set, weakTopics }: { set: StudySet; weakTopics: string[] 
     setLoading(true);
     setError(null);
     try {
-      const input = { setId: set.id, examDate, today, minutesPerDay: Number(minutes), weakTopics };
+      const input = { setId: set.id, examDate, today, tzOffset: new Date().getTimezoneOffset(), minutesPerDay: Number(minutes), weakTopics };
       const prepared = await gen({ data: { ...input, prepareOnly: true } });
-      if (!("system" in prepared)) throw new Error("Couldn't prepare your study plan.");
+      if (!("system" in prepared) || !prepared.system || !Array.isArray(prepared.messages)) throw new Error("Couldn't prepare your study plan.");
       setStreamedPlan("");
       const plan = await streamAiJson({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamedPlan((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object" || !Array.isArray((value as { days?: unknown }).days)) throw new Error("The study plan response was not valid.");
-        const days = (value as { days: unknown[] }).days.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ date: String(item.date ?? ""), title: String(item.title ?? ""), tasks: Array.isArray(item.tasks) ? item.tasks.map(String).slice(0, 6) : [] })).filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.date) && item.title && item.tasks.length);
+        const days = (value as { days: unknown[] }).days.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ date: String(item["date"] ?? ""), title: String(item["title"] ?? ""), tasks: Array.isArray(item["tasks"]) ? item["tasks"].map(String).slice(0, 6) : [] })).filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.date) && item.title && item.tasks.length);
         if (!days.length) throw new Error("Could not create a usable study plan. Please try again.");
         return days as PlanDay[];
       }});

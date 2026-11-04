@@ -74,7 +74,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <Link to="/trash" className={navCls} activeProps={{ className: activeCls }}>
             <Trash2 className="size-4" /> Recently Deleted
           </Link>
-          {user?.app_metadata?.role === "admin" && <Link to="/admin-progression" className={navCls} activeProps={{ className: activeCls }}>
+          {user?.app_metadata?.["role"] === "admin" && <Link to="/admin-progression" className={navCls} activeProps={{ className: activeCls }}>
             <ShieldCheck className="size-4" /> Progression Editor
           </Link>}
         </nav>
@@ -82,8 +82,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="rounded-lg p-3 bg-accent border border-line">
             <p className="eyebrow text-cool2 mb-1">Signed in</p>
             <p className="text-sm font-medium truncate">
-              {user?.user_metadata?.username
-                ? `@${user.user_metadata.username}`
+              {user?.user_metadata?.["username"]
+                ? `@${user.user_metadata["username"]}`
                 : user?.email}
             </p>
           </div>

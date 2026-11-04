@@ -1,6 +1,6 @@
 import { useServerFn } from "@tanstack/react-start";
 import { streamAiJson, streamAiText } from "@/lib/ai-stream";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Check, Clock, Loader2, RefreshCw, X } from "lucide-react";
@@ -19,6 +19,8 @@ import { ExplainWhy } from "./ExplainWhy";
 import { adaptivePlan, shuffle, type Attempt, type TopicRow } from "@/lib/stats";
 import { recordStudySessionCompletion } from "@/components/DailyStreak";
 import { updateLocalSetProgress } from "@/lib/local-store";
+import { extractQuizVisuals } from "@/lib/extract";
+import { attachQuizVisuals, scoreQuizAnswer, serializeQuizAnswer } from "@/lib/quiz-results";
 import type { StudySet } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { btnGhost, btnPrimary, Chips, ErrorBox, inputCls } from "./ui";
@@ -35,6 +37,7 @@ type Settings = {
   minutes: number;
   adaptive: boolean;
   questionGuidance: string;
+  includeImages: boolean;
 };
 
 const DIFFS = [
@@ -114,6 +117,7 @@ export function QuizRunner({
           minutes: 30,
           adaptive: false,
           questionGuidance: "",
+          includeImages: false,
           ...preset,
         }
       : {
@@ -123,9 +127,19 @@ export function QuizRunner({
           minutes: 0,
           adaptive: false,
           questionGuidance: "",
+          includeImages: false,
           ...preset,
         },
   );
+  const imageFilesQ = useQuery({
+    queryKey: ["quiz-image-files", set?.id],
+    enabled: !!set && !comprehensive && settings.includeImages,
+    queryFn: async () => {
+      const { data, error } = await supabase.from("study_files").select("id,name,path,mime,size").eq("set_id", set!.id).order("created_at");
+      if (error) throw error;
+      return (data ?? []).filter((file) => ["image/png", "image/jpeg", "image/webp", "application/pdf", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"].includes(file.mime.toLowerCase()) || /\.(png|jpe?g|webp|pdf|pptx|docx)$/i.test(file.name)).slice(0, 10);
+    },
+  });
   const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
   const [draftReady, setDraftReady] = useState(false);
   const draftKey = `momentum:quiz-draft:v1:${user?.id ?? "guest"}:${kind}:${comprehensive ? (sets ?? []).map((s) => s.id).sort().join(",") : set?.id ?? "no-set"}:${lectureId ?? ""}`;
@@ -164,14 +178,13 @@ export function QuizRunner({
     } catch { /* Ignore an invalid or unavailable local draft. */ }
     setDraftReady(true);
   // The key defines the exact session; restore only when it changes.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey]);
 
   useEffect(() => {
     if (!draftReady || !questions || graded) return;
     try {
       window.localStorage.setItem(draftKey, JSON.stringify({
-        questions, answers, current, remaining, startedAt: startedAt.current,
+        questions: questions.map(({ imageDataUrl: _imageDataUrl, ...question }) => question), answers, current, remaining, startedAt: startedAt.current,
         flagged: [...flagged], usedAdaptive, settings,
       }));
     } catch { /* Storage can be unavailable or full; the session remains usable. */ }
@@ -213,6 +226,28 @@ export function QuizRunner({
       if (!exam && settings.adaptive && !plan.length)
         toast.info("No performance data yet — this first adaptive quiz covers all topics evenly.");
       setUsedAdaptive(!exam && settings.adaptive);
+      const quizImages: { data: string; url: string; name: string; path: string; kind: "image" | "pdf" | "pptx" | "docx"; sourceIndex: number }[] = [];
+      if (settings.includeImages && !comprehensive) {
+        const sources = imageFilesQ.data ?? [];
+        if (!sources.length) throw new Error("No saved image, PDF, or PowerPoint uploads are available for this study set. Add a lecture file in Materials first.");
+        for (const source of sources) {
+          if (quizImages.length >= 3) break;
+          const { data: blob, error: downloadError } = await supabase.storage.from("study-files").download(source.path);
+          if (downloadError || !blob) continue;
+          try {
+            const file = new File([blob], source.name, { type: source.mime || blob.type });
+            const visuals = await extractQuizVisuals(file, 3 - quizImages.length);
+            if (!visuals.length) continue;
+            const { data: signed, error: signedError } = await supabase.storage.from("study-files").createSignedUrl(source.path, 3600);
+            if (signedError || !signed?.signedUrl) continue;
+            for (const visual of visuals) {
+              if (quizImages.length >= 3) break;
+              quizImages.push({ data: visual.data, url: signed.signedUrl, name: visual.name, path: source.path, kind: visual.kind, sourceIndex: visual.sourceIndex });
+            }
+          } catch { /* A corrupt or unsupported source is skipped; remaining files still work. */ }
+        }
+        if (!quizImages.length) throw new Error("Momentum couldn't find a usable visual in your saved uploads. Add an image, or a PDF/PowerPoint with visual content, then try again.");
+      }
       let res: { questions: QuizQuestion[] };
       setStreamedQuestions("");
       if (comprehensive) {
@@ -245,9 +280,9 @@ export function QuizRunner({
         }
         const generated = await genComp({ data: { ...input, generatedBySet: [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, generatedText: JSON.stringify({ parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) }) })) } });
         if (!("questions" in generated)) throw new Error("The comprehensive exam could not be finalized.");
-        res = generated;
+        res = { questions: generated.questions };
       } else {
-        const input = { setId: set!.id, count: settings.count, difficulty: settings.difficulty, types: settings.types, exam, plan: plan.length ? plan : undefined, lectureId, questionGuidance: settings.questionGuidance.trim() || undefined };
+        const input = { setId: set!.id, count: settings.count, difficulty: settings.difficulty, types: settings.types, exam, plan: plan.length ? plan : undefined, lectureId, questionGuidance: settings.questionGuidance.trim() || undefined, includeImages: quizImages.length > 0 };
         const generatedByPart = new Map<number, unknown[]>();
         setStreamedQuestions("");
         let rounds = 0;
@@ -258,7 +293,11 @@ export function QuizRunner({
           if (!("prompts" in prepared) || !prepared.prompts.length) break;
           let progress = 0;
           for (const prompt of prepared.prompts) {
-            const batch = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk), validate: (value) => {
+            const messages = quizImages.length ? [{ role: "user" as const, content: [
+              { type: "text" as const, text: `${prompt.messages[0]?.content ?? ""}\n\nThe images are attached in this exact order: ${quizImages.map((_, index) => `imageIndex ${index}`).join(", ")}. Use the matching imageIndex only for a question grounded in that image.` },
+              ...quizImages.map((image) => ({ type: "image_url" as const, image_url: { url: image.data } })),
+            ] }] : prompt.messages;
+            const batch = await streamAiJson({ system: prompt.system, messages, task: quizImages.length ? "vision" : "fast", signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk), validate: (value) => {
               if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The generated quiz batch was not valid JSON.");
               return (value as { questions: unknown[] }).questions;
             }});
@@ -273,17 +312,23 @@ export function QuizRunner({
         if (generatedQuestions.length < input.count) throw new Error(`Only ${generatedQuestions.length} of ${input.count} questions were generated. Please retry.`);
         let finalQuestions = generatedQuestions;
         if (!exam) {
-          const reviewPrompt = await reviewPrepare({ data: { setId: input.setId, lectureId, questionGuidance: input.questionGuidance, questions: generatedQuestions } });
-          finalQuestions = await streamAiJson({ system: reviewPrompt.system, messages: reviewPrompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
+          const imageQuestions = generatedQuestions.filter((q) => {
+            const index = q && typeof q === "object" ? (q as { imageIndex?: number }).imageIndex : undefined;
+            return quizImages.length > 0 && Number.isInteger(index) && index! >= 0 && index! < quizImages.length;
+          });
+          const textQuestions = generatedQuestions.filter((q) => !imageQuestions.includes(q));
+          const reviewPrompt = textQuestions.length ? await reviewPrepare({ data: { setId: input.setId, lectureId, questionGuidance: input.questionGuidance, questions: textQuestions } }) : null;
+          const reviewedQuestions = reviewPrompt ? await streamAiJson({ system: reviewPrompt.system, messages: reviewPrompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
             if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The quiz review response was not valid.");
             return (value as { questions: unknown[] }).questions;
-          }});
+          }}) : [];
+          finalQuestions = [...reviewedQuestions, ...imageQuestions];
           if (finalQuestions.length !== input.count) throw new Error(`The quiz review returned ${finalQuestions.length} of ${input.count} questions. Nothing was saved; please retry.`);
         }
         const generatedText = JSON.stringify({ parts: [{ partIndex: 0, questions: finalQuestions }] });
         const generated = await gen({ data: { ...input, generatedText } });
         if (!("questions" in generated)) throw new Error("The quiz questions could not be finalized.");
-        res = generated;
+        res = { questions: attachQuizVisuals(generated.questions, quizImages) };
       }
       const qs = prepare(res.questions);
       setQuestions(qs);
@@ -306,9 +351,7 @@ export function QuizRunner({
     submitting.current = true;
     setLoading("grade");
     setRemaining(null);
-    const results: Graded[] = questions.map((q, i) =>
-      q.type === "short" ? { correct: false } : { correct: answers[i] === q.answer },
-    );
+    const results: Graded[] = questions.map((q, i) => scoreQuizAnswer(q, answers[i] ?? null));
     const shortIdx = questions
       .map((q, i) => (q.type === "short" && String(answers[i] ?? "").trim() ? i : -1))
       .filter((i) => i >= 0);
@@ -318,9 +361,9 @@ export function QuizRunner({
         const prompt = await gradePrepare({ data: { items } });
         const { grades } = await streamAiJson({ system: prompt.system, messages: prompt.messages, validate: (value) => {
           if (!value || typeof value !== "object" || !Array.isArray((value as { grades?: unknown }).grades)) throw new Error("Short-answer grades were not valid.");
-          return items.map((_, index) => { const grade = (value as { grades: unknown[] }).grades[index]; const item = grade && typeof grade === "object" ? grade as { correct?: unknown; feedback?: unknown } : {}; return { correct: Boolean(item.correct), feedback: String(item.feedback ?? "") }; });
+          return { grades: items.map((_, index) => { const grade = (value as { grades: unknown[] }).grades[index]; const item = grade && typeof grade === "object" ? grade as { correct?: unknown; feedback?: unknown } : {}; return { correct: Boolean(item.correct), feedback: String(item.feedback ?? "") }; }) };
         }});
-        shortIdx.forEach((qi, k) => (results[qi] = grades[k] ?? { correct: false }));
+        shortIdx.forEach((qi, k) => (results[qi] = scoreQuizAnswer(questions[qi]!, answers[qi], grades[k] ?? false)));
       } catch (e) {
         toast.error("Couldn't grade short answers automatically — they were marked incorrect.");
       }
@@ -348,19 +391,7 @@ export function QuizRunner({
       results: idx.map((i) => {
         const q = questions[i]!;
         const a = answers[i] ?? null;
-        const studentAnswer = a == null || String(a).trim() === "" ? "Not answered" : q.type === "short" ? String(a) : (q.options[Number(a)] ?? "");
-        const correctAnswer = q.type === "short" ? (q.answerText || "") : (q.options[q.answer] ?? "");
-        return {
-          topic: q.topic,
-          correct: results[i]!.correct,
-          q: q.question,
-          question: q.question,
-          questionType: q.type,
-          options: q.options,
-          studentAnswer,
-          correctAnswer,
-          explanation: q.explanation || results[i]!.feedback || "",
-        };
+        return serializeQuizAnswer(q, a, results[i]!);
       }),
     }));
     const { error } = await supabase.from("quiz_attempts").insert(rows);
@@ -392,6 +423,10 @@ export function QuizRunner({
           answerText: q.answerText,
           explanation: q.explanation,
           topic: q.topic,
+          ...(q.imageName ? { imageName: q.imageName } : {}),
+          ...(q.imagePath ? { imagePath: q.imagePath } : {}),
+          ...(q.imageKind ? { imageKind: q.imageKind } : {}),
+          ...(q.imageSourceIndex != null ? { imageSourceIndex: q.imageSourceIndex } : {}),
         },
       })),
       qc,
@@ -593,6 +628,25 @@ export function QuizRunner({
               </div>
             </div>
           )}
+          {!comprehensive && set && (
+            <div className="rounded-xl border border-line/70 p-4">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.includeImages}
+                  onChange={(event) => setSettings((current) => ({ ...current, includeImages: event.target.checked }))}
+                  className="mt-1 size-4 accent-cool2"
+                />
+                <span>
+                  <span className="font-semibold">Include questions about lecture images</span>
+                  <span className="block text-xs text-soft mt-1">Momentum can analyze up to three saved PNG, JPEG, or WebP images, sampled PDF pages, or embedded Word and PowerPoint figures. It skips unclear visuals and shows the source alongside image questions.</span>
+                  <span className="block text-xs text-soft mt-1" aria-live="polite">
+                    {!settings.includeImages ? "Optional. Leave unchecked for your usual quiz." : imageFilesQ.isLoading ? "Checking saved uploads for visuals…" : imageFilesQ.data?.length ? `${imageFilesQ.data.length} saved file${imageFilesQ.data.length === 1 ? "" : "s"} can be checked for visuals (up to three are used).` : "No saved image, PDF, Word, or PowerPoint uploads found. Add lecture material in Materials to use this option."}
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
           <div>
             <p className="eyebrow text-soft mb-2">What should the test questions be like?</p>
             <textarea
@@ -624,7 +678,7 @@ export function QuizRunner({
           )}
           {error && <ErrorBox msg={error} />}
           <div className="flex gap-2">
-            <button onClick={start} disabled={!draftReady} className={btnPrimary}>
+            <button onClick={start} disabled={!draftReady || (settings.includeImages && imageFilesQ.isLoading)} className={btnPrimary}>
               {exam ? "Start exam" : settings.adaptive ? "Start adaptive quiz" : "Start quiz"}
             </button>
             {onExit && (
@@ -804,6 +858,7 @@ function QuestionCard({
         Question {qi + 1} ·{" "}
         {q.type === "mc" ? "Multiple choice" : q.type === "tf" ? "True / false" : "Short answer"}
       </p>
+      {q.imagePath && <QuizQuestionImage key={`${q.imagePath}:${q.imageKind}:${q.imageSourceIndex}`} path={q.imagePath} kind={q.imageKind} sourceIndex={q.imageSourceIndex} dataUrl={q.imageDataUrl} name={q.imageName} />}
       <p className="font-semibold mt-2">{q.question}</p>
       {q.type === "short" ? (
         <textarea
@@ -835,6 +890,46 @@ function QuestionCard({
         </div>
       )}
     </div>
+  );
+}
+
+export function QuizQuestionImage({ path, kind, sourceIndex, dataUrl, name }: { path: string; kind?: "image" | "pdf" | "pptx" | "docx" | undefined; sourceIndex?: number | undefined; dataUrl?: string | undefined; name?: string | undefined }) {
+  const [url, setUrl] = useState<string | null>(dataUrl ?? null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setFailed(false);
+    setUrl(dataUrl ?? null);
+    if (dataUrl) return () => { active = false; };
+    if (kind === "pptx" || kind === "docx") {
+      void (async () => {
+        try {
+          const { data, error } = await supabase.storage.from("study-files").download(path);
+          if (error || !data) throw error ?? new Error("Missing slide deck");
+          const powerpoint = kind === "pptx";
+          const file = new File([data], powerpoint ? name?.split(" — slide ")[0] || "lecture.pptx" : name?.split(" — image ")[0] || "lecture.docx", { type: powerpoint ? "application/vnd.openxmlformats-officedocument.presentationml.presentation" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+          const visuals = await extractQuizVisuals(file, Math.min(3, (sourceIndex ?? 0) + 1));
+          const visual = visuals.find((item) => item.sourceIndex === sourceIndex);
+          if (!visual) throw new Error("Visual is unavailable");
+          if (active) setUrl(visual.data);
+        } catch { if (active) setFailed(true); }
+      })();
+    } else {
+      void supabase.storage.from("study-files").createSignedUrl(path, 3600).then(({ data, error }) => {
+        if (!active) return;
+        if (error || !data?.signedUrl) setFailed(true);
+        else setUrl(kind === "pdf" ? `${data.signedUrl}#page=${sourceIndex ?? 1}&toolbar=0` : data.signedUrl);
+      });
+    }
+    return () => { active = false; };
+  }, [path, kind, sourceIndex, dataUrl, name]);
+  if (failed) return <p className="mt-3 text-xs text-soft">This lecture image is currently unavailable. You can still answer the question.</p>;
+  if (!url) return <p className="mt-3 text-xs text-soft">Loading lecture image…</p>;
+  return (
+    <figure className="mt-3 rounded-xl border border-line/70 bg-background/40 p-2">
+      {kind === "pdf" ? <iframe src={url} title={name ? `Lecture page: ${name}` : "Lecture page for this question"} className="w-full h-80 rounded-lg border-0" /> : <img src={url} alt={name ? `Lecture image: ${name}` : "Lecture image for this question"} className="mx-auto max-h-80 max-w-full object-contain rounded-lg" onError={() => setFailed(true)} />}
+      {name && <figcaption className="text-xs text-soft mt-2 text-center">{name}</figcaption>}
+    </figure>
   );
 }
 
@@ -979,6 +1074,7 @@ function Results({
                 <X className="size-5 text-destructive shrink-0" />
               )}
             </div>
+            {q.imagePath && <QuizQuestionImage key={`${q.imagePath}:${q.imageKind}:${q.imageSourceIndex}`} path={q.imagePath} kind={q.imageKind} sourceIndex={q.imageSourceIndex} dataUrl={q.imageDataUrl} name={q.imageName} />}
             <p className="font-semibold mt-2">{q.question}</p>
             <div className="text-sm mt-3 space-y-1">
               <p>

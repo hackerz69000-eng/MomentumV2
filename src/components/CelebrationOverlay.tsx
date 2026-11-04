@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Sparkles, X } from "lucide-react";
 
-type Celebration = { kind: string; title?: string; subtitle?: string; level?: number; tier?: number; badge?: string; id?: string; };
+type Celebration = { kind: string; title?: string; subtitle?: string; level?: number; tier?: number; badge?: string; id?: string; milestone?: boolean; };
 const EVENT = "momentum_celebration";
 const SEEN_CELEBRATIONS_KEY = "momentum_seen_celebrations_v1";
 
@@ -62,7 +62,7 @@ function playSound(kind: string, level = 1, tier = 1, id = "") {
     const intervals = [0, 1 + (ordinal % 11), 2 + ((ordinal * 3) % 13), 3 + ((ordinal * 7) % 17)];
     const notes = intervals.map((step, i) => root * Math.pow(2, step / 12) * (i === 3 && ordinal % 3 === 0 ? 2 : 1));
     const waveforms: OscillatorType[] = ["sine", "triangle", "sawtooth", "square"];
-    const waveform = waveforms[ordinal % waveforms.length];
+    const waveform = waveforms[ordinal % waveforms.length] ?? "sine";
     const baseGain = kind.includes("milestone") || (kind === "level" && level % 10 === 0) ? 0.2 : 0.13;
     notes.forEach((frequency, i) => {
       const at = now + i * (0.062 + (ordinal % 9) * 0.009);
@@ -125,7 +125,7 @@ export function CelebrationOverlay() {
     <div className="celebration-card"><div className="celebration-kicker"><Sparkles size={15}/> MOMENTUM UNLOCKED <Sparkles size={15}/></div>
       <div className="celebration-emblem" key={`${active.kind}-${active.level ?? active.tier ?? active.id ?? active.title}`}>{visual.icon}</div>
       <h2>{visual.title}</h2><p>{visual.subtitle}</p>
-      <div className="celebration-sparks" aria-hidden="true">✦　✧　✦　✧　✦</div>
+      <div className="celebration-sparks" aria-hidden="true">✦ ✧ ✦ ✧ ✦</div>
       <button className="celebration-continue" onClick={dismiss}>Keep going <span>→</span></button>
     </div><div className="celebration-confetti" aria-hidden="true">{Array.from({length:28},(_,i)=><i key={i} style={{left:`${(i*37)%100}%`,animationDelay:`${(i%9)*0.11}s`,transform:`rotate(${i*29}deg)`}}/>)}</div>
   </div></>;

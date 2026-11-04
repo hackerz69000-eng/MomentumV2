@@ -29,7 +29,7 @@ export function splitSpeechChunks(markdown: string, maxChars = 3500): string[] {
         const words = part.split(/\s+/);
         for (const word of words) {
           if (word.length > limit) {
-            if (current) chunks.push(current), current = "";
+            if (current) { chunks.push(current); current = ""; }
             for (let i = 0; i < word.length; i += limit) chunks.push(word.slice(i, i + limit));
           } else if (current && current.length + word.length + 1 > limit) {
             chunks.push(current);

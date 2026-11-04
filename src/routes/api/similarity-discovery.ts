@@ -96,7 +96,7 @@ async function robotsAllows(url: URL): Promise<boolean> {
         if (!response.ok || response.status >= 300) return false;
         const text = (await response.text()).slice(0, 64_000);
         let applies = false;
-        let disallowed: string[] = [];
+        const disallowed: string[] = [];
         for (const line of text.split(/\r?\n/)) {
           const clean = line.split("#")[0]?.trim() ?? "";
           if (!clean) continue;

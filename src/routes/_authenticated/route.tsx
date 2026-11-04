@@ -50,19 +50,20 @@ function InShellError({ error, reset }: ErrorComponentProps) {
 
 function Gate() {
   const { user, loading } = useAuth();
+  const userId = user?.id;
   const navigate = useNavigate();
   useEffect(() => {
     if (!loading && !user) navigate({ to: "/auth" });
   }, [loading, user, navigate]);
   useEffect(() => {
-    if (!user) return;
+    if (!userId) return;
     let cancelled = false;
     let cleanup: (() => void) | undefined;
-    void initializeProgressionSync(user.id).then((stop) => {
+    void initializeProgressionSync(userId).then((stop) => {
       if (cancelled) stop(); else cleanup = stop;
     });
     return () => { cancelled = true; cleanup?.(); };
-  }, [user?.id]);
+  }, [userId]);
   if (loading || !user) {
     return (
       <div className="min-h-screen grid place-items-center bg-ink">

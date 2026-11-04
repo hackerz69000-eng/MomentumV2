@@ -38,7 +38,7 @@ const milestoneIcons = ["✨", "📘", "🔥", "🎯", "⚡", "🗓️", "🧩",
 const themeIds: ThemeId[] = ["default", "aurora", "sunset", "forest", "ocean", "lavender", "rose", "ember", "midnight", "arctic", "candy", "monochrome", "desert", "nebula", "jade", "gold", "coral", "glacier", "orchid", "cosmic"];
 const themeNames = ["Momentum", "Aurora", "Sunset", "Forest", "Ocean", "Lavender", "Rose", "Ember", "Midnight", "Arctic", "Candy", "Monochrome", "Desert", "Nebula", "Jade", "Gold", "Coral", "Glacier", "Orchid", "Cosmic"];
 const themeDescriptions = ["The original Momentum look", "Northern-light teal", "Warm sunset glow", "Deep woodland green", "Calm deep-blue waters", "Soft violet focus", "Blush-pink accents", "Warm ember orange", "Night-sky blue", "Cool icy tones", "Playful pastel pink", "Minimal grayscale", "Warm sand and clay", "Space-inspired purple", "Rich jade green", "Premium golden accents", "Bright tropical coral", "Glacial blue-white", "Orchid purple", "Cosmic indigo"];
-const THEMES: { id: ThemeId; name: string; description: string }[] = themeIds.map((id, i) => ({ id, name: themeNames[i], description: themeDescriptions[i] }));
+const THEMES: { id: ThemeId; name: string; description: string }[] = themeIds.map((id, i) => ({ id, name: themeNames[i]!, description: themeDescriptions[i]! }));
 
 // Fifty milestones alternate between longest streak and accumulated study time.
 // Every milestone from #3 onward also unlocks one of the twenty cosmetic themes at spaced intervals.
@@ -51,7 +51,7 @@ const BASE_REWARDS: Reward[] = milestoneNames.map((name, i) => {
     id: `milestone-${number}`,
     name,
     description: type === "streak" ? `${threshold}-day longest study streak` : `${threshold} total study hours`,
-    icon: milestoneIcons[i], type, threshold, theme,
+    icon: milestoneIcons[i]!, type, threshold, ...(theme ? { theme } : {}),
   };
 });
 
@@ -64,8 +64,8 @@ const REWARDS: Reward[] = [...BASE_REWARDS, {
   threshold: BASE_REWARDS.length,
 }];
 
-function unlocked(reward: Reward, streak: ReturnType<typeof getStreakData>) {
-  try { if ((JSON.parse(localStorage.getItem("momentum_admin_reward_overrides_v1") ?? "[]") as string[]).includes(reward.id)) return true; } catch {}
+function unlocked(reward: Reward, streak: ReturnType<typeof getStreakData>): boolean {
+  try { if ((JSON.parse(localStorage.getItem("momentum_admin_reward_overrides_v1") ?? "[]") as string[]).includes(reward.id)) return true; } catch { /* Ignore malformed local override data. */ }
   if (reward.type === "all") return BASE_REWARDS.every((item) => unlocked(item, streak));
   return reward.type === "streak" ? streak.longestStreak >= reward.threshold : (streak.totalStudyMinutes ?? 0) >= reward.threshold * 60;
 }
@@ -77,7 +77,7 @@ export function getSelectedTheme(): ThemeId {
 
 export function applyRewardTheme(theme: ThemeId) {
   if (typeof document === "undefined") return;
-  document.documentElement.dataset.momentumTheme = theme === "default" ? "" : theme;
+  document.documentElement.dataset["momentumTheme"] = theme === "default" ? "" : theme;
 }
 
 export function MilestoneRewards({ className = "" }: { className?: string }) {

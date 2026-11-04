@@ -45,7 +45,7 @@ export function StudyGuide({ set }: { set: StudySet }) {
     try {
       const input = { setId: set.id, includedSetIds, testDate: testDate || null };
       const prepared = await gen({ data: { ...input, prepareOnly: true } });
-      if (!("system" in prepared)) throw new Error("Couldn't prepare the study guide prompt.");
+      if (!("system" in prepared) || !prepared.system || !Array.isArray(prepared.messages)) throw new Error("Couldn't prepare the study guide prompt.");
       setStreamedGuide("");
       const guide = await streamAiText({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamedGuide((old) => old + chunk) });
       if (guide.trim().length < 100) throw new Error("The study guide response was incomplete. Nothing was saved; please try again.");

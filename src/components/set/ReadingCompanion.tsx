@@ -14,6 +14,8 @@ import { useAuth } from "@/hooks/use-auth";
 
 type DraftCard = { q: string; a: string; t?: string };
 type SourceOption = { key: string; title: string; kind: "reading" | "lecture"; linked: boolean };
+type SetOption = { id: string; name: string; subject: string | null; hasMaterial: boolean; filename: string | null };
+type LectureOption = { id: string; title: string; setId: string; setName: string; hasContent: boolean };
 
 export function ReadingCompanion({ set }: { set: StudySet }) {
   const qc = useQueryClient();
@@ -54,9 +56,10 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
   const [uploadingReading, setUploadingReading] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
   const sourcesQ = useQuery({ queryKey: ["reading-companion-sources", set.id], queryFn: () => listFn({ data: { setId: set.id } }), retry: false });
-  const sources = sourcesQ.data?.sources ?? [];
-  const sets = sourcesQ.data?.sets ?? [];
-  const lectures = sourcesQ.data?.lectures ?? [];
+  const sourceData = sourcesQ.data as { sources?: SourceOption[]; sets?: SetOption[]; lectures?: LectureOption[] } | undefined;
+  const sources = sourceData?.sources ?? [];
+  const sets = sourceData?.sets ?? [];
+  const lectures = useMemo(() => sourceData?.lectures ?? [], [sourceData?.lectures]);
   const availableLectures = useMemo(() => lectures.filter((l) => l.setId === sourceSetId && l.hasContent), [lectures, sourceSetId]);
   const selectedSourceKey = sourceKey === "all" ? undefined : sourceKey;
   const summaryIsStale = Boolean(summary) && summarySourceKey !== sourceKey;
@@ -75,7 +78,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
       const heading = line.match(/^#{1,3}\s+(.+?)\s*#*$/);
       if (heading) {
         if (currentBody.join("\n").trim() || sections.length === 0) sections.push({ title: currentTitle, body: currentBody.join("\n").trim() });
-        currentTitle = heading[1].replace(/\*\*/g, "").trim();
+        currentTitle = (heading[1] ?? "").replace(/\*\*/g, "").trim();
         currentBody = [];
       } else currentBody.push(line);
     }

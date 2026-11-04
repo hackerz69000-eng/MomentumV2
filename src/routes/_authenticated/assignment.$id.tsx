@@ -228,11 +228,11 @@ function Editor({ row }: { row: Row }) {
       await flush();
       const input = { id: row.id, step, question: step === "feedback" ? question : undefined };
       const prepared = await stepFn({ data: { ...input, prepareOnly: true } });
-      if (!("system" in prepared)) throw new Error("Couldn't prepare this assignment step.");
+      if (!("system" in prepared) || !prepared.system || !Array.isArray(prepared.messages)) throw new Error("Couldn't prepare this assignment step.");
       setStreamingText("");
       const generatedText = await streamAiText({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamingText((old) => old + chunk) });
       const r = await stepFn({ data: { ...input, generatedText } });
-      if (!("text" in r)) throw new Error("The assignment step could not be finalized.");
+      if (!("text" in r) || typeof r.text !== "string") throw new Error("The assignment step could not be finalized.");
       if (step === "feedback") {
         setChat((c) => [
           ...c,

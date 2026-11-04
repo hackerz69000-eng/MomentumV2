@@ -90,7 +90,6 @@ export function ActiveRecall({
       }
     } catch { /* Ignore invalid or unavailable local drafts. */ }
     setDraftReady(true);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey]);
 
   useEffect(() => {
@@ -141,7 +140,7 @@ export function ActiveRecall({
       const questions = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The Active Recall questions were not valid.");
         const seen = new Set<string>();
-        const parsed = (value as { questions: unknown[] }).questions.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ question: String(item.question ?? "").trim(), topic: String(item.topic ?? "General").slice(0, 60) })).filter((item) => { const key = item.question.toLowerCase().replace(/\s+/g, " "); if (!key || seen.has(key)) return false; seen.add(key); return true; }).slice(0, count);
+        const parsed = (value as { questions: unknown[] }).questions.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ question: String(item["question"] ?? "").trim(), topic: String(item["topic"] ?? "General").slice(0, 60) })).filter((item) => { const key = item.question.toLowerCase().replace(/\s+/g, " "); if (!key || seen.has(key)) return false; seen.add(key); return true; }).slice(0, count);
         if (!parsed.length) throw new Error("Could not generate questions. Please try again.");
         return parsed as RecallQuestion[];
       }});

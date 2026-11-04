@@ -143,7 +143,7 @@ export function Materials({ set }: { set: StudySet }) {
     setMsg("Rewriting your notes with the new material…");
     try {
       const prepared = await renotes({ data: { setId: set.id, prepareOnly: true } });
-      if ("notesPrompts" in prepared) {
+      if ("notesPrompts" in prepared && "cardsSystem" in prepared && "cardsMessages" in prepared && prepared.notesPrompts && prepared.cardsSystem && Array.isArray(prepared.cardsMessages)) {
         const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: (message) => setMsg(message), onDelta: (chunk) => setMsg((old) => `${old ?? ""}${chunk}`.slice(-900)) });
         await renotes({ data: { setId: set.id, generatedNotes: notes } });
       } else throw new Error("Couldn't prepare notes generation.");

@@ -35,6 +35,10 @@ Before deploying this version, run `drizzle/migrations/0011_reading_companion_so
 
 PDF extraction now preserves page headings where the PDF parser returns individual pages. Page citations are only shown when a page marker exists in the extracted text; the AI is instructed not to invent page numbers.
 
+## Optional image-based quiz questions
+
+In a Study Set quiz or exam, select **Include questions about lecture images** to ask questions grounded in saved PNG, JPEG, or WebP uploads, sampled PDF pages, or embedded Word and PowerPoint figures. The option is off by default. Momentum skips visuals it cannot extract, uses at most three visuals per quiz, and keeps image references with saved results so learners can review them later. Image data is not copied into saved quiz results. Configure `NVIDIA_VISION_MODEL` for visual question generation; the project default is listed in `.env.example`.
+
 ## Vercel deployment
 
 This repository is configured for Vercel/TanStack Start. The Vercel project should use the repository root with the default framework/build detection.

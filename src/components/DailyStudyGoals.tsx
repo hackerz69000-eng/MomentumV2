@@ -98,11 +98,10 @@ export function DailyStudyGoals({ className = "", onGoalCompleted }: DailyStudyG
           // completed study activities update the streak through their own flows.
           if (onGoalCompleted) onGoalCompleted(g);
         }
-        return {
-          ...g,
-          completed: nextState,
-          completedAt: nextState ? new Date().toISOString() : undefined,
-        };
+        const updated: StudyGoal = { ...g, completed: nextState };
+        if (nextState) updated.completedAt = new Date().toISOString();
+        else delete updated.completedAt;
+        return updated;
       }
       return g;
     });
@@ -125,7 +124,7 @@ export function DailyStudyGoals({ className = "", onGoalCompleted }: DailyStudyG
     const newGoal: StudyGoal = {
       id: "goal_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6),
       topic: newTopic.trim(),
-      chapter: newChapter.trim() || undefined,
+      ...(newChapter.trim() ? { chapter: newChapter.trim() } : {}),
       targetMinutes: parseInt(newMinutes, 10) || 20,
       completed: false,
       createdAt: new Date().toISOString(),

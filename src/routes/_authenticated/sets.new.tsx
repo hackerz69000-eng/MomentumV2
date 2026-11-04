@@ -147,12 +147,12 @@ function NewSet() {
 
       // Gemini generates the notes first, then flashcards from those notes.
       const prepared = await process({ data: { setId: targetId, prepareOnly: true } });
-      if ("notesPrompts" in prepared) {
+      if ("notesPrompts" in prepared && "cardsSystem" in prepared && "cardsMessages" in prepared && prepared.notesPrompts && prepared.cardsSystem && Array.isArray(prepared.cardsMessages)) {
         const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setProgressMsg, onDelta: (chunk) => setProgressMsg((old) => `${old}\n${chunk}`.slice(-900)) });
         setProgressMsg("Generating flashcards…");
         const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgressMsg((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
           if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");
-          const valid = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item.q ?? "").trim(), a: String(item.a ?? "").trim(), t: String(item.t ?? "").trim() })).filter((item) => item.q && item.a).slice(0, 20);
+          const valid = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim() })).filter((item) => item.q && item.a).slice(0, 20);
           if (!valid.length) throw new Error("No useful flashcards could be generated.");
           return valid;
         }});

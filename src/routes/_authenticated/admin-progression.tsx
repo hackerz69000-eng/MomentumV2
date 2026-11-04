@@ -11,7 +11,7 @@ export const Route = createFileRoute("/_authenticated/admin-progression")({ comp
 
 function AdminProgressionPage() {
   const { user } = useAuth();
-  const isAdmin = user?.app_metadata?.role === "admin";
+  const isAdmin = user?.app_metadata?.["role"] === "admin";
   const [userId, setUserId] = useState("");
   const [email, setEmail] = useState("");
   const [xp, setXp] = useState("0");
@@ -19,12 +19,13 @@ function AdminProgressionPage() {
   const [rewardOverrides, setRewardOverrides] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const adminRpc = supabase.rpc as unknown as (name: string, args: Record<string, unknown>) => PromiseLike<{ data: unknown; error: { message: string } | null }>;
 
   async function loadUser() {
     if (!userId.trim()) { toast.error("Enter the user's Supabase UUID first."); return; }
     setBusy(true); setLoaded(false);
     try {
-      const { data, error } = await supabase.rpc("admin_get_progression", { target_user_id: userId.trim() } as never);
+      const { data, error } = await adminRpc("admin_get_progression", { target_user_id: userId.trim() });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
       if (!row) throw new Error("No matching account was found.");
@@ -39,7 +40,7 @@ function AdminProgressionPage() {
     if (!Number.isSafeInteger(xpValue) || xpValue < 0 || xpValue > 1_000_000_000) { toast.error("XP must be a whole number from 0 to 1,000,000,000."); return; }
     setBusy(true);
     try {
-      const { error } = await supabase.rpc("admin_set_progression", { target_user_id: userId.trim(), new_xp: xpValue, new_tier_override: tierValue, new_reward_overrides: rewardOverrides } as never);
+      const { error } = await adminRpc("admin_set_progression", { target_user_id: userId.trim(), new_xp: xpValue, new_tier_override: tierValue, new_reward_overrides: rewardOverrides });
       if (error) throw error;
       toast.success("Progression saved. XP and tier changes apply on the learner's next sync or refresh.");
       setLoaded(true);

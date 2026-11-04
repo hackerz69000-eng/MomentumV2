@@ -31,7 +31,7 @@ export function ProgressionHub() {
       }
       localStorage.setItem(key, JSON.stringify(Array.from(seen).slice(-2000)));
       if (earned) addXp(earned);
-    } catch {}
+    } catch { /* Local XP storage can be unavailable in restricted browsers. */ }
   }, [rows]);
   const xp = getXp(); const lvl = levelFromXp(xp); const bar = xpIntoLevel(xp);
   const today = dayKey(new Date().toISOString());

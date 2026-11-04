@@ -104,7 +104,7 @@ function Editor({ row }: { row: Row }) {
       const { error: saveError } = await supabase.from("essay_grades").update({ ...f, title: f.title.trim() || "Untitled essay" }).eq("id", row.id);
       if (saveError) throw new Error("Couldn't save your latest essay changes before grading. Check your connection and try again.");
       const prepared = await gradeFn({ data: { id: row.id, prepareOnly: true } });
-      if (!("system" in prepared)) throw new Error("Couldn't prepare essay grading.");
+      if (!("system" in prepared) || !prepared.system || !Array.isArray(prepared.messages)) throw new Error("Couldn't prepare essay grading.");
       setStreamedGrade("");
       const generatedText = await streamAiText({ system: prepared.system, messages: prepared.messages, task: prepared.task, signal: controller.signal, onDelta: (chunk) => setStreamedGrade((old) => old + chunk) });
       const r = await gradeFn({ data: { id: row.id, generatedText } });

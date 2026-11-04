@@ -36,7 +36,7 @@ export function StudyAnalytics({ className = "" }: { className?: string }) {
   const data = useMemo(() => lastSevenDays(sessions), [sessions]);
   const totalMinutes = data.reduce((sum, d) => sum + d.minutes, 0);
   const totalHours = totalMinutes / 60;
-  const best = data.reduce((a, b) => (b.minutes > a.minutes ? b : a), data[0]);
+  const best = data.reduce((a, b) => (b.minutes > a.minutes ? b : a), data[0] ?? { minutes: 0, hours: 0, date: "", day: "" });
 
   return (
     <section className={`rounded-2xl p-5 md:p-6 bg-panel border border-line shadow-sm ${className}`}>

@@ -194,7 +194,7 @@ function SessionPicker({
         const generated = await streamAiJson({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setProgress((old) => `${old ?? "Writing your lesson…"} ${chunk}`.slice(-800)), validate: (value) => {
           if (!value || typeof value !== "object" || !Array.isArray((value as { sections?: unknown }).sections)) throw new Error("The audio lesson response was not valid.");
           const item = value as { title?: unknown; sections: unknown[] };
-          const sections = item.sections.filter((section): section is Record<string, unknown> => !!section && typeof section === "object").filter((section) => typeof section.title === "string" && !!section.title.trim() && typeof section.narration === "string" && !!section.narration.trim()).map((section) => ({ title: String(section.title).slice(0, 120), topic: String(section.topic ?? section.title).slice(0, 80), narration: String(section.narration).slice(0, 3900) })).slice(0, 12);
+          const sections = item.sections.filter((section): section is Record<string, unknown> => !!section && typeof section === "object").filter((section) => typeof section["title"] === "string" && !!section["title"].trim() && typeof section["narration"] === "string" && !!section["narration"].trim()).map((section) => ({ title: String(section["title"]).slice(0, 120), topic: String(section["topic"] ?? section["title"]).slice(0, 80), narration: String(section["narration"]).slice(0, 3900) })).slice(0, 12);
           if (sections.length < 2) throw new Error("The lesson outline was incomplete. Please try again.");
           return { title: String(item.title ?? `${set.name} audio lesson`).slice(0, 160), sections };
         }});
@@ -423,9 +423,11 @@ function Player({
       .eq("id", session.id);
     qc.invalidateQueries({ queryKey: ["audio-study", set.id] });
   };
+  const savePositionRef = useRef(savePosition);
+  savePositionRef.current = savePosition;
   useEffect(
     () => () => {
-      void savePosition(false);
+      void savePositionRef.current(false);
     },
     [],
   );

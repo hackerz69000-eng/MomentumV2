@@ -68,7 +68,6 @@ Electron transport chain results in the creation of a proton gradient across the
       expect(notes).toContain("## Overview & Foundations");
       expect(notes).toContain("## Key Terminology & Definitions");
       expect(notes).toContain("## Core Concepts");
-      expect(notes).toContain("## Comprehensive Class Review & Synthesis");
       expect(notes).toContain("## Key Takeaways");
       // Must cover key terms from the document
       expect(notes).toContain("Mitochondria");
@@ -117,8 +116,10 @@ Electron transport chain results in the creation of a proton gradient across the
 
   describe("RPG Levels Rank Mapping", () => {
     it("maps percentage scores across RPG tiers accurately", () => {
-      const novice = RPG_RANKS.find((r) => 5 >= r.minPct && 5 <= r.maxPct);
-      expect(novice?.title).toBe("Novice");
+      const beginner = RPG_RANKS.find((r) => 0 >= r.minPct && 0 <= r.maxPct);
+      expect(beginner?.title).toBe("Rookie");
+      const pageTurner = RPG_RANKS.find((r) => 5 >= r.minPct && 5 <= r.maxPct);
+      expect(pageTurner?.title).toBe("Page Turner");
 
       expect(RPG_RANKS).toHaveLength(50);
       const tier28 = RPG_RANKS.find((r) => 55 >= r.minPct && 55 <= r.maxPct);

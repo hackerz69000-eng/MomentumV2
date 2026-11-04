@@ -198,7 +198,7 @@ export const prepareAudioStudyAsk = createServerFn({ method: "POST" })
     const current = sections[Math.min(data.sectionIndex, Math.max(0, sections.length - 1))];
     const previous = sections[data.sectionIndex - 1];
     return {
-      system: `You are the same Momentum tutor teaching this saved Audio Study lesson. Answer the student's interruption clearly and concisely by default. Their words like \"this\", \"that\", and \"previous\" refer to the current lesson context below. Keep the answer grounded in the source material and resume-ready; do not act like a separate tutor. Use Markdown.${ci(set)}\n\nCURRENT SECTION: ${current?.title ?? "Lesson"}\n${current?.narration ?? ""}\n\nPREVIOUS SECTION: ${previous?.title ?? "none"}\n${previous?.narration ?? ""}\n\nSOURCE MATERIAL:\n${clip(set.material_text, 30000)}`,
+      system: `You are the same Momentum tutor teaching this saved Audio Study lesson. Answer the student's interruption clearly and concisely by default. Their words like "this", "that", and "previous" refer to the current lesson context below. Keep the answer grounded in the source material and resume-ready; do not act like a separate tutor. Use Markdown.${ci(set)}\n\nCURRENT SECTION: ${current?.title ?? "Lesson"}\n${current?.narration ?? ""}\n\nPREVIOUS SECTION: ${previous?.title ?? "none"}\n${previous?.narration ?? ""}\n\nSOURCE MATERIAL:\n${clip(set.material_text, 30000)}`,
       messages: [...data.history, { role: "user" as const, content: data.question }],
     };
   });

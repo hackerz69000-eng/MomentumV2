@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { aiImage, parseJson, clip, splitTextIntoChunks } from "./ai.server";
 import { setStats, type Attempt, type AttemptResult, type Flashcard } from "./stats";
-import { activityStats } from "./activity";
+import { activityStats, dayKey } from "./activity";
 import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server";
 
 const lectureIdField = z.string().uuid().optional();
@@ -102,7 +102,7 @@ async function mapWithConcurrency<T, R>(
       while (true) {
         const index = nextIndex++;
         if (index >= items.length) return;
-        results[index] = await worker(items[index], index);
+        results[index] = await worker(items[index]!, index);
       }
     }),
   );
@@ -124,7 +124,7 @@ function prepareNotesStreamPrompts(set: { name: string; subject: string; materia
         messages: [{ role: "user" as const, content: `Study set: ${set.name} (${set.subject || "general"})\nSOURCE PART ${index + 1}/${chunks.length}:\n${chunk}` }],
       }));
   if (!hasReadings) return { header, prompts };
-  const readingChunks = splitTextIntoChunks(separated.readings, 12000);
+  const readingChunks = splitTextIntoChunks(separated.readings ?? "", 12000);
   return {
     header,
     prompts,
@@ -138,6 +138,65 @@ function prepareNotesStreamPrompts(set: { name: string; subject: string; materia
 }
 
 const idInput = (d: unknown) => z.object({ setId: z.string().min(1) }).parse(d);
+
+const EXPLAIN_MODES: Record<string, string> = {
+  simple: "Explain the passage in clear, plain language, defining important terms.",
+  university: "Explain the passage at university level, preserving precise terminology and reasoning.",
+  example: "Explain the passage using a concrete example supported by the study material.",
+  detail: "Expand the passage step by step, clarifying how the details connect.",
+  summary: "Summarize the passage into its essential ideas without losing important qualifications.",
+  analogy: "Use a simple analogy to clarify the passage, and explain where the analogy stops matching.",
+  compare: "Compare the key ideas in the passage and make their differences explicit.",
+  mistakes: "Point out likely misunderstandings of this passage and correct them using the material.",
+  practice: "Create a few short practice questions from this passage, then give their answers separately.",
+};
+
+function recentHistory(acts: Array<{ kind: string; count: number; created_at: string; set_id?: string | null; score?: number | null; total?: number | null }>, sets: Array<{ id: string; name: string }>, tzOffset: number) {
+  if (!acts.length) return "No study activity recorded yet.";
+  const names = new Map(sets.map((set) => [set.id, set.name]));
+  return acts.slice(0, 40).map((act) => {
+    const date = dayKey(act.created_at, tzOffset);
+    const setName = act.set_id ? names.get(act.set_id) : undefined;
+    const score = typeof act.score === "number" && typeof act.total === "number" ? ` — ${act.score}/${act.total}` : "";
+    return `${date}: ${act.kind} (${act.count})${setName ? ` — ${setName}` : ""}${score}`;
+  }).join("\n");
+}
+
+async function coachData(supabase: any, userId: string, setId: string | null, today: string, tzOffset: number) {
+  const [activityRes, setsRes, cardsRes, attemptsRes, mistakesRes] = await Promise.all([
+    supabase.from("study_activity").select("kind,count,created_at,set_id,score,total").eq("user_id", userId).order("created_at", { ascending: false }).limit(500),
+    supabase.from("study_sets").select("id,name,subject,exam_date,minutes_per_day").eq("user_id", userId).order("updated_at", { ascending: false }).limit(100),
+    supabase.from("flashcards").select("*").eq("user_id", userId).limit(5000),
+    supabase.from("quiz_attempts").select("*").eq("user_id", userId).order("created_at", { ascending: false }).limit(500),
+    supabase.from("mistakes").select("set_id,topic,wrong_count,status").eq("user_id", userId).limit(1000),
+  ]);
+  if (activityRes.error || setsRes.error || cardsRes.error || attemptsRes.error || mistakesRes.error)
+    throw new Error("Couldn't load your study progress for the Coach.");
+  const allSets = setsRes.data ?? [];
+  const selectedSets = setId ? allSets.filter((set: { id: string }) => set.id === setId) : allSets;
+  if (setId && !selectedSets.length) throw new Error("Study set not found.");
+  const cards = cardsRes.data ?? [];
+  const attempts = attemptsRes.data ?? [];
+  const mistakes = mistakesRes.data ?? [];
+  const act = activityStats(activityRes.data ?? [], tzOffset);
+  const summaries = selectedSets.map((set: { id: string; name: string; subject: string | null; exam_date: string | null; minutes_per_day: number | null }) => {
+    const stats = setStats(cards.filter((card: { set_id: string }) => card.set_id === set.id), attempts.filter((attempt: { set_id: string }) => attempt.set_id === set.id), mistakes.filter((mistake: { set_id: string }) => mistake.set_id === set.id));
+    const dueInDays = set.exam_date ? Math.round((Date.parse(set.exam_date) - Date.parse(today)) / 86400000) : null;
+    const weak = stats.weak.slice(0, 5).map((topic) => `${topic.topic} (${topic.accuracy}% accuracy)`).join(", ") || "not enough performance data yet";
+    return `Study Set: ${set.name} (${set.subject || "General"})${set.exam_date ? `; exam date ${set.exam_date} (${dueInDays} days away)` : "; no exam date set"}${set.minutes_per_day ? `; daily study target ${set.minutes_per_day} minutes` : ""}. Readiness: ${stats.readiness ?? "not estimated"}. Flashcards due: ${stats.due}; mastery: ${stats.masteryPct}%; quiz average: ${stats.quizAvg ?? "no attempts"}; open mistakes: ${stats.openMistakes} (${stats.repeatedMistakes} repeated). Topics to review: ${weak}.`;
+  });
+  const selectedIdSet = new Set(selectedSets.map((set: { id: string }) => set.id));
+  const selectedCards = cards.filter((card: { set_id: string }) => selectedIdSet.has(card.set_id));
+  const selectedAttempts = attempts.filter((attempt: { set_id: string }) => selectedIdSet.has(attempt.set_id));
+  const selectedMistakes = mistakes.filter((mistake: { set_id: string }) => selectedIdSet.has(mistake.set_id));
+  const currentStats = setStats(selectedCards, selectedAttempts, selectedMistakes);
+  return {
+    act,
+    summaries,
+    history: recentHistory(activityRes.data ?? [], allSets, tzOffset),
+    currentStats,
+  };
+}
 
 export const processSet = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -169,13 +228,11 @@ export const processSet = createServerFn({ method: "POST" })
 
       // Generate everything before replacing saved content, so an AI failure never
       // destroys the student's existing notes or cards.
-      let notes: string;
-      let cards: { q: string; a: string; t: string }[];
       if (!data.generatedNotes || !data.generatedCards) {
         throw new Error("Study Set processing requires completed browser-streamed notes and flashcards. No server-side generation fallback is available.");
       }
-      notes = data.generatedNotes;
-      cards = data.generatedCards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "" }));
+      const notes = data.generatedNotes;
+      const cards = data.generatedCards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "" }));
       const { data: oldCards, error: readError } = await supabase.from("flashcards").select("*").eq("set_id", set.id);
       if (readError) throw new Error("Couldn't safely replace the existing flashcards.");
       if (oldCards?.length) {
@@ -286,6 +343,13 @@ export type QuizQuestion = {
   explanation: string;
   topic: string;
   setId?: string;
+  imageIndex?: number;
+  imageUrl?: string;
+  imageName?: string;
+  imagePath?: string;
+  imageKind?: "image" | "pdf" | "pptx" | "docx";
+  imageSourceIndex?: number;
+  imageDataUrl?: string;
 };
 
 const DIFF = z.enum(["easy", "medium", "hard", "mixed"]);
@@ -339,9 +403,10 @@ function parseQuestions(text: string): QuizQuestion[] {
       options: type === "short" ? [] : options,
       answer: type === "short" ? -1 : answer,
       // For objective questions, the option indexed as correct is the single source of truth.
-      answerText: type === "short" ? answerText : options[answer],
+      answerText: type === "short" ? answerText : options[answer]!,
       explanation,
       topic: typeof q.topic === "string" ? q.topic.trim().slice(0, 60) || "General" : "General",
+      ...(Number.isInteger(q.imageIndex) && Number(q.imageIndex) >= 0 && Number(q.imageIndex) < 3 ? { imageIndex: Number(q.imageIndex) } : {}),
     });
   }
   return out;
@@ -380,6 +445,7 @@ export const generateQuiz = createServerFn({ method: "POST" })
           .max(30)
           .optional(),
         lectureId: lectureIdField,
+        includeImages: z.boolean().optional(),
         prepareOnly: z.boolean().optional(),
         generatedText: z.string().min(20).max(100000).optional(),
       })
@@ -413,7 +479,8 @@ export const generateQuiz = createServerFn({ method: "POST" })
         const already = priorParts.get(partIndex) ?? [];
         const batchCount = Math.min(5, Math.max(0, (partTargets[partIndex] ?? 0) - already.length));
         if (batchCount < 1) return [];
-        const system = `You write ${data.exam ? "realistic practice exams" : "quizzes"} from study material. Return ONLY JSON: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"concise explanation of why the answer is right and the concept tested","topic":"short topic name (2-4 words)"}]}. Generate exactly ${batchCount} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}${data.difficulty === "mixed" ? " (blend easy, medium and hard)" : ""}. For mc/tf, answer is the zero-based correct option. For short, options must be [] and answer -1, with the model answer in answerText. Only use this source part. Vary the concepts tested. ${data.questionGuidance?.trim() ? `Student guidance: ${data.questionGuidance.trim().slice(0, 2000)}.` : ""}${QUALITY_RULES}${effectiveAvoid.length ? `\nDo not repeat recent or already generated questions:\n- ${effectiveAvoid.slice(0, 80).join("\n- ")}` : ""}${planText}${retest.length ? `\nMistake Bank concepts to retest with fresh wording:\n- ${retest.join("\n- ")}` : ""}${ci(set)}`;
+        const imageRules = data.includeImages ? ` The user also supplied up to three actual lecture images in this request. You may create image-based questions only when the visual is clear and supports a reliable answer. Such a question MUST include imageIndex (0-based index matching the supplied image order); include the image's source filename in the question's context where useful. Questions may test visible labels, relationships, axes, trends, or processes. If a visual is unclear, decorative, or irrelevant, do not use it. Never invent details. Return questions based on the source material and images together.` : "";
+        const system = `You write ${data.exam ? "realistic practice exams" : "quizzes"} from study material. Return ONLY JSON: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"concise explanation of why the answer is right and the concept tested","topic":"short topic name (2-4 words)"}]}. Generate exactly ${batchCount} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}${data.difficulty === "mixed" ? " (blend easy, medium and hard)" : ""}. For mc/tf, answer is the zero-based correct option. For short, options must be [] and answer -1, with the model answer in answerText. Only use this source part. Vary the concepts tested. ${data.questionGuidance?.trim() ? `Student guidance: ${data.questionGuidance.trim().slice(0, 2000)}.` : ""}${imageRules}${QUALITY_RULES}${effectiveAvoid.length ? `\nDo not repeat recent or already generated questions:\n- ${effectiveAvoid.slice(0, 80).join("\n- ")}` : ""}${planText}${retest.length ? `\nMistake Bank concepts to retest with fresh wording:\n- ${retest.join("\n- ")}` : ""}${ci(set)}`;
         return [{ partIndex, batchCount, system, messages: [{ role: "user" as const, content: `STUDY SET: ${set.name}\nMATERIAL PART ${partIndex + 1}/${sourceParts.length}:\n${part}` }] }];
       });
       return { prompts, complete: prompts.length === 0 };
@@ -629,7 +696,7 @@ export const prepareCoachStream = createServerFn({ method: "POST" })
     tzOffset: z.number().int().min(-900).max(900),
   }).parse(d))
   .handler(async ({ data, context }) => {
-    const { act, summaries, history } = await coachData(context.supabase, data.setId, data.today, data.tzOffset);
+    const { act, summaries, history } = await coachData(context.supabase, context.userId, data.setId, data.today, data.tzOffset);
     const system = `You are Momentum Coach, a personal study planner (not a subject tutor — don't teach content; the separate AI Tutor does that). Today is ${data.today}.
 Use the student's data below to give specific, prioritized recommendations. Prioritize upcoming exams and weak topics over studying everything equally. Recommend concrete actions with minutes, using the app's tools by name: "Review due Flashcards", "Active Recall (N questions)", "Adaptive Quiz", "Practice Exam", "Comprehensive Exam", "Study Guide — Weak Areas section", "Mistake Bank (review N mistakes)", "Audio Study", "Notes", "AI Tutor", "Ask Your Materials", "Lecture Mode". Recommend Audio Study when a student needs a guided explanation or has limited hands-on study time; recommend its Weak Topics mode only when weak-topic evidence exists. Concepts the student has missed repeatedly (Mistake Bank) get top priority. Name the study set and topic for each action. Keep it short: a brief sentence of reasoning, then a numbered plan. Test readiness is only an estimate — say so if you mention it. Use Markdown.
 
@@ -672,6 +739,7 @@ export const generatePlan = createServerFn({ method: "POST" })
         setId: z.string().min(1).max(200),
         examDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
         today: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        tzOffset: z.number().int().min(-900).max(900).optional(),
         minutesPerDay: z.number().int().min(10).max(600),
         weakTopics: z.array(z.string()).max(20),
         recent: z.string().max(2000).optional(),
@@ -697,7 +765,7 @@ export const generatePlan = createServerFn({ method: "POST" })
       .order("created_at", { ascending: false })
       .limit(200);
     const recent = acts?.length
-      ? recentHistory(acts, [{ id: set.id, name: set.name }])
+      ? recentHistory(acts, [{ id: set.id, name: set.name }], data.tzOffset ?? new Date().getTimezoneOffset())
       : (data.recent ?? "");
     const planMistakes = mistakeLines(await openMistakes(context.supabase, set.id, 10));
     const system = `You create simple, realistic study schedules. Return ONLY JSON: {"days":[{"date":"YYYY-MM-DD","title":"short focus","tasks":["task (~minutes)"]}]}
@@ -851,7 +919,7 @@ export const planSession = createServerFn({ method: "POST" })
       summaries,
       history,
       currentStats: st,
-    } = await coachData(context.supabase, data.setId, data.today, data.tzOffset);
+    } = await coachData(context.supabase, context.userId, data.setId, data.today, data.tzOffset);
     const system = `You are Momentum Coach building ONE focused study session for the set "${set.name}" lasting about ${data.minutes} minutes. Today is ${data.today}.
 Decide what's most useful from the data. Guidelines: if flashcards are due, start with "flashcards"; weak topics → "recall" on those topics; a topic missed repeatedly → "guide" (read its Weak Areas / explanation) followed by "recall" on it; exam within ~7 days → include an "exam" step (short practice exam); use "audio" when a guided explanation would help, especially for difficult or connected concepts; doing well (readiness ≥ 75) → harder difficulty and exam-style practice; 15 minutes → 1-2 short focused steps; 30 → 2-3 steps; 60+ → 3-5 mixed steps. "adaptive" = adaptive quiz. "mistakes" = retry questions from the Mistake Bank — include it early whenever the set has mistakes that need review, especially repeated ones. Step minutes should add up to roughly ${data.minutes}.
 Counts: mistakes = how many to retry (3-10, ≤ open mistakes), flashcards = max cards to review (≤ due count when due), recall = questions (3-10), adaptive = questions (5-15), exam = questions (10-20), guide = 0.

@@ -13,6 +13,7 @@ export const ACCEPT = [
 ].join(",");
 // Per-file client-side reading upload cap. Keep UI copy and validation aligned.
 export const MAX_BYTES = 100 * 1024 * 1024;
+const MAX_EMBEDDED_IMAGE_BYTES = 16 * 1024 * 1024;
 
 export function fileKind(f: File): "pdf" | "docx" | "pptx" | "txt" | "image" | null {
   // Prefer the filename extension as browser MIME types are sometimes blank or incorrect,
@@ -37,12 +38,18 @@ function readDataUrl(blob: Blob) {
 
 async function shrinkImage(file: File): Promise<string> {
   const bmp = await createImageBitmap(file);
-  const scale = Math.min(1, 2000 / Math.max(bmp.width, bmp.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bmp.width * scale);
-  canvas.height = Math.round(bmp.height * scale);
-  canvas.getContext("2d")!.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL("image/jpeg", 0.85);
+  try {
+    const scale = Math.min(1, 2000 / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bmp.width * scale));
+    canvas.height = Math.max(1, Math.round(bmp.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("This browser couldn't prepare the lecture image.");
+    context.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.85);
+  } finally {
+    bmp.close();
+  }
 }
 
 function meaningfulWordCount(text: string): number {
@@ -117,7 +124,13 @@ async function extractPdf(file: File): Promise<string> {
 
 async function extractDocx(file: File) {
   const mammoth = await import("mammoth");
-  const { value } = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+  const arrayBuffer = await file.arrayBuffer();
+  // Mammoth's browser build accepts arrayBuffer while its Node build accepts
+  // buffer. Supplying both lets bundlers and test runners resolve either build.
+  const { value } = await mammoth.extractRawText({
+    arrayBuffer,
+    buffer: new Uint8Array(arrayBuffer),
+  } as Parameters<typeof mammoth.extractRawText>[0]);
   return value;
 }
 
@@ -270,6 +283,125 @@ async function renderPdfPages(file: File, maxPages = 20, sampleAcrossDocument = 
     canvas.height = 0;
   }
   return pages;
+}
+
+export type QuizVisual = { data: string; name: string; kind: "image" | "pdf" | "pptx" | "docx"; sourceIndex: number };
+
+async function compactQuizVisual(data: string): Promise<string> {
+  const response = await fetch(data);
+  const bitmap = await createImageBitmap(await response.blob());
+  const scale = Math.min(1, 1400 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("This browser couldn't prepare the lecture visual.");
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return canvas.toDataURL("image/jpeg", 0.68);
+}
+
+/** Extract a small, reproducible set of real visuals from a saved upload for optional image quizzes. */
+export async function extractQuizVisuals(file: File, limit = 3): Promise<QuizVisual[]> {
+  const kind = fileKind(file);
+  if (kind === "image") return [{ data: await compactQuizVisual(await shrinkImage(file)), name: file.name, kind: "image", sourceIndex: 0 }];
+  if (kind === "pdf") {
+    if (file.size > MAX_BYTES) return [];
+    const pages = await renderPdfPages(file, Math.max(1, Math.min(limit, 3)), true);
+    const visuals: QuizVisual[] = [];
+    for (const page of pages) visuals.push({ data: await compactQuizVisual(page.data), name: `${file.name} — page ${page.page}`, kind: "pdf", sourceIndex: page.page });
+    return visuals;
+  }
+  if (kind === "docx") {
+    if (file.size > MAX_BYTES) return [];
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(await file.arrayBuffer());
+    const documentFile = zip.file("word/document.xml");
+    const relsFile = zip.file("word/_rels/document.xml.rels");
+    if (!documentFile || !relsFile) return [];
+    const document = new DOMParser().parseFromString(await documentFile.async("string"), "application/xml");
+    const relationships = new DOMParser().parseFromString(await relsFile.async("string"), "application/xml");
+    const imageTargets = new Map(Array.from(relationships.getElementsByTagName("Relationship"))
+      .filter((rel) => (rel.getAttribute("Type") ?? "").endsWith("/image"))
+      .map((rel) => [rel.getAttribute("Id") ?? "", rel.getAttribute("Target") ?? ""]));
+    const referenced = Array.from(document.getElementsByTagNameNS("http://schemas.openxmlformats.org/drawingml/2006/main", "blip"))
+      .map((blip) => blip.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed"))
+      .filter((id): id is string => Boolean(id))
+      .map((id) => imageTargets.get(id) ?? "")
+      .filter((target) => Boolean(target) && !target.startsWith("http"))
+      .map((target) => target.startsWith("/") ? target.slice(1) : `word/${target}`)
+      .map((path) => path.replace(/\\/g, "/").split("/").reduce<string[]>((parts, part) => {
+        if (!part || part === ".") return parts;
+        if (part === "..") parts.pop(); else parts.push(part);
+        return parts;
+      }, []).join("/"))
+      .filter((path, index, paths) => path.startsWith("word/media/") && paths.indexOf(path) === index)
+      .slice(0, Math.max(0, Math.min(limit, 10)));
+    const visuals: QuizVisual[] = [];
+    for (const [index, path] of referenced.entries()) {
+      const image = zip.file(path);
+      const ext = path.split(".").pop()?.toLowerCase() ?? "";
+      if (!image || !["png", "jpg", "jpeg", "webp"].includes(ext)) continue;
+      const estimatedSize = (image as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize;
+      if (estimatedSize != null && estimatedSize > MAX_EMBEDDED_IMAGE_BYTES) continue;
+      const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+      try {
+        const blob = await image.async("blob");
+        const visualFile = new File([blob], `${file.name}-image-${index + 1}.${ext}`, { type: mime });
+        const data = await compactQuizVisual(await shrinkImage(visualFile));
+        visuals.push({ data, name: `${file.name} — image ${index + 1}`, kind: "docx", sourceIndex: visuals.length });
+      } catch (error) {
+        console.warn(`Could not prepare an embedded visual from ${file.name}.`, error);
+      }
+    }
+    return visuals;
+  }
+  if (kind !== "pptx") return [];
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const slides = Object.keys(zip.files)
+    .filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
+    .sort((a, b) => Number(a.match(/\d+/)![0]) - Number(b.match(/\d+/)![0]));
+  const visuals: QuizVisual[] = [];
+  let sourceIndex = 0;
+  for (const [slideIndex, path] of slides.entries()) {
+    if (slideIndex >= 40 || visuals.length >= limit) break;
+    const slideNumber = path.match(/slide(\d+)\.xml$/)?.[1];
+    if (!slideNumber) continue;
+    try {
+      const slideXml = await zip.file(path)!.async("string");
+      const slide = new DOMParser().parseFromString(slideXml, "application/xml");
+      const relsPath = `ppt/slides/_rels/slide${slideNumber}.xml.rels`;
+      const relsFile = zip.file(relsPath);
+      if (!relsFile) continue;
+      const rels = new DOMParser().parseFromString(await relsFile.async("string"), "application/xml");
+      const byId = new Map(Array.from(rels.getElementsByTagName("Relationship")).map((rel) => [rel.getAttribute("Id") ?? "", rel.getAttribute("Target") ?? ""]));
+      for (const blip of Array.from(slide.getElementsByTagName("a:blip")).slice(0, 3)) {
+        if (visuals.length >= limit) break;
+        const relId = blip.getAttribute("r:embed") ?? blip.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed");
+        const target = relId ? byId.get(relId) : "";
+        if (!target || target.startsWith("http")) continue;
+        const imagePath = (`ppt/slides/${target}`).replace(/\\/g, "/").split("/").reduce<string[]>((parts, part) => {
+          if (!part || part === ".") return parts;
+          if (part === "..") parts.pop(); else parts.push(part);
+          return parts;
+        }, []).join("/");
+        const imageFile = zip.file(imagePath);
+        const ext = imagePath.split(".").pop()?.toLowerCase() ?? "";
+        if (!imageFile || !/^ppt\/media\//.test(imagePath) || !["png", "jpg", "jpeg", "webp"].includes(ext)) continue;
+        const estimatedSize = (imageFile as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize;
+        if (estimatedSize != null && estimatedSize > MAX_EMBEDDED_IMAGE_BYTES) continue;
+        const currentIndex = sourceIndex++;
+        const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+        const imageBlob = await imageFile.async("blob");
+        const imageData = await compactQuizVisual(await shrinkImage(new File([imageBlob], `${file.name}-slide-${slideNumber}.${ext}`, { type: mime })));
+        visuals.push({ data: imageData, name: `${file.name} — slide ${slideNumber}`, kind: "pptx", sourceIndex: currentIndex });
+      }
+    } catch (error) {
+      console.warn(`Could not extract an embedded visual from slide ${slideNumber}.`, error);
+    }
+  }
+  return visuals;
 }
 
 export async function extractFile(f: File, ocr: Ocr, onMsg: (m: string) => void, lectureContext = "", includeVisualDescriptions = true): Promise<string> {

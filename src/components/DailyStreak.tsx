@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Flame, CheckCircle2, Award, Calendar } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { getFreezes, useFreeze } from "@/lib/gamification";
+import { getFreezes, consumeFreeze } from "@/lib/gamification";
 
 const STREAK_KEY = "momentum_streak_data";
 
@@ -115,7 +115,7 @@ export function recordStudySessionCompletion(durationMinutes = 15, topicName = "
     } else {
       // Automatically protect a streak when the student has earned a freeze.
       // The missed day is treated as protected, then today's study continues the streak.
-      if (getFreezes().available > 0 && useFreeze()) {
+      if (getFreezes().available > 0 && consumeFreeze()) {
         nextStreak = prev.currentStreak + 1;
       } else {
         nextStreak = 1;

@@ -38,18 +38,18 @@ function parseArray(raw: unknown): string[] {
   } catch { return []; }
 }
 function mergeStreak(local: JsonRecord, remote: JsonRecord): JsonRecord {
-  const localDate = String(local.lastStudyDate ?? "");
-  const remoteDate = String(remote.lastStudyDate ?? "");
+  const localDate = String(local["lastStudyDate"] ?? "");
+  const remoteDate = String(remote["lastStudyDate"] ?? "");
   const newest = localDate >= remoteDate ? local : remote;
   return {
     ...newest,
-    currentStreak: Math.max(number(local.currentStreak), number(remote.currentStreak)),
-    longestStreak: Math.max(number(local.longestStreak), number(remote.longestStreak)),
-    totalSessionsCompleted: Math.max(number(local.totalSessionsCompleted), number(remote.totalSessionsCompleted)),
-    totalStudyMinutes: Math.max(number(local.totalStudyMinutes), number(remote.totalStudyMinutes)),
-    todayActivities: String(local.activityDate ?? "") === String(remote.activityDate ?? "")
-      ? [...new Set([...(Array.isArray(local.todayActivities) ? local.todayActivities : []), ...(Array.isArray(remote.todayActivities) ? remote.todayActivities : [])].filter((x): x is string => typeof x === "string"))]
-      : (Array.isArray(newest.todayActivities) ? newest.todayActivities.filter((x): x is string => typeof x === "string") : []),
+    currentStreak: Math.max(number(local["currentStreak"]), number(remote["currentStreak"])),
+    longestStreak: Math.max(number(local["longestStreak"]), number(remote["longestStreak"])),
+    totalSessionsCompleted: Math.max(number(local["totalSessionsCompleted"]), number(remote["totalSessionsCompleted"])),
+    totalStudyMinutes: Math.max(number(local["totalStudyMinutes"]), number(remote["totalStudyMinutes"])),
+    todayActivities: String(local["activityDate"] ?? "") === String(remote["activityDate"] ?? "")
+      ? [...new Set([...(Array.isArray(local["todayActivities"]) ? local["todayActivities"] : []), ...(Array.isArray(remote["todayActivities"]) ? remote["todayActivities"] : [])].filter((x): x is string => typeof x === "string"))]
+      : (Array.isArray(newest["todayActivities"]) ? newest["todayActivities"].filter((x): x is string => typeof x === "string") : []),
   };
 }
 
@@ -69,25 +69,25 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
   // not the browser clock. Client/server clock skew previously caused admin XP
   // edits to be ignored or overwritten by stale local XP.
   const previousRemoteUpdatedAt = Number(localStorage.getItem(LAST_REMOTE_UPDATED_KEY) ?? 0);
-  const remoteUpdatedAt = Date.parse(String(remote.updated_at ?? "")) || 0;
+  const remoteUpdatedAt = Date.parse(String(remote["updated_at"] ?? "")) || 0;
   const remoteWasEditedSinceSync = previousRemoteUpdatedAt > 0 && remoteUpdatedAt > previousRemoteUpdatedAt;
-  const streak = mergeStreak(local.streak_data, (remote.streak_data as JsonRecord | null) ?? {});
+  const streak = mergeStreak(local.streak_data, (remote["streak_data"] as JsonRecord | null) ?? {});
   const freezesLocal = local.freeze_data;
-  const freezesRemote = (remote.freeze_data as JsonRecord | null) ?? {};
+  const freezesRemote = (remote["freeze_data"] as JsonRecord | null) ?? {};
   const freezeData = {
-    available: Math.max(0, number(freezesLocal.available), number(freezesRemote.available)),
-    used: Math.max(0, number(freezesLocal.used), number(freezesRemote.used)),
+    available: Math.max(0, number(freezesLocal["available"]), number(freezesRemote["available"])),
+    used: Math.max(0, number(freezesLocal["used"]), number(freezesRemote["used"])),
   };
   const merged = {
-    xp: remoteWasEditedSinceSync ? number(remote.xp) : Math.max(local.xp, number(remote.xp)),
+    xp: remoteWasEditedSinceSync ? number(remote["xp"]) : Math.max(local.xp, number(remote["xp"])),
     streak_data: streak,
     freeze_data: freezeData,
-    reward_announcements: [...new Set([...local.reward_announcements, ...parseArray(remote.reward_announcements)])],
-    reward_theme: typeof remote.reward_theme === "string" ? remote.reward_theme : local.reward_theme,
-    activity_ids: [...new Set([...local.activity_ids, ...parseArray(remote.activity_ids)])].slice(-5000),
-    tier_override: data ? (remote.tier_override == null ? null : String(remote.tier_override)) : local.tier_override,
-    tier_override_revision: data ? number(remote.tier_override_revision) : number(localStorage.getItem(TIER_OVERRIDE_REVISION_KEY)),
-    reward_overrides: parseArray(remote.reward_overrides),
+    reward_announcements: [...new Set([...local.reward_announcements, ...parseArray(remote["reward_announcements"])])],
+    reward_theme: typeof remote["reward_theme"] === "string" ? remote["reward_theme"] : local.reward_theme,
+    activity_ids: [...new Set([...local.activity_ids, ...parseArray(remote["activity_ids"])])].slice(-5000),
+    tier_override: data ? (remote["tier_override"] == null ? null : String(remote["tier_override"])) : local.tier_override,
+    tier_override_revision: data ? number(remote["tier_override_revision"]) : number(localStorage.getItem(TIER_OVERRIDE_REVISION_KEY)),
+    reward_overrides: parseArray(remote["reward_overrides"]),
   };
   setXpFromCloud(merged.xp);
   localStorage.setItem(STREAK_KEY, JSON.stringify(merged.streak_data));

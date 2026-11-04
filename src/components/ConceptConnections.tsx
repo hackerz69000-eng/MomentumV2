@@ -70,12 +70,12 @@ export function ConceptConnections({ sets }: { sets: SetWithCards[] }) {
       const next = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedMap((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object" || !Array.isArray((value as { concepts?: unknown }).concepts)) throw new Error("The concept map response was not valid.");
         const raw = (value as { concepts: unknown[] }).concepts;
-        const names = new Set(raw.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => String(item.name ?? "").trim()).filter(Boolean));
+        const names = new Set(raw.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => String(item["name"] ?? "").trim()).filter(Boolean));
         const concepts = raw.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({
-          name: String(item.name ?? "").trim().slice(0, 100),
-          summary: String(item.summary ?? "").trim().slice(0, 300),
-          importance: ["high", "medium", "low"].includes(String(item.importance)) ? String(item.importance) : "medium",
-          connections: Array.isArray(item.connections) ? item.connections.filter((link): link is Record<string, unknown> => !!link && typeof link === "object").map((link) => ({ to: String(link.to ?? "").trim(), relationship: String(link.relationship ?? "related to").trim().slice(0, 60) })).filter((link) => names.has(link.to)).slice(0, 5) : [],
+          name: String(item["name"] ?? "").trim().slice(0, 100),
+          summary: String(item["summary"] ?? "").trim().slice(0, 300),
+          importance: ["high", "medium", "low"].includes(String(item["importance"])) ? String(item["importance"]) : "medium",
+          connections: Array.isArray(item["connections"]) ? item["connections"].filter((link): link is Record<string, unknown> => !!link && typeof link === "object").map((link) => ({ to: String(link["to"] ?? "").trim(), relationship: String(link["relationship"] ?? "related to").trim().slice(0, 60) })).filter((link) => names.has(link.to)).slice(0, 5) : [],
         })).filter((item) => item.name && item.summary).slice(0, 10);
         if (concepts.length < 3) throw new Error("Momentum couldn't find enough supported concept connections. Try again after your study set finishes processing.");
         return concepts as Concept[];

@@ -153,7 +153,7 @@ export function Notes({ set }: { set: StudySet }) {
     setBusy(true);
     try {
       const prepared = await regen({ data: { setId: set.id, prepareOnly: true } });
-      if ("notesPrompts" in prepared) {
+      if ("notesPrompts" in prepared && prepared.notesPrompts) {
         setStreamedNotes("");
         const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setStreamedNotes, onDelta: (chunk) => setStreamedNotes((old) => `${old}${chunk}`) });
         await regen({ data: { setId: set.id, generatedNotes: notes } });

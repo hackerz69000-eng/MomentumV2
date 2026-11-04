@@ -6,8 +6,8 @@ import { createClientOnlyFn } from "@tanstack/react-start";
 type StreamTextOptions = Parameters<typeof import("./ai-stream.client").streamAiText>[0];
 type StreamJsonOptions<T> = {
   system: string;
-  messages: { role: "user" | "assistant"; content: string }[];
-  task?: "fast" | "reasoning";
+  messages: { role: "user" | "assistant"; content: string | import("./ai-stream.client").StreamContentPart[] }[];
+  task?: "fast" | "reasoning" | "vision";
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
   validate: (value: unknown) => T;

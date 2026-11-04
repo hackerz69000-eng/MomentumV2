@@ -314,7 +314,11 @@ function TurnitinSubmissionPage() {
     const name = sourceFile.name.toLowerCase();
     if (name.endsWith(".txt") || name.endsWith(".md") || name.endsWith(".markdown")) return sourceFile.text();
     if (name.endsWith(".docx")) {
-      const result = await mammoth.extractRawText({ arrayBuffer: await sourceFile.arrayBuffer() });
+            const arrayBuffer = await sourceFile.arrayBuffer();
+      const result = await mammoth.extractRawText({
+        arrayBuffer,
+        buffer: new Uint8Array(arrayBuffer),
+      } as Parameters<typeof mammoth.extractRawText>[0]);
       return result.value;
     }
     if (name.endsWith(".pdf")) {

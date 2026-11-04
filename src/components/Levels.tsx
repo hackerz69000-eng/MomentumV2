@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Shield, Sparkles, Trophy, Award, Crown, Compass, Info, CheckCircle2, Flame, BookOpen, Hammer, ScrollText, Swords, Target, Brain, KeyRound, Gem, WandSparkles, Castle, Feather, Orbit, Atom, Star, Medal, Zap, Lightbulb, Eye, Mountain, Rocket, Infinity, Sun, Moon, Diamond, Hexagon, CircleDot, BrainCircuit, GraduationCap, Telescope, Sword, ShieldCheck, Crown as RoyalCrown, Flower2, Waves, Snowflake, Bolt, Orbit as Galaxy, Fingerprint, Dna, Network, Cpu, BadgeCheck, Flag } from "lucide-react";
+import { Shield, Sparkles, Trophy, Award, Crown, Compass, Info, CheckCircle2, Flame, BookOpen, Hammer, ScrollText, Swords, Target, Brain, KeyRound, Gem, WandSparkles, Castle, Feather, Orbit, Atom, Star, Medal, Zap, Lightbulb, Eye, Mountain, Rocket, Infinity as InfinityIcon, Sun, Moon, Diamond, Hexagon, CircleDot, BrainCircuit, GraduationCap, Telescope, Sword, ShieldCheck, Crown as RoyalCrown, Flower2, Waves, Snowflake, Bolt, Orbit as Galaxy, Fingerprint, Dna, Network, Cpu, BadgeCheck, Flag } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 export interface RpgRank {
@@ -57,7 +57,7 @@ const TIER_COLORS = [
   ["from-purple-500 to-indigo-900", "bg-purple-950/40", "border-purple-500/50", "text-purple-300"],
   ["from-amber-400 to-yellow-600", "bg-amber-950/50", "border-amber-400/60", "text-amber-300"],
 ];
-const TIER_ICONS = [Shield, Flame, BookOpen, Hammer, ScrollText, Swords, Target, Brain, KeyRound, Gem, WandSparkles, Castle, Feather, Orbit, Atom, Star, Medal, Zap, Lightbulb, Eye, Mountain, Rocket, Infinity, Sun, Moon, Diamond, Hexagon, CircleDot, BrainCircuit, GraduationCap, Telescope, Sword, ShieldCheck, RoyalCrown, Flower2, Waves, Snowflake, Bolt, Galaxy, Fingerprint, Dna, Network, Cpu, BadgeCheck, Flag, Trophy, Crown, Sparkles, Award, Compass];
+const TIER_ICONS: typeof Shield[] = [Shield, Flame, BookOpen, Hammer, ScrollText, Swords, Target, Brain, KeyRound, Gem, WandSparkles, Castle, Feather, Orbit, Atom, Star, Medal, Zap, Lightbulb, Eye, Mountain, Rocket, InfinityIcon, Sun, Moon, Diamond, Hexagon, CircleDot, BrainCircuit, GraduationCap, Telescope, Sword, ShieldCheck, RoyalCrown, Flower2, Waves, Snowflake, Bolt, Galaxy, Fingerprint, Dna, Network, Cpu, BadgeCheck, Flag, Trophy, Crown, Sparkles, Award, Compass];
 export const RPG_RANKS: RpgRank[] = TIER_NAMES.map((title, i) => ({
   tier: i + 1, title, subtitle: TIER_SUBTITLES[i]!, minPct: i * 2,
   maxPct: i === 49 ? 100 : i * 2 + 1,
@@ -144,10 +144,10 @@ export function Levels({ percentage, className = "", scope = "overall" }: Levels
       // learner's former tier). Only mastery gained after the latest cloud
       // revision may advance it. This also makes re-selecting Tier 1 or Tier 2
       // deterministic instead of accumulating the previous manual selection.
-      let baseline = clampedPct;
+      let baseline = clampedPct - masterySinceManualStart;
       try {
-        const storedBaseline = Number(localStorage.getItem(BASE_PCT_KEY));
-        if (Number.isFinite(storedBaseline)) baseline = storedBaseline;
+        const storedRevision = localStorage.getItem(REVISION_KEY) ?? "0";
+        if (storedRevision !== overrideRevision) baseline = clampedPct;
       } catch { /* use current mastery as a safe baseline */ }
       const effectiveTier = tierFromManualStart(tierOverride, baseline, clampedPct);
       return RPG_RANKS.find((r) => r.tier === effectiveTier) ?? RPG_RANKS[0]!;
