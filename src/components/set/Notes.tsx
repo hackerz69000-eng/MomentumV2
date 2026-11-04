@@ -1,11 +1,12 @@
 import { useServerFn } from "@tanstack/react-start";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { Headphones, Lightbulb, Loader2, RefreshCw, X } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
-import { explainPassage, regenerateNotes } from "@/lib/study.functions";
+import { prepareExplainPassageStream, regenerateNotes } from "@/lib/study.functions";
+import { streamAiText } from "@/lib/ai-stream.client";
 import type { StudySet } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import {
@@ -49,15 +50,33 @@ export function Notes({ set }: { set: StudySet }) {
   const qc = useQueryClient();
   const regen = useServerFn(regenerateNotes);
   const [busy, setBusy] = useState(false);
+  const [streamedNotes, setStreamedNotes] = useState("");
+  const streamController = useRef<AbortController | null>(null);
   const run = async () => {
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setBusy(true);
     try {
-      await regen({ data: { setId: set.id } });
+      const prepared = await regen({ data: { setId: set.id, prepareOnly: true } });
+      if ("serverManaged" in prepared) {
+        await regen({ data: { setId: set.id } });
+      } else if ("notesPrompts" in prepared) {
+        setStreamedNotes("");
+        const noteParts: string[] = [];
+        for (const prompt of prepared.notesPrompts) {
+          const part = await streamAiText({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedNotes((old) => old + chunk) });
+          noteParts.push(part.trim());
+        }
+        const notes = prepared.notesHeader ? `${prepared.notesHeader}\n\n${noteParts.join("\n\n---\n\n")}` : noteParts[0] ?? "";
+        await regen({ data: { setId: set.id, generatedNotes: notes } });
+      } else throw new Error("Couldn't prepare note generation.");
       await qc.invalidateQueries({ queryKey: ["set", set.id] });
       toast.success("Notes regenerated");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed");
+      toast.error(e instanceof DOMException && e.name === "AbortError" ? "Notes generation cancelled. Your saved notes are unchanged." : e instanceof Error ? e.message : "Failed");
     }
+    streamController.current = null;
     setBusy(false);
   };
   const sections = set.notes ? splitSections(set.notes) : [];
@@ -83,6 +102,7 @@ export function Notes({ set }: { set: StudySet }) {
           </button>
         </div>
       </div>
+      {busy && streamedNotes && <div className="rounded-xl border border-line bg-panel p-5 mb-4"><p className="eyebrow text-cool2 mb-2">Notes streaming from NVIDIA</p><div className="md text-sm"><MarkdownContent>{streamedNotes}</MarkdownContent></div><button type="button" onClick={() => streamController.current?.abort()} className="mt-3 text-xs text-soft underline">Cancel generation</button></div>}
       <div className={cn("space-y-4 transition-opacity", busy && "opacity-50")}>
         {sections.length ? (
           sections.map((sec, i) => <Section key={i} setId={set.id} md={sec} />)
@@ -97,13 +117,15 @@ export function Notes({ set }: { set: StudySet }) {
 }
 
 function Section({ setId, md }: { setId: string; md: string }) {
-  const explain = useServerFn(explainPassage);
+  const prepare = useServerFn(prepareExplainPassageStream);
   const [result, setResult] = useState<{ mode: Mode; text: string } | null>(null);
   const [loading, setLoading] = useState<Mode | null>(null);
   const ask = async (mode: Mode) => {
     setLoading(mode);
     try {
-      const { text } = await explain({ data: { setId, passage: md.slice(0, 8000), mode } });
+      const prompt = await prepare({ data: { setId, passage: md.slice(0, 8000), mode } });
+      setResult({ mode, text: "" });
+      const text = await streamAiText({ system: prompt.system, messages: prompt.messages, task: prompt.task, onDelta: (chunk) => setResult((old) => old?.mode === mode ? { ...old, text: old.text + chunk } : old) });
       setResult({ mode, text });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't explain this");

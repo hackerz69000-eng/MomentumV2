@@ -86,6 +86,54 @@ function pick(chunks: Chunk[], query: string, budget = 45000): Chunk[] {
   return chosen.sort((a, b) => a.i - b.i).map((s) => s.c);
 }
 
+export const prepareAskMaterialsStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), content: z.string().min(1).max(4000), general: z.boolean().optional() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const sb = context.supabase;
+    const set = await loadSet(sb, data.setId);
+    const { data: userMsg, error: insertError } = await sb.from("material_messages").insert({
+      set_id: set.id, user_id: context.userId, role: "user",
+      content: data.general ? `${data.content}\n\n_(general background requested)_` : data.content,
+    }).select("id").single();
+    if (insertError || !userMsg) throw new Error("Couldn't save your question.");
+    try {
+      const [{ data: lectures }, { data: hist }] = await Promise.all([
+        sb.from("lectures").select("title, transcript, notes").eq("set_id", set.id).neq("transcript", ""),
+        sb.from("material_messages").select("role, content").eq("set_id", set.id).order("created_at", { ascending: false }).limit(11),
+      ]);
+      const history = ((hist ?? []) as { role: string; content: string }[]).reverse().slice(0, -1);
+      const lastUser = history.filter((m) => m.role === "user").slice(-2).map((m) => m.content).join(" ");
+      const chunks = pick(chunkSources(set, (lectures ?? []) as never), `${data.content} ${lastUser}`);
+      const block = chunks.map((c, i) => `[S${i + 1}] ${c.label}\n${c.text}`).join("\n\n---\n\n");
+      const system = data.general
+        ? `The student asked for GENERAL BACKGROUND knowledge (not from their materials). Start the answer with the line "**General background — not from your study materials.**" Then answer clearly and accurately in Markdown. If anything in their sources below relates, mention it with its [S#] tag. Don't overstate certainty.${ci(set)}\n\nSOURCES:\n${block}`
+        : `You are Ask Your Materials for study set "${set.name}". Answer ONLY from numbered SOURCES. Cite every factual sentence inline with [S#]. Prefer lecture transcript for teacher-specific questions. If sources don't contain the answer, reply exactly "${NOT_FOUND}" then one short sentence offering general background. Never invent source facts or citations. Use concise Markdown and conversation context.${ci(set)}\n\nSOURCES:\n${block || "(no material)"}`;
+      return { setId: set.id, userMessageId: userMsg.id, general: !!data.general, system,
+        messages: [...history.map((m) => ({ role: m.role === "assistant" ? "assistant" as const : "user" as const, content: m.content })), { role: "user" as const, content: data.content }],
+        chunks: chunks.map((c) => ({ label: c.label, text: c.text })) };
+    } catch (error) {
+      await sb.from("material_messages").delete().eq("id", userMsg.id).eq("user_id", context.userId);
+      throw error;
+    }
+  });
+
+export const saveAskMaterialsStreamReply = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), userMessageId: z.string().uuid(), reply: z.string().min(1).max(30000), general: z.boolean().optional(), chunks: z.array(z.object({ label: z.string().max(1000), text: z.string().max(30000) })).max(100) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const sb = context.supabase;
+    const { data: userMessage, error: verifyError } = await sb.from("material_messages").select("id, set_id, user_id, role")
+      .eq("id", data.userMessageId).eq("set_id", data.setId).eq("user_id", context.userId).single();
+    if (verifyError || !userMessage || userMessage.role !== "user") throw new Error("The materials conversation could not be verified.");
+    const cited = [...new Set([...data.reply.matchAll(/\[S(\d+)\]/g)].map((m) => Number(m[1])))].filter((n) => n >= 1 && n <= data.chunks.length);
+    const refs: SourceRef[] = cited.map((n) => ({ id: `S${n}`, label: data.chunks[n - 1]!.label, excerpt: data.chunks[n - 1]!.text.slice(0, 600) }));
+    const notFound = !data.general && data.reply.includes(NOT_FOUND);
+    const { error } = await sb.from("material_messages").insert({ set_id: data.setId, user_id: context.userId, role: "assistant", content: data.reply, sources: { refs, notFound, general: !!data.general } });
+    if (error) throw new Error("Couldn't save the streamed answer.");
+    return { ok: true };
+  });
+
 export const askMaterials = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) =>

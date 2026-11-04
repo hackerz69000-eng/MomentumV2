@@ -4,7 +4,8 @@ import { useMemo, useState, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import { ArrowLeft, ArrowRight, Loader2, Pencil, Plus, Shuffle, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { regenerateCards } from "@/lib/study.functions";
+import { prepareRegenerateCardsStream, saveRegenerateCardsStream } from "@/lib/study.functions";
+import { streamAiJson } from "@/lib/ai-stream.client";
 import { trashRow } from "@/lib/trash";
 import { cardStats, isDue, schedule, shuffle, type Flashcard, type Rating } from "@/lib/stats";
 import { useAuth } from "@/hooks/use-auth";
@@ -44,13 +45,16 @@ function prioritize(due: Flashcard[], all: Flashcard[]) {
 export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[] }) {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const regen = useServerFn(regenerateCards);
+  const prepareRegen = useServerFn(prepareRegenerateCardsStream);
+  const saveRegen = useServerFn(saveRegenerateCardsStream);
   const stats = cardStats(cards);
   const [mode, setMode] = useState<Mode>(stats.due > 0 ? "due" : "all");
   const [order, setOrder] = useState<string[] | null>(null);
   const [i, setI] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [streamedJson, setStreamedJson] = useState("");
+  const streamController = useRef<AbortController | null>(null);
   const [editing, setEditing] = useState<Flashcard | "new" | null>(null);
 
   const byId = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
@@ -245,16 +249,28 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
       !confirm("Replace all cards (including your progress) with newly generated ones?")
     )
       return;
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setBusy(true);
     try {
-      await regen({ data: { setId } });
+      const prompt = await prepareRegen({ data: { setId } });
+      setStreamedJson("");
+      const cards = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedJson((old) => old + chunk), validate: (value) => {
+        if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The generated flashcards were not valid.");
+        const valid = (value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "" })).slice(0, 20);
+        if (!valid.length) throw new Error("No useful flashcards could be generated from the supplied study material.");
+        return valid;
+      }});
+      await saveRegen({ data: { setId, cards } });
       await qc.invalidateQueries({ queryKey: ["cards", setId] });
       setOrder(null);
       setI(0);
       toast.success("New flashcards generated");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed");
+      toast.error(e instanceof DOMException && e.name === "AbortError" ? "Flashcard generation cancelled. Existing cards are unchanged." : e instanceof Error ? e.message : "Failed");
     }
+    streamController.current = null;
     setBusy(false);
   };
 
@@ -306,6 +322,8 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
       {!cards.length ? (
         <div className="rounded-2xl dpanel p-10 text-center">
           <h2 className="font-display text-2xl uppercase">No flashcards yet</h2>
+          {busy && streamedJson && <pre className="mt-4 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg bg-accent p-3 text-xs text-soft">{streamedJson}</pre>}
+          {busy && <button type="button" onClick={() => streamController.current?.abort()} className="mt-2 text-xs text-soft underline">Cancel generation</button>}
           <button onClick={regenerate} disabled={busy} className={btnPrimary + " mt-5"}>
             {busy && <Loader2 className="size-4 animate-spin" />} Generate flashcards
           </button>
@@ -416,6 +434,8 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
       )}
       {cards.length > 0 && (
         <div className="flex justify-center mt-8">
+          {busy && streamedJson && <pre className="mb-3 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg bg-accent p-3 text-xs text-soft">{streamedJson}</pre>}
+          {busy && <button type="button" onClick={() => streamController.current?.abort()} className="mb-2 text-xs text-soft underline">Cancel generation</button>}
           <button
             onClick={regenerate}
             disabled={busy}

@@ -1,9 +1,10 @@
 import { useServerFn } from "@tanstack/react-start";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { CalendarDays, Loader2 } from "lucide-react";
 import { generatePlan, type PlanDay } from "@/lib/study.functions";
+import { streamAiJson } from "@/lib/ai-stream.client";
 import type { StudySet } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { btnPrimary, ErrorBox, inputCls } from "./ui";
@@ -18,18 +19,31 @@ export function Plan({ set, weakTopics }: { set: StudySet; weakTopics: string[] 
   const [minutes, setMinutes] = useState(set.minutes_per_day ?? 45);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamedPlan, setStreamedPlan] = useState("");
+  const streamController = useRef<AbortController | null>(null);
   const plan = (set.plan as PlanDay[] | null) ?? null;
   const today = localISO();
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!examDate) return;
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setLoading(true);
     setError(null);
     try {
-      await gen({
-        data: { setId: set.id, examDate, today, minutesPerDay: Number(minutes), weakTopics },
-      });
+      const input = { setId: set.id, examDate, today, minutesPerDay: Number(minutes), weakTopics };
+      const prepared = await gen({ data: { ...input, prepareOnly: true } });
+      if (!("system" in prepared)) throw new Error("Couldn't prepare your study plan.");
+      setStreamedPlan("");
+      const plan = await streamAiJson({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamedPlan((old) => old + chunk), validate: (value) => {
+        if (!value || typeof value !== "object" || !Array.isArray((value as { days?: unknown }).days)) throw new Error("The study plan response was not valid.");
+        const days = (value as { days: unknown[] }).days.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ date: String(item.date ?? ""), title: String(item.title ?? ""), tasks: Array.isArray(item.tasks) ? item.tasks.map(String).slice(0, 6) : [] })).filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.date) && item.title && item.tasks.length);
+        if (!days.length) throw new Error("Could not create a usable study plan. Please try again.");
+        return days as PlanDay[];
+      }});
+      await gen({ data: { ...input, generatedPlan: JSON.stringify({ days: plan }) } });
       await qc.invalidateQueries({ queryKey: ["set", set.id] });
       toast.success("Study plan ready");
     } catch (err) {
@@ -86,6 +100,8 @@ export function Plan({ set, weakTopics }: { set: StudySet; weakTopics: string[] 
         {weakTopics.length > 0 && (
           <p className="text-xs text-soft mt-3">Extra time will go to: {weakTopics.join(", ")}</p>
         )}
+        {loading && streamedPlan && <pre className="mt-4 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-accent p-3 text-xs text-soft">{streamedPlan}</pre>}
+        {loading && <button type="button" onClick={() => streamController.current?.abort()} className="mt-2 text-xs text-soft underline">Cancel generation</button>}
         {error && (
           <div className="mt-4">
             <ErrorBox msg={error} />

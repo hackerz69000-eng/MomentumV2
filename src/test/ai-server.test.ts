@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { parseJson, splitTextIntoChunks } from "../lib/ai.server";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { aiText, parseJson, splitTextIntoChunks } from "../lib/ai.server";
 
 describe("parseJson", () => {
   it("reads JSON wrapped in prose and a Markdown fence", () => {
@@ -36,5 +36,46 @@ describe("splitTextIntoChunks", () => {
     expect(splitTextIntoChunks("abc", 0)).toEqual(["a", "b", "c"]);
     expect(splitTextIntoChunks("abc", Number.NaN)).toEqual(["abc"]);
     expect(splitTextIntoChunks("  ")).toEqual([]);
+  });
+});
+
+
+describe("aiText NVIDIA SSE transport", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("aggregates streamed deltas without losing token whitespace", async () => {
+    vi.stubEnv("NVIDIA_API_KEY", "test-key");
+    const encoder = new TextEncoder();
+    const chunks = [
+      'data: {"choices":[{"delta":{"content":"Hello "}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"world"},"finish_reason":"stop"}]}\n\n',
+      "data: [DONE]\n\n",
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } })));
+
+    await expect(aiText("system", [{ role: "user", content: "question" }], { retries: 0 }))
+      .resolves.toBe("Hello world");
+  });
+
+  it("rejects a truncated stream instead of returning a partial answer", async () => {
+    vi.stubEnv("NVIDIA_API_KEY", "test-key");
+    const encoder = new TextEncoder();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'));
+        controller.close();
+      },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } })));
+
+    await expect(aiText("system", [{ role: "user", content: "question" }], { retries: 0 }))
+      .rejects.toThrow(/before completing/i);
   });
 });

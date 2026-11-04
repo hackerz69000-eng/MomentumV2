@@ -1,6 +1,7 @@
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { streamAiText } from "@/lib/ai-stream.client";
 import { toast } from "sonner";
 import { Download, FileText, Loader2, Plus, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -37,6 +38,7 @@ export function Materials({ set }: { set: StudySet }) {
     meta: { file: File; chars: number }[];
   } | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const streamController = useRef<AbortController | null>(null);
   const [editing, setEditing] = useState(false);
   const [material, setMaterial] = useState(set.material_text);
   const [refreshAsk, setRefreshAsk] = useState(false);
@@ -135,9 +137,24 @@ export function Materials({ set }: { set: StudySet }) {
 
   const updateNotes = async () => {
     setRefreshAsk(false);
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setMsg("Rewriting your notes with the new material…");
     try {
-      await renotes({ data: { setId: set.id } });
+      const prepared = await renotes({ data: { setId: set.id, prepareOnly: true } });
+      if ("serverManaged" in prepared) {
+        await renotes({ data: { setId: set.id } });
+      } else if ("notesPrompts" in prepared) {
+        const noteParts: string[] = [];
+        for (const prompt of prepared.notesPrompts) {
+          let streamed = "";
+          const part = await streamAiText({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => { streamed += chunk; setMsg(`Updating notes…\n${streamed.slice(-900)}`); } });
+          noteParts.push(part.trim());
+        }
+        const notes = prepared.notesHeader ? `${prepared.notesHeader}\n\n${noteParts.join("\n\n---\n\n")}` : noteParts[0] ?? "";
+        await renotes({ data: { setId: set.id, generatedNotes: notes } });
+      } else throw new Error("Couldn't prepare notes generation.");
       toast.success("Notes updated");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed");
@@ -240,6 +257,7 @@ export function Materials({ set }: { set: StudySet }) {
           <p className="text-sm text-soft flex items-center gap-2">
             <Loader2 className="size-4 animate-spin" />
             {msg}
+            {msg.startsWith("Updating notes…") && <button type="button" onClick={() => streamController.current?.abort()} className="underline">Cancel</button>}
           </p>
         )}
         {(filesQ.data ?? []).length === 0 ? (

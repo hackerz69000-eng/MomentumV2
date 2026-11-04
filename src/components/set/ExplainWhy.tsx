@@ -2,7 +2,8 @@ import { useServerFn } from "@tanstack/react-start";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useState } from "react";
 import { HelpCircle, Loader2 } from "lucide-react";
-import { explainWhy } from "@/lib/explain.functions";
+import { prepareExplainWhyStream } from "@/lib/explain.functions";
+import { streamAiText } from "@/lib/ai-stream.client";
 
 /** "Explain why" button + inline explanation. Doesn't interrupt the activity. */
 export function ExplainWhy(props: {
@@ -14,7 +15,7 @@ export function ExplainWhy(props: {
   given?: string;
   topic?: string;
 }) {
-  const fn = useServerFn(explainWhy);
+  const fn = useServerFn(prepareExplainWhyStream);
   const [text, setText] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -22,21 +23,13 @@ export function ExplainWhy(props: {
     setBusy(true);
     setErr(null);
     try {
-      setText(
-        (
-          await fn({
-            data: {
-              setId: props.setId,
-              lectureId: props.lectureId,
-              question: props.question,
-              options: props.options ?? [],
-              correct: props.correct,
-              given: props.given ?? "",
-              topic: props.topic ?? "",
-            },
-          })
-        ).text,
-      );
+      setText("");
+      const prepared = await fn({ data: {
+        setId: props.setId, lectureId: props.lectureId, question: props.question,
+        options: props.options ?? [], correct: props.correct, given: props.given ?? "", topic: props.topic ?? "",
+      } });
+      await streamAiText({ system: prepared.system, messages: prepared.messages, task: prepared.task,
+        onDelta: (chunk) => setText((current) => (current ?? "") + chunk) });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't load an explanation. Try again.");
     }

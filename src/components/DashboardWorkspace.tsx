@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { MoreHorizontal, Trash2 } from "lucide-react";
+import { MoreHorizontal, Trash2, Brain, CalendarDays, Gauge, Home, LibraryBig, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { trashSet } from "@/lib/trash";
 import { MoveStudySetDialog } from "@/components/MoveStudySetDialog";
@@ -9,7 +9,6 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { SetWithCards } from "@/lib/queries";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Brain, CalendarDays, Gauge, Home, LibraryBig, Sparkles } from "lucide-react";
 import { DailyStudyGoals } from "@/components/DailyStudyGoals";
 import { PomodoroTimer } from "@/components/PomodoroTimer";
 import { CommandCenter } from "@/components/CommandCenter";

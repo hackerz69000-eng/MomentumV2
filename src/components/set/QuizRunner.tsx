@@ -1,4 +1,5 @@
 import { useServerFn } from "@tanstack/react-start";
+import { streamAiJson, streamAiText } from "@/lib/ai-stream.client";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -8,7 +9,7 @@ import { useAuth } from "@/hooks/use-auth";
 import {
   generateComprehensive,
   generateQuiz,
-  gradeShortAnswers,
+  prepareGradeShortAnswersStream,
   type QuizQuestion,
 } from "@/lib/study.functions";
 import { logActivity } from "@/lib/log-activity";
@@ -97,7 +98,7 @@ export function QuizRunner({
   const { user } = useAuth();
   const gen = useServerFn(generateQuiz);
   const genComp = useServerFn(generateComprehensive);
-  const grade = useServerFn(gradeShortAnswers);
+  const gradePrepare = useServerFn(prepareGradeShortAnswersStream);
   const comprehensive = kind === "comprehensive";
   const exam = kind !== "quiz";
   const [usedAdaptive, setUsedAdaptive] = useState(false);
@@ -131,9 +132,11 @@ export function QuizRunner({
   const [graded, setGraded] = useState<Graded[] | null>(null);
   const [loading, setLoading] = useState<null | "gen" | "grade">(null);
   const [error, setError] = useState<string | null>(null);
+  const [streamedQuestions, setStreamedQuestions] = useState("");
   const [remaining, setRemaining] = useState<number | null>(null);
   const startedAt = useRef(0);
   const submitting = useRef(false);
+  const streamController = useRef<AbortController | null>(null);
   const [flagged, setFlagged] = useState<Set<number>>(new Set());
   useEffect(() => {
     try {
@@ -197,6 +200,9 @@ export function QuizRunner({
   };
 
   const start = async () => {
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setLoading("gen");
     setError(null);
     setGraded(null);
@@ -205,28 +211,30 @@ export function QuizRunner({
       if (!exam && settings.adaptive && !plan.length)
         toast.info("No performance data yet — this first adaptive quiz covers all topics evenly.");
       setUsedAdaptive(!exam && settings.adaptive);
-      const res = comprehensive
-        ? await genComp({
-            data: {
-              setIds: (sets ?? []).map((s) => s.id),
-              count: settings.count,
-              difficulty: settings.difficulty,
-              types: settings.types,
-              questionGuidance: settings.questionGuidance.trim() || undefined,
-            },
-          })
-        : await gen({
-            data: {
-              setId: set!.id,
-              count: settings.count,
-              difficulty: settings.difficulty,
-              types: settings.types,
-              exam,
-              plan: plan.length ? plan : undefined,
-              lectureId,
-              questionGuidance: settings.questionGuidance.trim() || undefined,
-            },
-          });
+      let res: { questions: QuizQuestion[] };
+      setStreamedQuestions("");
+      if (comprehensive) {
+        const input = { setIds: (sets ?? []).map((s) => s.id), count: settings.count, difficulty: settings.difficulty, types: settings.types, questionGuidance: settings.questionGuidance.trim() || undefined };
+        const prepared = await genComp({ data: { ...input, prepareOnly: true } });
+        if (!("prompts" in prepared)) throw new Error("Couldn't prepare the comprehensive exam.");
+        const generatedBySet: { setId: string; generatedText: string }[] = [];
+        for (const prompt of prepared.prompts) {
+          const generatedText = await streamAiText({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk) });
+          generatedBySet.push({ setId: prompt.setId, generatedText });
+        }
+        const generated = await genComp({ data: { ...input, generatedBySet } });
+        if (!("questions" in generated)) throw new Error("The comprehensive exam could not be finalized.");
+        res = generated;
+      } else {
+        const input = { setId: set!.id, count: settings.count, difficulty: settings.difficulty, types: settings.types, exam, plan: plan.length ? plan : undefined, lectureId, questionGuidance: settings.questionGuidance.trim() || undefined };
+        const prepared = await gen({ data: { ...input, prepareOnly: true } });
+        if (!("system" in prepared)) throw new Error("Couldn't prepare quiz generation.");
+        setStreamedQuestions("");
+        const generatedText = await streamAiText({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk) });
+        const generated = await gen({ data: { ...input, generatedText } });
+        if (!("questions" in generated)) throw new Error("The quiz questions could not be finalized.");
+        res = generated;
+      }
       const qs = prepare(res.questions);
       setQuestions(qs);
       setAnswers(qs.map(() => null));
@@ -236,8 +244,10 @@ export function QuizRunner({
       submitting.current = false;
       setRemaining(exam && settings.minutes ? settings.minutes * 60 : null);
     } catch (e) {
-      setError(readableGenerationError(e));
+      if (e instanceof DOMException && e.name === "AbortError") setError("Generation cancelled. Your study material and saved progress are unchanged.");
+      else setError(readableGenerationError(e));
     }
+    streamController.current = null;
     setLoading(null);
   };
 
@@ -254,15 +264,12 @@ export function QuizRunner({
       .filter((i) => i >= 0);
     if (shortIdx.length) {
       try {
-        const { grades } = await grade({
-          data: {
-            items: shortIdx.map((i) => ({
-              question: questions[i]!.question,
-              expected: questions[i]!.answerText,
-              given: String(answers[i]),
-            })),
-          },
-        });
+        const items = shortIdx.map((i) => ({ question: questions[i]!.question, expected: questions[i]!.answerText, given: String(answers[i]) }));
+        const prompt = await gradePrepare({ data: { items } });
+        const { grades } = await streamAiJson({ system: prompt.system, messages: prompt.messages, validate: (value) => {
+          if (!value || typeof value !== "object" || !Array.isArray((value as { grades?: unknown }).grades)) throw new Error("Short-answer grades were not valid.");
+          return items.map((_, index) => { const grade = (value as { grades: unknown[] }).grades[index]; const item = grade && typeof grade === "object" ? grade as { correct?: unknown; feedback?: unknown } : {}; return { correct: Boolean(item.correct), feedback: String(item.feedback ?? "") }; });
+        }});
         shortIdx.forEach((qi, k) => (results[qi] = grades[k] ?? { correct: false }));
       } catch (e) {
         toast.error("Couldn't grade short answers automatically — they were marked incorrect.");
@@ -417,6 +424,8 @@ export function QuizRunner({
               ? "Longer exams are generated and checked in batches; this may take a minute or two."
               : "Usually takes 10–30 seconds."}
         </p>
+        {streamedQuestions && <pre className="mt-5 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-xl border border-line bg-panel p-4 text-left text-xs text-soft">{streamedQuestions}</pre>}
+        <button type="button" onClick={() => streamController.current?.abort()} className={btnGhost + " mt-3"}>Cancel generation</button>
       </div>
     );
 

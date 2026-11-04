@@ -23,7 +23,8 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 import { useAuth } from "@/hooks/use-auth";
-import { lectureCards, lectureGuide, lectureNotes } from "@/lib/lecture.functions";
+import { prepareLectureNotesStream, saveLectureNotesStream, prepareLectureGuideStream, saveLectureGuideStream, prepareLectureCardsStream, saveLectureCardsStream } from "@/lib/lecture.functions";
+import { streamAiText, streamAiJson } from "@/lib/ai-stream.client";
 import { logActivity } from "@/lib/log-activity";
 import { micErrorMessage, startRecorder, transcribeSegment, type Recorder } from "@/lib/recorder";
 import type { StudySet } from "@/lib/queries";
@@ -213,7 +214,8 @@ function RecordPanel({
 }) {
   const { user } = useAuth();
   const qc = useQueryClient();
-  const notesFn = useServerFn(lectureNotes);
+  const notesPrepareFn = useServerFn(prepareLectureNotesStream);
+  const notesSaveFn = useServerFn(saveLectureNotesStream);
   const [title, setTitle] = useState(`Lecture — ${new Date().toLocaleDateString()}`);
   const [state, setState] = useState<"idle" | "starting" | "rec" | "paused" | "finishing">("idle");
   const [elapsed, setElapsed] = useState(0);
@@ -365,7 +367,10 @@ function RecordPanel({
       );
     if (transcript.trim().length > 40) {
       try {
-        await notesFn({ data: { lectureId: id } });
+        const prompt = await notesPrepareFn({ data: { lectureId: id } });
+        setLive("");
+        const notes = await streamAiText({ system: prompt.system, messages: prompt.messages, onDelta: (chunk) => setLive((old) => old + chunk) });
+        await notesSaveFn({ data: { lectureId: id, notes } });
       } catch {
         toast.error(
           "Your transcript was saved, but organizing notes failed. Open the lecture and press “Organize notes” to try again.",
@@ -487,9 +492,12 @@ function LectureDetail({
   onBack: () => void;
 }) {
   const qc = useQueryClient();
-  const notesFn = useServerFn(lectureNotes);
-  const cardsFn = useServerFn(lectureCards);
-  const guideFn = useServerFn(lectureGuide);
+  const notesPrepareFn = useServerFn(prepareLectureNotesStream);
+  const notesSaveFn = useServerFn(saveLectureNotesStream);
+  const guidePrepareFn = useServerFn(prepareLectureGuideStream);
+  const guideSaveFn = useServerFn(saveLectureGuideStream);
+  const cardsPrepareFn = useServerFn(prepareLectureCardsStream);
+  const cardsSaveFn = useServerFn(saveLectureCardsStream);
   const [transcript, setTranscript] = useState(lecture.transcript);
   const [title, setTitle] = useState(lecture.title);
   const [busy, setBusy] = useState<string | null>(null);
@@ -498,6 +506,8 @@ function LectureDetail({
     lecture.notes ? "notes" : "transcript",
   );
   const [audio, setAudio] = useState<string[]>([]);
+  const [streamingText, setStreamingText] = useState("");
+  const streamController = useRef<AbortController | null>(null);
   const dirty = transcript !== lecture.transcript || title !== lecture.title;
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   useEffect(() => {
@@ -535,11 +545,14 @@ function LectureDetail({
   }, [lecture.audio_paths]);
 
   const run = async (key: string, fn: () => Promise<unknown>, ok?: string) => {
+    streamController.current?.abort();
+    streamController.current = new AbortController();
     setBusy(key);
     try {
       await fn();
       if (ok) toast.success(ok);
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") toast.info("Generation cancelled. Your saved lecture is unchanged.");
       const m = e instanceof Error ? e.message : "";
       toast.error(
         key === "save" || key === "material"
@@ -547,6 +560,7 @@ function LectureDetail({
           : `Your transcript is safe, but this step failed: ${m || "please try again"}`,
       );
     }
+    streamController.current = null;
     setBusy(null);
     refresh();
   };
@@ -725,10 +739,17 @@ function LectureDetail({
                 run(
                   "cards",
                   () =>
-                    cardsFn({ data: { lectureId: lecture.id } }).then((r) => {
-                      qc.invalidateQueries({ queryKey: ["cards", set.id] });
-                      return r;
-                    }),
+                    (async () => {
+                      const prompt = await cardsPrepareFn({ data: { lectureId: lecture.id } });
+                      const cards = await streamAiJson({ system: prompt.system, messages: prompt.messages, ...(streamController.current ? { signal: streamController.current.signal } : {}), onDelta: (chunk) => setStreamingText((old) => old + chunk), validate: (value) => {
+                        if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The lecture flashcards were not valid.");
+                        return (value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "" })).slice(0, 25);
+                      }});
+                      const saved = await cardsSaveFn({ data: { lectureId: lecture.id, cards } });
+                      setStreamingText("");
+                      await qc.invalidateQueries({ queryKey: ["cards", set.id] });
+                      return saved;
+                    })(),
                   "Lecture flashcards added to your deck",
                 )
               }
@@ -757,7 +778,11 @@ function LectureDetail({
               disabled={!hasText || !!busy}
               onClick={() =>
                 run("guide", async () => {
-                  await guideFn({ data: { lectureId: lecture.id } });
+                  setStreamingText("");
+                  const prompt = await guidePrepareFn({ data: { lectureId: lecture.id } });
+                  const guide = await streamAiText({ system: prompt.system, messages: prompt.messages, ...(streamController.current ? { signal: streamController.current.signal } : {}), onDelta: (chunk) => setStreamingText((old) => old + chunk) });
+                  await guideSaveFn({ data: { lectureId: lecture.id, guide } });
+                  setStreamingText("");
                   setSection("guide");
                 })
               }
@@ -850,13 +875,26 @@ function LectureDetail({
           )}
         </div>
       )}
+      {streamingText && (section === "notes" || section === "guide" || busy === "cards") && (
+        <div className="rounded-2xl bg-panel border border-line/70 p-6 mb-4">
+          <p className="eyebrow text-cool2 mb-2">Generating with NVIDIA</p>
+          <div className="md text-sm"><MarkdownContent>{streamingText}</MarkdownContent></div>
+          <button type="button" onClick={() => streamController.current?.abort()} className="mt-3 text-xs text-soft underline">Cancel generation</button>
+        </div>
+      )}
       {section === "notes" && (
         <div className="rounded-2xl bg-panel border border-line/70 p-6">
           <div className="flex justify-end mb-2">
             <button
               disabled={!hasText || !!busy}
               onClick={() =>
-                run("notes", () => notesFn({ data: { lectureId: lecture.id } }), "Notes updated")
+                run("notes", async () => {
+                  setStreamingText("");
+                  const prompt = await notesPrepareFn({ data: { lectureId: lecture.id } });
+                  const notes = await streamAiText({ system: prompt.system, messages: prompt.messages, ...(streamController.current ? { signal: streamController.current.signal } : {}), onDelta: (chunk) => setStreamingText((old) => old + chunk) });
+                  await notesSaveFn({ data: { lectureId: lecture.id, notes } });
+                  setStreamingText("");
+                }, "Notes updated")
               }
               className={cn(btnGhost, "py-1.5")}
             >

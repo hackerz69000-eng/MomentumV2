@@ -5,7 +5,8 @@ import { useEffect, useState } from "react";
 import { Loader2, Search as SearchIcon, Sparkles } from "lucide-react";
 import { z } from "zod";
 import { looksLikeQuestion, searchAll, terms, type Hit } from "@/lib/global-search";
-import { searchAnswer } from "@/lib/explain.functions";
+import { prepareSearchAnswerStream } from "@/lib/explain.functions";
+import { streamAiText } from "@/lib/ai-stream.client";
 import { PageHeader } from "@/components/PageHeader";
 import { btnGhost, btnPrimary, ErrorBox, inputCls } from "@/components/set/ui";
 
@@ -62,7 +63,7 @@ function highlight(text: string, ts: string[]) {
 function SearchPage() {
   const initial = Route.useSearch().q ?? "";
   const navigate = Route.useNavigate();
-  const ask = useServerFn(searchAnswer);
+  const ask = useServerFn(prepareSearchAnswerStream);
   const [q, setQ] = useState(initial);
   const [hits, setHits] = useState<Hit[] | null>(null);
   const [busy, setBusy] = useState<"search" | "answer" | null>(null);
@@ -73,18 +74,13 @@ function SearchPage() {
   const getAnswer = async (query: string, found: Hit[]) => {
     setBusy("answer");
     try {
-      const r = await ask({
-        data: {
-          query,
-          snippets: found
-            .slice(0, 12)
-            .map((h) => ({
-              label: `${h.kind}: ${h.title}`.slice(0, 200),
-              text: h.context.slice(0, 4000),
-            })),
-        },
-      });
-      setAnswer(r.text);
+      setAnswer("");
+      const prepared = await ask({ data: {
+        query,
+        snippets: found.slice(0, 12).map((h) => ({ label: `${h.kind}: ${h.title}`.slice(0, 200), text: h.context.slice(0, 4000) })),
+      } });
+      await streamAiText({ system: prepared.system, messages: prepared.messages, task: prepared.task,
+        onDelta: (chunk) => setAnswer((current) => (current ?? "") + chunk) });
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "Couldn't write an answer. Your results are still below.",
@@ -150,14 +146,15 @@ function SearchPage() {
                 <p className="eyebrow text-cool2 mb-2 inline-flex items-center gap-1">
                   <Sparkles className="size-3" /> Answer from your materials
                 </p>
-                {busy === "answer" ? (
+                {answer ? (
+                  <div className="md text-sm">
+                    <MarkdownContent>{answer}</MarkdownContent>
+                    {busy === "answer" && <p className="text-xs text-soft mt-2 inline-flex items-center gap-1"><Loader2 className="size-3 animate-spin" /> Generating…</p>}
+                  </div>
+                ) : (
                   <p className="text-sm text-soft inline-flex items-center gap-2">
                     <Loader2 className="size-4 animate-spin" /> Reading your matches…
                   </p>
-                ) : (
-                  <div className="md text-sm">
-                    <MarkdownContent>{answer!}</MarkdownContent>
-                  </div>
                 )}
                 {answer && (
                   <p className="text-xs text-soft mt-3">

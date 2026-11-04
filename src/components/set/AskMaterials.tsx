@@ -5,7 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { BookOpenText, Globe, Loader2, Send } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { askMaterials, type SourceRef } from "@/lib/ask.functions";
+import { prepareAskMaterialsStream, saveAskMaterialsStreamReply, type SourceRef } from "@/lib/ask.functions";
+import { streamAiText } from "@/lib/ai-stream.client";
 import type { StudySet } from "@/lib/queries";
 import { ErrorBox } from "./ui";
 
@@ -24,7 +25,10 @@ const SUGGEST = [
 ];
 
 export function AskMaterials({ set }: { set: StudySet }) {
-  const ask = useServerFn(askMaterials);
+  const prepare = useServerFn(prepareAskMaterialsStream);
+  const saveReply = useServerFn(saveAskMaterialsStreamReply);
+  const abortRef = useRef<AbortController | null>(null);
+  const [streamReply, setStreamReply] = useState("");
   const qc = useQueryClient();
   const histQ = useQuery({
     queryKey: ["ask", set.id],
@@ -46,6 +50,7 @@ export function AskMaterials({ set }: { set: StudySet }) {
   const msgs: Msg[] = [
     ...(histQ.data ?? []),
     ...(pending ? [{ id: "p", role: "user", content: pending, sources: null }] : []),
+    ...(loading && streamReply ? [{ id: "stream", role: "assistant", content: streamReply, sources: null }] : []),
   ];
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -59,13 +64,26 @@ export function AskMaterials({ set }: { set: StudySet }) {
     setLoading(true);
     setError(null);
     try {
-      await ask({ data: { setId: set.id, content, general } });
+      const prepared = await prepare({ data: { setId: set.id, content, general } });
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setStreamReply("");
+      const reply = await streamAiText({
+        system: prepared.system,
+        messages: prepared.messages,
+        task: "reasoning",
+        signal: controller.signal,
+        onDelta: (delta) => setStreamReply((current) => current + delta),
+      });
+      await saveReply({ data: { setId: prepared.setId, userMessageId: prepared.userMessageId, reply, general: prepared.general, chunks: prepared.chunks } });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't answer");
       setInput(content);
     }
+    abortRef.current = null;
     await qc.invalidateQueries({ queryKey: ["ask", set.id] });
     setPending(null);
+    setStreamReply("");
     setLoading(false);
   };
   const lastUserQ = (i: number) =>
@@ -165,7 +183,7 @@ export function AskMaterials({ set }: { set: StudySet }) {
         )}
         {loading && (
           <div className="text-soft text-sm inline-flex items-center gap-2">
-            <Loader2 className="size-4 animate-spin" /> Searching your materials…
+            <Loader2 className="size-4 animate-spin" /> Searching your materials… <button type="button" onClick={() => abortRef.current?.abort()} className="underline">Stop</button>
           </div>
         )}
         {error && <ErrorBox msg={error} />}

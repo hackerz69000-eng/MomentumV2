@@ -32,6 +32,47 @@ async function loadLecture(sb: any, id: string) {
   };
 }
 
+export const prepareLectureNotesStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth]).inputValidator(idIn)
+  .handler(async ({ data, context }) => {
+    const lec = await loadLecture(context.supabase, data.lectureId);
+    const set = await loadSet(context.supabase, lec.set_id);
+    return { system: LECTURE_NOTES + ci(set), messages: [{ role: "user" as const, content: `STUDY SET: ${set.name} (${set.subject || "general"})\nLECTURE: ${lec.title}\n\nTRANSCRIPT:\n${clip(lec.transcript, 80000)}` }] };
+  });
+
+export const saveLectureNotesStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ lectureId: z.string().uuid(), notes: z.string().min(20).max(100000) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const lec = await loadLecture(context.supabase, data.lectureId);
+    const { error } = await context.supabase.from("lectures").update({ notes: data.notes, updated_at: new Date().toISOString() }).eq("id", lec.id);
+    if (error) throw new Error("Lecture notes were generated but couldn't be saved.");
+    return { notes: data.notes };
+  });
+
+export const prepareLectureGuideStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth]).inputValidator(idIn)
+  .handler(async ({ data, context }) => {
+    const lec = await loadLecture(context.supabase, data.lectureId);
+    const set = await loadSet(context.supabase, lec.set_id);
+    return {
+      system: `You write a structured study guide in Markdown from ONE lecture transcript. Start with "# Study Guide: ${lec.title.replace(/"/g, "")}". Use "## " sections: Main Topics, Key Concepts, Definitions, Key Facts, Examples, What the Teacher Emphasized, Likely Test Questions, Quick Review. Only use the lecture; label anything else "(Additional context)". No preamble.${ci(set)}`,
+      messages: [{ role: "user" as const, content: `TRANSCRIPT:\n${clip(lec.transcript, 70000)}\n\nLECTURE NOTES (if any):\n${clip(lec.notes ?? "", 10000)}` }],
+    };
+  });
+
+export const saveLectureGuideStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ lectureId: z.string().uuid(), guide: z.string().min(20).max(100000) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const lec = await loadLecture(context.supabase, data.lectureId);
+    const set = await loadSet(context.supabase, lec.set_id);
+    const { error } = await context.supabase.from("lectures").update({ guide: data.guide, updated_at: new Date().toISOString() }).eq("id", lec.id);
+    if (error) throw new Error("The study guide was generated but couldn't be saved.");
+    await context.supabase.from("study_activity").insert({ user_id: context.userId, set_id: set.id, kind: "guide", count: 1, meta: { lecture: lec.id } });
+    return { guide: data.guide };
+  });
+
 export const lectureNotes = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator(idIn)
@@ -49,6 +90,32 @@ export const lectureNotes = createServerFn({ method: "POST" })
       .update({ notes, updated_at: new Date().toISOString() })
       .eq("id", lec.id);
     return { notes };
+  });
+
+export const prepareLectureCardsStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth]).inputValidator(idIn)
+  .handler(async ({ data, context }) => {
+    const lec = await loadLecture(context.supabase, data.lectureId);
+    const set = await loadSet(context.supabase, lec.set_id);
+    return {
+      system: `You create flashcards from a lecture transcript. Return ONLY JSON: {"cards":[{"q":"question or term","a":"concise answer","t":"short topic name (2-4 words)"}]}. 10-20 high-value cards on concepts, definitions, facts and things the teacher emphasized. Only use what the lecture says. Answers under 40 words.${ci(set)}`,
+      messages: [{ role: "user" as const, content: `LECTURE: ${lec.title}\nTRANSCRIPT:\n${clip(lec.transcript, 60000)}` }],
+    };
+  });
+
+export const saveLectureCardsStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ lectureId: z.string().uuid(), cards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(100) })).min(1).max(25) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const lec = await loadLecture(context.supabase, data.lectureId);
+    const set = await loadSet(context.supabase, lec.set_id);
+    const cards = data.cards.filter((card, index, all) => all.findIndex((other) => other.q.trim().toLowerCase() === card.q.trim().toLowerCase()) === index);
+    if (!cards.length) throw new Error("No valid flashcards were provided.");
+    const { count, error: countError } = await context.supabase.from("flashcards").select("id", { count: "exact", head: true }).eq("set_id", set.id);
+    if (countError) throw new Error("Couldn't check the existing flashcard count.");
+    const { error } = await context.supabase.from("flashcards").insert(cards.map((card, i) => ({ set_id: set.id, user_id: context.userId, question: card.q.trim(), answer: card.a.trim(), topic: (card.t || lec.title).slice(0, 60), position: (count ?? 0) + i, is_custom: false })));
+    if (error) throw new Error(error.message);
+    return { added: cards.length };
   });
 
 /** Adds lecture-based flashcards to the set (keeps existing cards). */

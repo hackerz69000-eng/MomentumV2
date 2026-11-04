@@ -20,7 +20,8 @@ import {
 import { fetchCards, fetchSet, fetchSets, type StudySet } from "@/lib/queries";
 import { computeProgress } from "@/lib/progress";
 import { supabase } from "@/integrations/supabase/client";
-import { askTutor, processSet } from "@/lib/study.functions";
+import { prepareTutorStream, saveTutorStreamReply, processSet } from "@/lib/study.functions";
+import { streamAiText, streamAiJson } from "@/lib/ai-stream.client";
 import { setStats, type Attempt } from "@/lib/stats";
 import { cn } from "@/lib/utils";
 import { ErrorBox } from "@/components/set/ui";
@@ -332,19 +333,43 @@ function Processing({ set }: { set: StudySet }) {
   const qc = useQueryClient();
   const process = useServerFn(processSet);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState("");
+  const streamController = useRef<AbortController | null>(null);
   useEffect(() => {
     if (set.status !== "processing") return;
     const t = setInterval(() => qc.invalidateQueries({ queryKey: ["set", set.id] }), 4000);
     return () => clearInterval(t);
   }, [set.status, set.id, qc]);
   const retry = async () => {
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setBusy(true);
+    setProgress("");
     try {
-      await process({ data: { setId: set.id } });
+      const prepared = await process({ data: { setId: set.id, prepareOnly: true } });
+      if ("serverManaged" in prepared) await process({ data: { setId: set.id } });
+      else if ("notesPrompts" in prepared) {
+        const noteParts: string[] = [];
+        setProgress("Generating notes…");
+        for (const prompt of prepared.notesPrompts) noteParts.push((await streamAiText({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setProgress((old) => `${old}${chunk}`.slice(-700)) })).trim());
+        const notes = prepared.notesHeader ? `${prepared.notesHeader}\n\n${noteParts.join("\n\n---\n\n")}` : noteParts[0] ?? "";
+        setProgress("Generating flashcards…");
+        const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgress((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
+          if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");
+          const valid = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item.q ?? "").trim(), a: String(item.a ?? "").trim(), t: String(item.t ?? "").trim() })).filter((item) => item.q && item.a).slice(0, 20);
+          if (!valid.length) throw new Error("No useful flashcards could be generated.");
+          return valid;
+        }});
+        await process({ data: { setId: set.id, generatedNotes: notes, generatedCards: cards } });
+      } else throw new Error("Couldn't prepare study set processing.");
       toast.success("Study set ready");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed");
+      const message = e instanceof DOMException && e.name === "AbortError" ? "Generation cancelled. Your study set can be retried." : e instanceof Error ? e.message : "Failed";
+      await supabase.from("study_sets").update({ status: "error", error: message.slice(0, 500) }).eq("id", set.id);
+      toast.error(message);
     }
+    streamController.current = null;
     setBusy(false);
     qc.invalidateQueries({ queryKey: ["set", set.id] });
     qc.invalidateQueries({ queryKey: ["cards", set.id] });
@@ -358,6 +383,8 @@ function Processing({ set }: { set: StudySet }) {
         <p className="text-soft text-sm mt-2">
           Notes and flashcards are being written. This page updates automatically.
         </p>
+        {busy && progress && <pre className="mt-4 max-h-36 overflow-y-auto whitespace-pre-wrap rounded-xl border border-line bg-panel p-3 text-left text-xs text-soft">{progress}</pre>}
+      {busy && progress && <button type="button" onClick={() => streamController.current?.abort()} className="mt-3 text-xs text-soft underline">Cancel generation</button>}
         <button onClick={retry} className={btnGhost + " mt-6"}>
           <RefreshCw className="size-4" /> Taking too long? Restart
         </button>
@@ -373,6 +400,7 @@ function Processing({ set }: { set: StudySet }) {
       <h2 className="font-display text-2xl uppercase mt-4">
         {busy ? "Generating…" : "Generation failed"}
       </h2>
+      {busy && progress && <pre className="mt-4 max-h-36 overflow-y-auto whitespace-pre-wrap rounded-xl border border-line bg-panel p-3 text-left text-xs text-soft">{progress}</pre>}
       {!busy && <p className="text-soft text-sm mt-2">{set.error || "Something went wrong."}</p>}
       <button disabled={busy} onClick={retry} className={btnPrimary + " mt-6"}>
         <RefreshCw className="size-4" /> Try again
@@ -384,7 +412,8 @@ function Processing({ set }: { set: StudySet }) {
 type Msg = { role: "user" | "assistant"; content: string };
 
 function Tutor({ set }: { set: StudySet }) {
-  const ask = useServerFn(askTutor);
+  const prepare = useServerFn(prepareTutorStream);
+  const saveReply = useServerFn(saveTutorStreamReply);
   const qc = useQueryClient();
   const historyQ = useQuery({
     queryKey: ["tutor", set.id],
@@ -399,17 +428,20 @@ function Tutor({ set }: { set: StudySet }) {
     },
   });
   const [pending, setPending] = useState<string | null>(null);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [liveReply, setLiveReply] = useState("");
+  const streamAbort = useRef<AbortController | null>(null);
   const messages: Msg[] = [
     ...(historyQ.data ?? []),
     ...(pending ? [{ role: "user" as const, content: pending }] : []),
+    ...(liveReply ? [{ role: "assistant" as const, content: liveReply }] : []),
   ];
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, loading]);
+  }, [messages.length, loading, liveReply]);
 
   const send = async (text?: string) => {
     const content = (text ?? input).trim();
@@ -418,13 +450,27 @@ function Tutor({ set }: { set: StudySet }) {
     setInput("");
     setLoading(true);
     setError(null);
+    setLiveReply("");
+    const controller = new AbortController();
+    streamAbort.current = controller;
+    let prepared: Awaited<ReturnType<typeof prepare>> | null = null;
     try {
-      await ask({ data: { setId: set.id, content } });
+      prepared = await prepare({ data: { setId: set.id, content } });
+      const reply = await streamAiText({
+        system: prepared.system,
+        messages: prepared.messages,
+        task: "reasoning",
+        signal: controller.signal,
+        onDelta: (delta) => setLiveReply((current) => current + delta),
+      });
+      await saveReply({ data: { setId: prepared.setId, userMessageId: prepared.userMessageId, reply } });
     } catch (e) {
       setError(e instanceof Error ? e.message : "The tutor couldn't respond");
     }
+    streamAbort.current = null;
     await qc.invalidateQueries({ queryKey: ["tutor", set.id] });
     setPending(null);
+    setLiveReply("");
     setLoading(false);
   };
 
@@ -498,7 +544,7 @@ function Tutor({ set }: { set: StudySet }) {
             </div>
           ),
         )}
-        {loading && (
+        {loading && !liveReply && (
           <div className="flex gap-3 items-center text-soft text-sm">
             <div className="size-7 rounded-md bg-brand grid place-items-center font-display text-ink text-sm">
               M
@@ -516,6 +562,7 @@ function Tutor({ set }: { set: StudySet }) {
         }}
         className="border-t border-line/60 p-3 flex gap-2 bg-ink2/60"
       >
+        {loading && <button type="button" onClick={() => streamAbort.current?.abort()} className="text-xs text-soft px-2">Stop</button>}
         <textarea
           rows={1}
           value={input}

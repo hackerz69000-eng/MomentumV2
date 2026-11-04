@@ -1,10 +1,11 @@
 import { useServerFn } from "@tanstack/react-start";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { CalendarDays, CheckSquare, Headphones, Loader2, RefreshCw, ScrollText } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { generateGuide } from "@/lib/study.functions";
+import { streamAiText } from "@/lib/ai-stream.client";
 import { fetchSets, type StudySet } from "@/lib/queries";
 import { btnGhost, btnPrimary, ErrorBox, inputCls } from "./ui";
 
@@ -22,6 +23,8 @@ export function StudyGuide({ set }: { set: StudySet }) {
   const setsQ = useQuery({ queryKey: ["sets"], queryFn: fetchSets });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamedGuide, setStreamedGuide] = useState("");
+  const streamController = useRef<AbortController | null>(null);
   const [testDate, setTestDate] = useState("");
   const [includedSetIds, setIncludedSetIds] = useState<string[]>([]);
   const otherSets = useMemo(
@@ -34,14 +37,24 @@ export function StudyGuide({ set }: { set: StudySet }) {
   };
 
   const run = async () => {
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setBusy(true);
     setError(null);
     try {
-      await gen({ data: { setId: set.id, includedSetIds, testDate: testDate || null } });
+      const input = { setId: set.id, includedSetIds, testDate: testDate || null };
+      const prepared = await gen({ data: { ...input, prepareOnly: true } });
+      if (!("system" in prepared)) throw new Error("Couldn't prepare the study guide prompt.");
+      setStreamedGuide("");
+      const guide = await streamAiText({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamedGuide((old) => old + chunk) });
+      if (guide.trim().length < 100) throw new Error("The study guide response was incomplete. Nothing was saved; please try again.");
+      await gen({ data: { ...input, generatedGuide: guide } });
       await qc.invalidateQueries({ queryKey: ["set", set.id] });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to generate your study guide");
+      setError(e instanceof DOMException && e.name === "AbortError" ? "Generation cancelled. Nothing was saved." : e instanceof Error ? e.message : "Failed to generate your study guide");
     } finally {
+      streamController.current = null;
       setBusy(false);
     }
   };
@@ -51,7 +64,9 @@ export function StudyGuide({ set }: { set: StudySet }) {
       <div className="rounded-2xl dpanel p-10 text-center max-w-xl mx-auto">
         <Loader2 className="size-8 animate-spin text-cool2 mx-auto" />
         <h2 className="font-display text-2xl uppercase mt-4">Building your study guide</h2>
-        <p className="text-soft text-sm mt-1">Organizing topics across your selected study sets{testDate ? ` for your ${new Date(`${testDate}T12:00:00`).toLocaleDateString()} test` : ""}. This can take 20–60 seconds.</p>
+        <p className="text-soft text-sm mt-1">Organizing topics across your selected study sets{testDate ? ` for your ${new Date(`${testDate}T12:00:00`).toLocaleDateString()} test` : ""}.</p>
+        {streamedGuide && <div className="text-left mt-6 max-h-[55vh] overflow-y-auto rounded-xl border border-line bg-panel p-5"><MarkdownContent>{streamedGuide}</MarkdownContent></div>}
+        <button type="button" onClick={() => streamController.current?.abort()} className={btnGhost + " mt-4"}>Cancel generation</button>
       </div>
     );
 

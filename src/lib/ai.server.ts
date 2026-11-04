@@ -96,7 +96,7 @@ async function callNvidia(
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        Accept: "application/json",
+        Accept: "text/event-stream",
       },
       signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
@@ -107,7 +107,7 @@ async function callNvidia(
         ],
         temperature: 0.2,
         max_tokens: 6000,
-        stream: false,
+        stream: true,
         ...(model.startsWith("nvidia/nemotron-3")
           ? { chat_template_kwargs: { enable_thinking: model.includes("ultra") } }
           : {}),
@@ -124,30 +124,78 @@ async function callNvidia(
     );
   }
 
-  let body: string;
-  try {
-    body = await response.text();
-  } catch {
-    throw new NvidiaError("NVIDIA NIM returned an unreadable response.", 502);
-  }
-  if (!response.ok) throw new NvidiaError(providerErrorMessage(response.status, body), response.status);
-
-  let payload: unknown;
-  try {
-    payload = JSON.parse(body);
-  } catch {
-    throw new NvidiaError("NVIDIA NIM returned an invalid response.", 502);
-  }
-  const root = payload as Record<string, unknown>;
-  if (root.error) {
+  if (!response.ok || !response.body) {
+    const body = await response.text().catch(() => "");
     throw new NvidiaError(
-      typeof root.error === "string" ? root.error : "NVIDIA NIM reported an inference error.",
-      502,
+      response.ok
+        ? "NVIDIA NIM returned an unreadable streaming response."
+        : providerErrorMessage(response.status, body),
+      response.ok ? 502 : response.status,
     );
   }
-  const text = extractText(payload);
-  if (!text) throw new NvidiaError("NVIDIA NIM returned an empty response. Check the selected model and try again.", 502);
-  return text;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result = "";
+  let finished = false;
+  const consumeEvent = (event: string) => {
+    const dataLines = event.split(/\r?\n/).filter((line) => line.startsWith("data:"));
+    if (!dataLines.length) return;
+    const data = dataLines.map((line) => line.slice(5).replace(/^ /, "")).join("\n");
+    if (data.trim() === "[DONE]") { finished = true; return; }
+    if (!data.trim()) return;
+    let payload: unknown;
+    try { payload = JSON.parse(data); }
+    catch { return; }
+    if (!payload || typeof payload !== "object") return;
+    const root = payload as Record<string, unknown>;
+    if (root.error) {
+      const error = root.error;
+      const message = typeof error === "string" ? error :
+        error && typeof error === "object" && "message" in error && typeof error.message === "string"
+          ? error.message : "NVIDIA NIM reported an inference error.";
+      throw new NvidiaError(message, 502);
+    }
+    const choices = Array.isArray(root.choices) ? root.choices : [];
+    const first = choices[0] as Record<string, unknown> | undefined;
+    const delta = first?.delta as Record<string, unknown> | undefined;
+    const content = delta?.content;
+    if (typeof content === "string") result += content;
+    else if (Array.isArray(content)) {
+      result += content.map((part) => part && typeof part === "object" &&
+        "text" in part && typeof part.text === "string" ? part.text : "").join("");
+    }
+    if (first?.finish_reason) finished = true;
+  };
+
+  try {
+    while (!finished) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() ?? "";
+      for (const event of events) {
+        consumeEvent(event);
+        if (finished) break;
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) consumeEvent(buffer);
+    if (!finished) {
+      throw new NvidiaError("NVIDIA NIM ended the stream before completing the response.", 502);
+    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined);
+    if (error instanceof NvidiaError) throw error;
+    throw new NvidiaError("NVIDIA NIM streaming response could not be read.", 502);
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (!result.trim()) throw new NvidiaError("NVIDIA NIM returned an empty response. Check the selected model and try again.", 502);
+  return result;
 }
 
 /** Appended to every AI system prompt: the student's materials are the primary source. */

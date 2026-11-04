@@ -22,6 +22,7 @@ import { Route as AuthenticatedTrashRouteImport } from './routes/_authenticated/
 import { Route as AuthenticatedAdminProgressionRouteImport } from './routes/_authenticated/admin-progression'
 import { Route as AuthenticatedTurnitinRouteImport } from './routes/_authenticated/turnitin'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
+import { Route as ApiAiStreamRouteImport } from './routes/api/ai-stream'
 import { Route as ApiSimilarityDiscoveryRouteImport } from './routes/api/similarity-discovery'
 import { Route as AuthenticatedAssignmentIndexRouteImport } from './routes/_authenticated/assignment.index'
 import { Route as AuthenticatedAssignmentIdRouteImport } from './routes/_authenticated/assignment.$id'
@@ -94,6 +95,11 @@ const ApiTranscribeRoute = ApiTranscribeRouteImport.update({
   path: '/api/transcribe',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAiStreamRoute = ApiAiStreamRouteImport.update({
+  id: '/api/ai-stream',
+  path: '/api/ai-stream',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiSimilarityDiscoveryRoute = ApiSimilarityDiscoveryRouteImport.update({
   id: '/api/similarity-discovery',
   path: '/api/similarity-discovery',
@@ -145,6 +151,7 @@ export interface FileRoutesByFullPath {
   '/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/ai-stream': typeof ApiAiStreamRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
   '/assignment/$id': typeof AuthenticatedAssignmentIdRoute
   '/essay/$id': typeof AuthenticatedEssayIdRoute
@@ -166,6 +173,7 @@ export interface FileRoutesByTo {
   '/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/ai-stream': typeof ApiAiStreamRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
   '/assignment/$id': typeof AuthenticatedAssignmentIdRoute
   '/essay/$id': typeof AuthenticatedEssayIdRoute
@@ -188,6 +196,7 @@ export interface FileRoutesById {
   '/_authenticated/admin-progression': typeof AuthenticatedAdminProgressionRoute
   '/_authenticated/turnitin': typeof AuthenticatedTurnitinRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/ai-stream': typeof ApiAiStreamRoute
   '/api/similarity-discovery': typeof ApiSimilarityDiscoveryRoute
   '/_authenticated/assignment/$id': typeof AuthenticatedAssignmentIdRoute
   '/_authenticated/essay/$id': typeof AuthenticatedEssayIdRoute
@@ -211,6 +220,7 @@ export interface FileRouteTypes {
     | '/admin-progression'
     | '/turnitin'
     | '/api/transcribe'
+    | '/api/ai-stream'
     | '/api/similarity-discovery'
     | '/assignment/$id'
     | '/essay/$id'
@@ -232,6 +242,7 @@ export interface FileRouteTypes {
     | '/admin-progression'
     | '/turnitin'
     | '/api/transcribe'
+    | '/api/ai-stream'
     | '/api/similarity-discovery'
     | '/assignment/$id'
     | '/essay/$id'
@@ -254,6 +265,7 @@ export interface FileRouteTypes {
     | '/_authenticated/admin-progression'
     | '/_authenticated/turnitin'
     | '/api/transcribe'
+    | '/api/ai-stream'
     | '/api/similarity-discovery'
     | '/_authenticated/assignment/$id'
     | '/_authenticated/essay/$id'
@@ -364,6 +376,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTranscribeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/ai-stream': {
+      id: '/api/ai-stream'
+      path: '/api/ai-stream'
+      fullPath: '/api/ai-stream'
+      preLoaderRoute: typeof ApiAiStreamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/similarity-discovery': {
       id: '/api/similarity-discovery'
       path: '/api/similarity-discovery'
@@ -460,6 +479,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
   ApiTranscribeRoute: ApiTranscribeRoute,
+  ApiAiStreamRoute: ApiAiStreamRoute,
   ApiSimilarityDiscoveryRoute: ApiSimilarityDiscoveryRoute,
 }
 export const routeTree = rootRouteImport

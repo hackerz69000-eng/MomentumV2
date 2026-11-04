@@ -1,8 +1,9 @@
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, BookOpenCheck, Check, ChevronRight, Loader2, Network, RefreshCw, Sparkles } from "lucide-react";
 import type { SetWithCards } from "@/lib/queries";
-import { generateConceptConnections } from "@/lib/study.functions";
+import { prepareConceptConnectionsStream } from "@/lib/study.functions";
+import { streamAiJson } from "@/lib/ai-stream.client";
 import { toast } from "sonner";
 
 type SavedMap = { id: string; title: string; setId: string; createdAt: string; concepts: Concept[] };
@@ -14,7 +15,7 @@ type Concept = {
 };
 
 export function ConceptConnections({ sets }: { sets: SetWithCards[] }) {
-  const generate = useServerFn(generateConceptConnections);
+  const prepare = useServerFn(prepareConceptConnectionsStream);
   const [setId, setSetId] = useState(sets[0]?.id ?? "");
   const [focus, setFocus] = useState("");
   const [concepts, setConcepts] = useState<Concept[]>([]);
@@ -22,6 +23,8 @@ export function ConceptConnections({ sets }: { sets: SetWithCards[] }) {
   const [revealed, setRevealed] = useState(false);
   const [confidence, setConfidence] = useState<Record<string, "learning" | "practising" | "confident">>({});
   const [busy, setBusy] = useState(false);
+  const [streamedMap, setStreamedMap] = useState("");
+  const streamController = useRef<AbortController | null>(null);
   const [savedMaps, setSavedMaps] = useState<SavedMap[]>([]);
   const [activeMapId, setActiveMapId] = useState("");
   useEffect(() => {
@@ -57,16 +60,33 @@ export function ConceptConnections({ sets }: { sets: SetWithCards[] }) {
 
   const run = async () => {
     if (!setId || busy) return;
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setBusy(true);
     try {
-      const result = await generate({ data: { setId, focus: focus.trim() || undefined } });
-      const next = result.concepts as Concept[];
+      const prompt = await prepare({ data: { setId, focus: focus.trim() || undefined } });
+      setStreamedMap("");
+      const next = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedMap((old) => old + chunk), validate: (value) => {
+        if (!value || typeof value !== "object" || !Array.isArray((value as { concepts?: unknown }).concepts)) throw new Error("The concept map response was not valid.");
+        const raw = (value as { concepts: unknown[] }).concepts;
+        const names = new Set(raw.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => String(item.name ?? "").trim()).filter(Boolean));
+        const concepts = raw.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({
+          name: String(item.name ?? "").trim().slice(0, 100),
+          summary: String(item.summary ?? "").trim().slice(0, 300),
+          importance: ["high", "medium", "low"].includes(String(item.importance)) ? String(item.importance) : "medium",
+          connections: Array.isArray(item.connections) ? item.connections.filter((link): link is Record<string, unknown> => !!link && typeof link === "object").map((link) => ({ to: String(link.to ?? "").trim(), relationship: String(link.relationship ?? "related to").trim().slice(0, 60) })).filter((link) => names.has(link.to)).slice(0, 5) : [],
+        })).filter((item) => item.name && item.summary).slice(0, 10);
+        if (concepts.length < 3) throw new Error("Momentum couldn't find enough supported concept connections. Try again after your study set finishes processing.");
+        return concepts as Concept[];
+      }});
       const saved: SavedMap = { id: crypto.randomUUID(), title: `${selected?.name ?? "Study set"}${focus.trim() ? ` · ${focus.trim()}` : " · Concept map"}`, setId, createdAt: new Date().toISOString(), concepts: next };
       setSavedMaps((current) => [saved, ...current]); setActiveMapId(saved.id);
       setConcepts(next); setSelectedName(next[0]?.name ?? ""); setRevealed(false); setConfidence({});
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Couldn't build the concept map.");
+      toast.error(e instanceof DOMException && e.name === "AbortError" ? "Concept map generation cancelled." : e instanceof Error ? e.message : "Couldn't build the concept map.");
     } finally {
+      streamController.current = null;
       setBusy(false);
     }
   };
@@ -90,9 +110,11 @@ export function ConceptConnections({ sets }: { sets: SetWithCards[] }) {
               {busy ? <Loader2 className="size-4 animate-spin" /> : concepts.length ? <RefreshCw className="size-4" /> : <Network className="size-4" />}
               {busy ? "Building map…" : concepts.length ? "Regenerate" : "Build map"}
             </button>
+            {busy && <button type="button" onClick={() => streamController.current?.abort()} className="rounded-lg border border-line px-3 py-2 text-xs text-soft">Cancel</button>}
           </div>
         </div>
 
+        {busy && streamedMap && <pre className="mt-5 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl border border-line bg-accent p-3 text-xs text-soft">{streamedMap}</pre>}
         {!concepts.length ? (
           <div className="mt-5 rounded-xl border border-dashed border-line bg-accent/40 p-8 text-center">
             <Network className="size-8 mx-auto text-cool2" />

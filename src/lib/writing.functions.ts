@@ -60,6 +60,8 @@ export const assignmentStep = createServerFn({ method: "POST" })
         id: z.string().uuid(),
         step: z.enum(["understand", "brainstorm", "outline", "feedback"]),
         question: z.string().max(3000).optional(),
+        prepareOnly: z.boolean().optional(),
+        generatedText: z.string().min(20).max(100000).optional(),
       })
       .parse(d),
   )
@@ -73,8 +75,7 @@ export const assignmentStep = createServerFn({ method: "POST" })
     const now = new Date().toISOString();
 
     if (data.step === "understand") {
-      const out = await aiText(
-        `${TEACH}
+      const system = `${TEACH}
 Create a student-friendly guide that explains the task and makes the next action obvious. Keep it concise: usually 400–700 words for a complex assignment and 250–450 for a simple one. Prefer useful detail over length. Never repeat the same fact in multiple sections.
 
 Use these sections in this order:
@@ -97,16 +98,16 @@ Mention only genuine ambiguities that affect the work. Do not invent questions m
 ## Start Here: Your First 3 Actions
 Give three small, concrete actions the student can take now.
 
-Formatting rules: no tables, raw HTML, pipe characters used as table layout, or <br> tags. Use actual Markdown headings, bullet lists, and numbered lists. Put each list item on a separate line. Use short paragraphs (usually 1–3 sentences), whitespace between sections, and plain language. Do not create an official-looking rubric from inferred criteria. Never invent the assignment topic/options, citation details, source claims, page numbers, lecture dates, deadlines, or submission rules. If important prompt text or source files are missing, name what's missing and still help with what is supported.${mat.instr}`,
-        [{ role: "user", content: brief }],
-      );
+Formatting rules: no tables, raw HTML, pipe characters used as table layout, or <br> tags. Use actual Markdown headings, bullet lists, and numbered lists. Put each list item on a separate line. Use short paragraphs (usually 1–3 sentences), whitespace between sections, and plain language. Do not create an official-looking rubric from inferred criteria. Never invent the assignment topic/options, citation details, source claims, page numbers, lecture dates, deadlines, or submission rules. If important prompt text or source files are missing, name what's missing and still help with what is supported.${mat.instr}`;
+      const messages: { role: "user" | "assistant"; content: string }[] = [{ role: "user", content: brief }];
+      if (data.prepareOnly) return { system, messages };
+      const out = data.generatedText ?? await aiText(system, messages);
       const { error: saveError } = await sb.from("assignments").update({ understanding: out, updated_at: now }).eq("id", a.id);
       if (saveError) throw new Error("The guide was generated but could not be saved. Please try again.");
       return { text: out };
     }
     if (data.step === "brainstorm") {
-      const out = await aiText(
-        `${TEACH}
+      const system = `${TEACH}
 Run a practical brainstorming workshop, not an essay. Keep it focused: usually 350–650 words for a complex assignment and 250–400 for a simple one. Help the student decide; do not decide their position for them.
 
 Use these sections:
@@ -128,8 +129,8 @@ Give one short activity, sized to the task, that helps the student compare ideas
 ## Your Next Step
 Give one clear action and invite the student to choose, combine, or reject ideas.
 
-Formatting rules: no tables, raw HTML, pipe-delimited layouts, escaped pipes, or <br> tags. Use headings and bullets with each item on its own line; keep paragraphs short and leave whitespace. Avoid repetition and generic filler. Never fabricate quotations, citations, page numbers, source claims, or prompt options. If essential prompt options or source materials are missing, say so rather than inventing them. Do not write the assignment for the student.${mat.instr}`,
-        [
+Formatting rules: no tables, raw HTML, pipe-delimited layouts, escaped pipes, or <br> tags. Use headings and bullets with each item on its own line; keep paragraphs short and leave whitespace. Avoid repetition and generic filler. Never fabricate quotations, citations, page numbers, source claims, or prompt options. If essential prompt options or source materials are missing, say so rather than inventing them. Do not write the assignment for the student.${mat.instr}`;
+      const messages: { role: "user" | "assistant"; content: string }[] = [
           {
             role: "user",
             content: `${brief}
@@ -137,16 +138,16 @@ Formatting rules: no tables, raw HTML, pipe-delimited layouts, escaped pipes, or
 UNDERSTANDING SO FAR:
 ${clip(a.understanding ?? "", 7000)}`,
           },
-        ],
-      );
+        ];
+      if (data.prepareOnly) return { system, messages };
+      const out = data.generatedText ?? await aiText(system, messages);
       const { error: saveError } = await sb.from("assignments").update({ brainstorm: out, updated_at: now }).eq("id", a.id);
       if (saveError) throw new Error("Your brainstorm was generated but could not be saved. Please try again.");
       return { text: out };
     }
     if (data.step === "outline") {
       const chosenArgument = a.chosen.trim();
-      const out = await aiText(
-        `${TEACH}
+      const system = `${TEACH}
 Create a clear, practical working outline that a student can follow section by section. This is a plan, NOT a finished essay: do not write full paragraphs. Usually keep it to 450–750 words for a complex task and 300–500 for a simple one; avoid repetition. The chosen argument/thesis is optional. ${chosenArgument ? `Use the student's argument as the starting point and preserve their voice. Any change must be labelled "Possible refinement" and explained, never silently replace their position.` : `Do not block because no thesis was supplied. First show 2–3 brief possible directions under "## Choose a Direction (Optional)". Then build a SAMPLE WORKING OUTLINE around one clearly labelled PROVISIONAL direction, explaining it can be changed or replaced. Do not imply the student has chosen it.`}
 
 Use clean Markdown headings, nested bullets, short readable chunks, and blank lines between sections. Never output tables, pipe-delimited layouts, escaped pipes, raw HTML, or <br> tags. Put each list item on its own line. Adapt the outline to the assignment type rather than assuming every task is an essay. For each section of the student's actual required format, include:
@@ -166,14 +167,15 @@ Use these sections:
 ## 6. How to Turn This Outline Into a Draft — give an ordered writing process with optional, assignment-aware time suggestions and a "ready to move on when" condition.
 ## Next 3 Actions — the most useful immediate actions.
 
-If the brainstorm is empty, still help using the prompt and supplied material. Respect source restrictions strictly. Avoid repetition, generic filler, and unsupported claims.${mat.instr}`,
-        [
+If the brainstorm is empty, still help using the prompt and supplied material. Respect source restrictions strictly. Avoid repetition, generic filler, and unsupported claims.${mat.instr}`;
+      const messages: { role: "user" | "assistant"; content: string }[] = [
           {
             role: "user",
             content: `${brief}\n\nSTUDENT'S CHOSEN ARGUMENT / THESIS (OPTIONAL):\n${chosenArgument || "(not chosen yet — help the student explore suitable directions and label any proposed direction provisional)"}\n\nBRAINSTORM:\n${clip(a.brainstorm ?? "", 5000)}`,
           },
-        ],
-      );
+        ];
+      if (data.prepareOnly) return { system, messages };
+      const out = data.generatedText ?? await aiText(system, messages);
       const { error: saveError } = await sb.from("assignments").update({ outline: out, updated_at: now }).eq("id", a.id);
       if (saveError) throw new Error("Your outline was generated but could not be saved. Please try again.");
       return { text: out };
@@ -185,8 +187,7 @@ If the brainstorm is empty, still help using the prompt and supplied material. R
       role: "user" | "assistant";
       content: string;
     }[];
-    const out = await aiText(
-      `${TEACH}
+    const system = `${TEACH}
 You are the student's revision coach. Give feedback in a calm, specific, prioritized, easy-to-scan format. Do not rewrite the assignment or entire paragraphs. Preserve the student's voice and help them make their own revisions. Quote only short phrases so the student can find the relevant place. Distinguish actual requirement gaps from optional style suggestions, and never claim to know the teacher's grade.
 
 Use this format:
@@ -203,9 +204,10 @@ ${brief}
 THESIS / CHOSEN ARGUMENT: ${a.chosen || "(not set)"}
 OUTLINE:\n${clip(a.outline ?? "(none)", 5000)}
 
-CURRENT DRAFT:\n${clip(a.draft, 25000)}`,
-      [...chat.slice(-8), { role: "user", content: q }],
-    );
+CURRENT DRAFT:\n${clip(a.draft, 25000)}`;
+      const messages: { role: "user" | "assistant"; content: string }[] = [...chat.slice(-8), { role: "user", content: q }];
+      if (data.prepareOnly) return { system, messages };
+      const out = data.generatedText ?? await aiText(system, messages);
     const next = [...chat, { role: "user", content: q }, { role: "assistant", content: out }].slice(
       -30,
     );
@@ -273,7 +275,7 @@ PROCESS:
 
 export const gradeEssay = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ id: z.string().uuid() }).parse(d))
+  .inputValidator((d: unknown) => z.object({ id: z.string().uuid(), prepareOnly: z.boolean().optional(), generatedText: z.string().min(20).max(100000).optional() }).parse(d))
   .handler(async ({ data, context }) => {
     const sb = context.supabase;
     const { data: e, error } = await sb.from("essay_grades").select("*").eq("id", data.id).single();
@@ -281,12 +283,10 @@ export const gradeEssay = createServerFn({ method: "POST" })
     if (e.essay.trim().length < 200)
       throw new Error("The essay is too short to grade thoroughly (under 200 characters).");
     const mat = await setContext(sb, e.set_id, 20000);
-    const text = await aiText(GRADER + mat.instr, [
-      {
-        role: "user",
-        content: `ASSIGNMENT INSTRUCTIONS / ESSAY QUESTION:\n${clip(e.instructions || "(not provided)", 10000)}\n\nRUBRIC:\n${clip(e.rubric || "(not provided)", 10000)}\n\nTEACHER INSTRUCTIONS:\n${clip(e.teacher_notes || "(not provided)", 5000)}\n\nREQUIRED SOURCES / MATERIALS:\n${clip(e.sources || "(not provided)", 15000)}${mat.text}\n\nSTUDENT ESSAY (${e.essay.trim().split(/\s+/).length} words):\n${clip(e.essay, 60000)}`,
-      },
-    ], { task: "reasoning" });
+    const system = GRADER + mat.instr;
+    const messages = [{ role: "user" as const, content: clip(`ASSIGNMENT INSTRUCTIONS / ESSAY QUESTION:\n${clip(e.instructions || "(not provided)", 10000)}\n\nRUBRIC:\n${clip(e.rubric || "(not provided)", 10000)}\n\nTEACHER INSTRUCTIONS:\n${clip(e.teacher_notes || "(not provided)", 5000)}\n\nREQUIRED SOURCES / MATERIALS:\n${clip(e.sources || "(not provided)", 15000)}${mat.text}\n\nSTUDENT ESSAY (${e.essay.trim().split(/\s+/).length} words):\n${clip(e.essay, 60000)}`, 150000) }];
+    if (data.prepareOnly) return { system, messages, task: "reasoning" as const };
+    const text = data.generatedText ?? await aiText(system, messages, { task: "reasoning" });
     const parsed = parseJson<Partial<EssayResult>>(text);
     const r = parsed && typeof parsed === "object" ? parsed : {};
     const arr = (x: unknown) => (Array.isArray(x) ? x.map(String).filter(Boolean) : []);

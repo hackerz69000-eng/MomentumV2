@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { ocrFile } from "@/lib/study.functions";
@@ -9,6 +9,7 @@ import { ACCEPT, MAX_BYTES, extractFile, fileKind } from "@/lib/extract";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 import { gradeEssay, type EssayResult } from "@/lib/writing.functions";
+import { streamAiText } from "@/lib/ai-stream.client";
 import { useAutosave } from "@/hooks/use-autosave";
 import { PageHeader } from "@/components/PageHeader";
 import { SaveStatus } from "@/components/SaveStatus";
@@ -78,6 +79,8 @@ function Editor({ row }: { row: Row }) {
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamedGrade, setStreamedGrade] = useState("");
+  const streamController = useRef<AbortController | null>(null);
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((p) => ({ ...p, [k]: v }));
   const words = f.essay.trim() ? f.essay.trim().split(/\s+/).length : 0;
 
@@ -92,12 +95,20 @@ function Editor({ row }: { row: Row }) {
 
   const grade = async () => {
     if (busy) return;
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setBusy(true);
     setError(null);
     try {
       const { error: saveError } = await supabase.from("essay_grades").update({ ...f, title: f.title.trim() || "Untitled essay" }).eq("id", row.id);
       if (saveError) throw new Error("Couldn't save your latest essay changes before grading. Check your connection and try again.");
-      const r = await gradeFn({ data: { id: row.id } });
+      const prepared = await gradeFn({ data: { id: row.id, prepareOnly: true } });
+      if (!("system" in prepared)) throw new Error("Couldn't prepare essay grading.");
+      setStreamedGrade("");
+      const generatedText = await streamAiText({ system: prepared.system, messages: prepared.messages, task: prepared.task, signal: controller.signal, onDelta: (chunk) => setStreamedGrade((old) => old + chunk) });
+      const r = await gradeFn({ data: { id: row.id, generatedText } });
+      if (!("result" in r)) throw new Error("The essay grade could not be finalized.");
       setResult(r.result);
       qc.invalidateQueries({ queryKey: ["essays"] });
     } catch (e) {
@@ -169,7 +180,8 @@ function Editor({ row }: { row: Row }) {
             onChange={(v) => set("essay", v)}
             rows={16}
           />
-          {error && <ErrorBox msg={error} />}
+          {busy && streamedGrade && <div className="rounded-xl border border-line bg-panel p-4 text-xs text-soft"><p className="eyebrow text-cool2 mb-2">Grading response streaming</p><pre className="whitespace-pre-wrap max-h-40 overflow-y-auto">{streamedGrade}</pre><button type="button" onClick={() => streamController.current?.abort()} className="mt-3 text-xs underline">Cancel grading</button></div>}
+      {error && <ErrorBox msg={error} />}
           <button
             onClick={grade}
             disabled={busy || f.essay.trim().length < 200}

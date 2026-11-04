@@ -1,5 +1,6 @@
 import { useServerFn } from "@tanstack/react-start";
 import { MarkdownContent } from "@/components/MarkdownContent";
+import { streamAiJson, streamAiText } from "@/lib/ai-stream.client";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -7,9 +8,9 @@ import { Check, Lightbulb, Loader2, RotateCcw, Sparkles, Trash2, X } from "lucid
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  explainMistake,
-  mistakePatterns,
-  gradeShortAnswers,
+  prepareExplainMistakeStream,
+  prepareMistakePatternsStream,
+  prepareGradeShortAnswersStream,
   similarQuestions,
   type QuizQuestion,
 } from "@/lib/study.functions";
@@ -143,9 +144,9 @@ type QData = { type?: string; options?: string[]; answer?: number; answerText?: 
 function MistakeCard({ m, setId, startOpen }: { m: Mistake; setId: string; startOpen?: boolean }) {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const explainFn = useServerFn(explainMistake);
+  const explainFn = useServerFn(prepareExplainMistakeStream);
   const similarFn = useServerFn(similarQuestions);
-  const gradeFn = useServerFn(gradeShortAnswers);
+  const gradePrepare = useServerFn(prepareGradeShortAnswersStream);
   const [openCard, setOpenCard] = useState(!!startOpen);
   const [mode, setMode] = useState<null | "retry" | "similar">(startOpen ? "retry" : null);
   const [explain, setExplain] = useState<string | null>(null);
@@ -211,13 +212,12 @@ function MistakeCard({ m, setId, startOpen }: { m: Mistake; setId: string; start
       let correct: boolean, feedback: string | undefined;
       if (choice) correct = answer === data.answer;
       else {
-        const r = await gradeFn({
-          data: {
-            items: [
-              { question: m.question, expected: m.correct_answer, given: String(answer ?? "") },
-            ],
-          },
-        });
+        const items = [{ question: m.question, expected: m.correct_answer, given: String(answer ?? "") }];
+        const prompt = await gradePrepare({ data: { items } });
+        const r = await streamAiJson({ system: prompt.system, messages: prompt.messages, validate: (value) => {
+          if (!value || typeof value !== "object" || !Array.isArray((value as { grades?: unknown }).grades)) throw new Error("Short-answer grades were not valid.");
+          return { grades: (value as { grades: unknown[] }).grades.map((grade) => { const item = grade && typeof grade === "object" ? grade as { correct?: unknown; feedback?: unknown } : {}; return { correct: Boolean(item.correct), feedback: String(item.feedback ?? "") }; }) };
+        }});
         correct = !!r.grades[0]?.correct;
         feedback = r.grades[0]?.feedback;
       }
@@ -232,7 +232,9 @@ function MistakeCard({ m, setId, startOpen }: { m: Mistake; setId: string; start
   const getExplain = async () => {
     setBusy("explain");
     try {
-      setExplain((await explainFn({ data: { mistakeId: m.id } })).text);
+      const prompt = await explainFn({ data: { mistakeId: m.id } });
+      setExplain("");
+      await streamAiText({ system: prompt.system, messages: prompt.messages, task: prompt.task, onDelta: (chunk) => setExplain((old) => (old ?? "") + chunk) });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "No explanation available");
     }
@@ -427,7 +429,7 @@ function SimilarPractice({
 }) {
   const { user } = useAuth();
   const qc = useQueryClient();
-  const gradeFn = useServerFn(gradeShortAnswers);
+  const gradePrepare = useServerFn(prepareGradeShortAnswersStream);
   const [ans, setAns] = useState<(string | number | null)[]>(qs.map(() => null));
   const [res, setRes] = useState<boolean[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -442,15 +444,12 @@ function SimilarPractice({
     const shortIdx = qs.map((q, i) => (q.type === "short" ? i : -1)).filter((i) => i >= 0);
     if (shortIdx.length) {
       try {
-        const g = await gradeFn({
-          data: {
-            items: shortIdx.map((i) => ({
-              question: qs[i]!.question,
-              expected: qs[i]!.answerText,
-              given: String(ans[i] ?? ""),
-            })),
-          },
-        });
+        const items = shortIdx.map((i) => ({ question: qs[i]!.question, expected: qs[i]!.answerText, given: String(ans[i] ?? "") }));
+        const prompt = await gradePrepare({ data: { items } });
+        const g = await streamAiJson({ system: prompt.system, messages: prompt.messages, validate: (value) => {
+          if (!value || typeof value !== "object" || !Array.isArray((value as { grades?: unknown }).grades)) throw new Error("Short-answer grades were not valid.");
+          return { grades: (value as { grades: unknown[] }).grades.map((grade) => { const item = grade && typeof grade === "object" ? grade as { correct?: unknown; feedback?: unknown } : {}; return { correct: Boolean(item.correct), feedback: String(item.feedback ?? "") }; }) };
+        }});
         shortIdx.forEach((qi, k) => (r[qi] = !!g.grades[k]?.correct));
       } catch {
         /* leave as incorrect */
@@ -562,13 +561,18 @@ function SimilarPractice({
 }
 
 function Patterns({ setId }: { setId: string }) {
-  const fn = useServerFn(mistakePatterns);
+  const fn = useServerFn(prepareMistakePatternsStream);
   const [text, setText] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const go = async () => {
     setBusy(true);
     try {
-      setText((await fn({ data: { setId } })).text);
+      const prompt = await fn({ data: { setId } });
+      if (prompt.empty) setText(prompt.empty);
+      else {
+        setText("");
+        await streamAiText({ system: prompt.system, messages: prompt.messages, task: prompt.task, onDelta: (chunk) => setText((old) => (old ?? "") + chunk) });
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't analyze your mistakes");
     }

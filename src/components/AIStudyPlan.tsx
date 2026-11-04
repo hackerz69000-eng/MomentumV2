@@ -1,8 +1,9 @@
 import { useServerFn } from "@tanstack/react-start";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { CalendarDays, Check, Loader2, Sparkles } from "lucide-react";
 import type { SetWithCards } from "@/lib/queries";
-import { generatePlan } from "@/lib/study.functions";
+import { generatePlan, type PlanDay } from "@/lib/study.functions";
+import { streamAiJson } from "@/lib/ai-stream.client";
 import { supabase } from "@/integrations/supabase/client";
 import { setStats, type Attempt, type Flashcard, type Mistake } from "@/lib/stats";
 import { toast } from "sonner";
@@ -18,12 +19,15 @@ const localDateInputValue = (date = new Date()) => {
 
 export function AIStudyPlan({ sets }: { sets: SetWithCards[] }) {
   const ready = useMemo(() => sets.filter((s) => s.status === "ready"), [sets]);
+  const generate = useServerFn(generatePlan);
   const [setId, setSetId] = useState(ready[0]?.id ?? sets[0]?.id ?? "");
   const [examDate, setExamDate] = useState(ready.find((s) => s.exam_date)?.exam_date?.slice(0, 10) ?? "");
   const [minutes, setMinutes] = useState(45);
   const [plan, setPlan] = useState<Day[]>([]);
   const [done, setDone] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [streamedPlan, setStreamedPlan] = useState("");
+  const streamController = useRef<AbortController | null>(null);
   const selected = sets.find((s) => s.id === setId);
   const today = localDateInputValue();
 
@@ -32,6 +36,9 @@ export function AIStudyPlan({ sets }: { sets: SetWithCards[] }) {
       toast.error("Choose a study set and exam date first.");
       return;
     }
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setBusy(true);
     try {
       const [{ data: cards }, { data: attempts }, { data: mistakes }] = await Promise.all([
@@ -40,21 +47,25 @@ export function AIStudyPlan({ sets }: { sets: SetWithCards[] }) {
         supabase.from("mistakes").select("topic,wrong_count,status").eq("set_id", selected.id).neq("status", "mastered").limit(50),
       ]);
       const stats = setStats((cards ?? []) as Flashcard[], (attempts ?? []) as Attempt[], (mistakes ?? []) as Pick<Mistake, "topic" | "wrong_count" | "status">[]);
-      const result = await generatePlan({
-        data: {
-          setId: selected.id,
-          examDate,
-          today,
-          minutesPerDay: minutes,
-          weakTopics: stats.weak.slice(0, 6).map((x) => x.topic),
-        },
-      });
+      const input = { setId: selected.id, examDate, today, minutesPerDay: minutes, weakTopics: stats.weak.slice(0, 6).map((x) => x.topic) };
+      const prepared = await generate({ data: { ...input, prepareOnly: true } });
+      if (!("system" in prepared)) throw new Error("Couldn't prepare the study plan.");
+      setStreamedPlan("");
+      const days = await streamAiJson({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamedPlan((old) => old + chunk), validate: (value) => {
+        if (!value || typeof value !== "object" || !Array.isArray((value as { days?: unknown }).days)) throw new Error("The study plan response was not valid.");
+        const result = (value as { days: unknown[] }).days.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ date: String(item.date ?? ""), title: String(item.title ?? ""), tasks: Array.isArray(item.tasks) ? item.tasks.map(String).slice(0, 6) : [] })).filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.date) && item.title && item.tasks.length);
+        if (!result.length) throw new Error("Could not create a usable study plan. Please try again.");
+        return result as PlanDay[];
+      }});
+      const result = await generate({ data: { ...input, generatedPlan: JSON.stringify({ days }) } });
+      if (!("plan" in result)) throw new Error("The study plan couldn't be finalized.");
       setPlan(result.plan as Day[]);
       setDone([]);
       toast.success("AI study plan created.");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Couldn't create the study plan.");
+      toast.error(e instanceof DOMException && e.name === "AbortError" ? "Plan generation cancelled. Nothing was saved." : e instanceof Error ? e.message : "Couldn't create the study plan.");
     } finally {
+      streamController.current = null;
       setBusy(false);
     }
   };
@@ -79,6 +90,9 @@ export function AIStudyPlan({ sets }: { sets: SetWithCards[] }) {
         <label className="text-xs text-soft">Minutes/day<select value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} className="block w-full mt-1 rounded-lg border border-line bg-accent px-3 py-2 text-sm text-foreground"><option value={20}>20 min</option><option value={30}>30 min</option><option value={45}>45 min</option><option value={60}>60 min</option><option value={90}>90 min</option></select></label>
         <button onClick={build} disabled={busy} className="self-end rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50">{busy ? <Loader2 className="size-4 animate-spin" /> : <CalendarDays className="size-4" />}{busy ? "Building…" : "Build plan"}</button>
       </div>
+      {busy && streamedPlan && <pre className="mt-4 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-accent p-3 text-xs text-soft">{streamedPlan}</pre>}
+      {busy && <button type="button" onClick={() => streamController.current?.abort()} className="mt-2 text-xs text-soft underline">Cancel plan generation</button>}
+      {busy && <button type="button" onClick={() => streamController.current?.abort()} className="mt-2 text-xs text-soft underline">Cancel plan generation</button>}
       {plan.length > 0 && (
         <div className="mt-5 space-y-3 max-h-[560px] overflow-auto pr-1">
           {plan.map((day) => (

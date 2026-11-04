@@ -1,12 +1,13 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { FileText, Upload, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { processSet, ocrFile } from "@/lib/study.functions";
+import { streamAiText, streamAiJson } from "@/lib/ai-stream.client";
 import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { cn } from "@/lib/utils";
 
@@ -48,6 +49,7 @@ function NewSet() {
   const [extracted, setExtracted] = useState<{ file: File; chars: number }[] | null>(null);
   const [progressMsg, setProgressMsg] = useState("");
   const [stage, setStage] = useState<null | "reading" | "generating">(null);
+  const streamController = useRef<AbortController | null>(null);
 
   const extract = async () => {
     if (!files.length) {
@@ -91,6 +93,7 @@ function NewSet() {
       return;
     }
 
+    let createdSetId: string | null = null;
     try {
       const material = text.trim();
       if (material.length < 30) {
@@ -126,6 +129,7 @@ function NewSet() {
       }
 
       const targetId = sbData.id;
+      createdSetId = targetId;
 
       // Keep every uploaded file attached to the same study set.
       if (mode === "pdf" && extracted?.length) {
@@ -139,13 +143,34 @@ function NewSet() {
       }
 
       // Gemini generates the notes first, then flashcards from those notes.
-      await process({ data: { setId: targetId } });
+      const prepared = await process({ data: { setId: targetId, prepareOnly: true } });
+      if ("serverManaged" in prepared) await process({ data: { setId: targetId } });
+      else if ("notesPrompts" in prepared) {
+        setProgressMsg("Generating study notes…");
+        const noteParts: string[] = [];
+        for (const prompt of prepared.notesPrompts) {
+          let streamed = "";
+          const part = await streamAiText({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => { streamed += chunk; setProgressMsg(`Generating study notes…\n${streamed.slice(-600)}`); } });
+          noteParts.push(part.trim());
+        }
+        const notes = prepared.notesHeader ? `${prepared.notesHeader}\n\n${noteParts.join("\n\n---\n\n")}` : noteParts[0] ?? "";
+        setProgressMsg("Generating flashcards…");
+        const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgressMsg((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
+          if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");
+          const valid = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item.q ?? "").trim(), a: String(item.a ?? "").trim(), t: String(item.t ?? "").trim() })).filter((item) => item.q && item.a).slice(0, 20);
+          if (!valid.length) throw new Error("No useful flashcards could be generated.");
+          return valid;
+        }});
+        await process({ data: { setId: targetId, generatedNotes: notes, generatedCards: cards } });
+      } else throw new Error("Couldn't prepare study set processing.");
 
       toast.success("Study set created.");
       qc.invalidateQueries({ queryKey: ["sets"] });
       navigate({ to: "/sets/$id", params: { id: targetId } });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Something went wrong");
+      const message = err instanceof DOMException && err.name === "AbortError" ? "Generation cancelled. Your new study set can be retried." : err instanceof Error ? err.message : "Something went wrong";
+      if (createdSetId) await supabase.from("study_sets").update({ status: "error", error: message.slice(0, 500) }).eq("id", createdSetId);
+      toast.error(message);
       setStage(null);
     }
   };
@@ -166,8 +191,9 @@ function NewSet() {
           <p className="text-soft text-sm mt-2">
             {stage === "reading"
               ? progressMsg || "Extracting text…"
-              : "Generating your notes and flashcards in parallel. Larger uploads may take longer."}
+              : progressMsg || "Generating your notes and flashcards. Larger uploads may take longer."}
           </p>
+          {stage === "generating" && progressMsg && <button type="button" onClick={() => streamController.current?.abort()} className="mt-5 text-xs text-soft underline">Cancel generation</button>}
         </div>
       </main>
     );

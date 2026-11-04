@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ArrowLeft, BookOpen, CheckCircle2, Clock3, FileText, FileUp, Loader2, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { ocrFile } from "@/lib/study.functions";
@@ -10,6 +10,7 @@ import { ACCEPT, MAX_BYTES, extractFile, fileKind } from "@/lib/extract";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 import { assignmentStep, type AssignmentStep } from "@/lib/writing.functions";
+import { streamAiText } from "@/lib/ai-stream.client";
 import { useAutosave } from "@/hooks/use-autosave";
 import { PageHeader } from "@/components/PageHeader";
 import { SaveStatus } from "@/components/SaveStatus";
@@ -125,6 +126,8 @@ function Editor({ row }: { row: Row }) {
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [streamingText, setStreamingText] = useState("");
+  const streamController = useRef<AbortController | null>(null);
   const [f, setF] = useState({
     title: row.title,
     set_id: row.set_id,
@@ -216,13 +219,20 @@ function Editor({ row }: { row: Row }) {
   };
 
   const run = async (step: AssignmentStep) => {
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setBusy(step);
     setError(null);
     try {
       await flush();
-      const r = await stepFn({
-        data: { id: row.id, step, question: step === "feedback" ? question : undefined },
-      });
+      const input = { id: row.id, step, question: step === "feedback" ? question : undefined };
+      const prepared = await stepFn({ data: { ...input, prepareOnly: true } });
+      if (!("system" in prepared)) throw new Error("Couldn't prepare this assignment step.");
+      setStreamingText("");
+      const generatedText = await streamAiText({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamingText((old) => old + chunk) });
+      const r = await stepFn({ data: { ...input, generatedText } });
+      if (!("text" in r)) throw new Error("The assignment step could not be finalized.");
       if (step === "feedback") {
         setChat((c) => [
           ...c,
@@ -339,7 +349,8 @@ function Editor({ row }: { row: Row }) {
               </article>
             ))}
           </div>
-          {error && <ErrorBox msg={error} />}
+          {busy && streamingText && <div className="rounded-xl border border-line bg-panel p-4 mb-4"><p className="eyebrow text-cool2 mb-2">Writing assistance streaming</p><div className="md text-sm"><MarkdownContent>{streamingText}</MarkdownContent></div><button type="button" onClick={() => streamController.current?.abort()} className="mt-3 text-xs text-soft underline">Cancel generation</button></div>}
+      {error && <ErrorBox msg={error} />}
           <div className="rounded-2xl border border-line/70 bg-panel overflow-hidden">
             <div className="border-b border-line/60 p-4 space-y-1">
               <p className="eyebrow text-cool2">Your workspace</p>

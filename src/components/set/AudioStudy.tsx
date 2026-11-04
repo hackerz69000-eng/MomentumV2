@@ -2,6 +2,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import { streamAiText, streamAiJson } from "@/lib/ai-stream.client";
 import { toast } from "sonner";
 import {
   AudioLines,
@@ -18,14 +19,18 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  askAudioStudy,
-  audioStudyQuiz,
+  prepareAudioStudyAsk,
+  saveAudioStudyAsk,
+  prepareAudioStudyQuizStream,
+  saveAudioStudyQuizStream,
   generateAudioSpeech,
-  generateAudioStudy,
+  prepareAudioStudyStream,
+  saveAudioStudyStream,
+  failAudioStudyStream,
   type AudioSection,
   type AudioStudyMode,
 } from "@/lib/audio-study.functions";
-import { gradeRecall, type RecallGrade } from "@/lib/study.functions";
+import { prepareRecallGradeStream, type RecallGrade } from "@/lib/study.functions";
 import { recordResults } from "@/lib/mistakes";
 import { logActivity } from "@/lib/log-activity";
 import type { StudySet } from "@/lib/queries";
@@ -159,23 +164,45 @@ function SessionPicker({
   onOpen: (id: string) => void;
   onCreated: (id: string) => void;
 }) {
-  const generate = useServerFn(generateAudioStudy);
+  const prepareGenerate = useServerFn(prepareAudioStudyStream);
+  const saveGenerate = useServerFn(saveAudioStudyStream);
+  const failGenerate = useServerFn(failAudioStudyStream);
   const voice = useServerFn(generateAudioSpeech);
   const [mode, setMode] = useState<AudioStudyMode>("quick");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const streamController = useRef<AbortController | null>(null);
   const weakReady = topics.length > 0;
   const start = async () => {
     if (busy) return;
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setBusy(true);
     setError(null);
     setProgress(null);
+    let pendingSessionId: string | null = null;
     try {
       const requestKey = crypto.randomUUID();
-      const { session } = await generate({ data: { setId: set.id, mode, requestKey } });
+      const prepared = await prepareGenerate({ data: { setId: set.id, mode, requestKey } });
+      let session: Session;
+      if ("existingSession" in prepared) session = prepared.existingSession;
+      else {
+        pendingSessionId = prepared.sessionId;
+        setProgress("Writing your lesson…");
+        const generated = await streamAiJson({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setProgress((old) => `${old ?? "Writing your lesson…"} ${chunk}`.slice(-800)), validate: (value) => {
+          if (!value || typeof value !== "object" || !Array.isArray((value as { sections?: unknown }).sections)) throw new Error("The audio lesson response was not valid.");
+          const item = value as { title?: unknown; sections: unknown[] };
+          const sections = item.sections.filter((section): section is Record<string, unknown> => !!section && typeof section === "object").filter((section) => typeof section.title === "string" && !!section.title.trim() && typeof section.narration === "string" && !!section.narration.trim()).map((section) => ({ title: String(section.title).slice(0, 120), topic: String(section.topic ?? section.title).slice(0, 80), narration: String(section.narration).slice(0, 3900) })).slice(0, 12);
+          if (sections.length < 2) throw new Error("The lesson outline was incomplete. Please try again.");
+          return { title: String(item.title ?? `${set.name} audio lesson`).slice(0, 160), sections };
+        }});
+        const saved = await saveGenerate({ data: { sessionId: prepared.sessionId, ...generated } });
+        session = saved.session as Session;
+      }
       try {
-        await voiceLesson(voice, session as Session, (d, t) =>
+        await voiceLesson(voice, session, (d, t) =>
           setProgress(`Recording audio ${Math.min(d + 1, t)} of ${t}…`),
         );
       } catch (e) {
@@ -185,8 +212,11 @@ function SessionPicker({
       }
       onCreated(session.id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't create the lesson");
+      const message = e instanceof DOMException && e.name === "AbortError" ? "Lesson generation cancelled. No lesson was saved." : e instanceof Error ? e.message : "Couldn't create the lesson";
+      if (pendingSessionId) await failGenerate({ data: { sessionId: pendingSessionId, error: message } }).catch(() => undefined);
+      setError(message);
     } finally {
+      streamController.current = null;
       setBusy(false);
       setProgress(null);
     }
@@ -225,6 +255,7 @@ function SessionPicker({
         })}
       </div>
       {error && <ErrorBox msg={error} />}
+      {busy && progress?.startsWith("Writing") && <button type="button" onClick={() => streamController.current?.abort()} className="text-xs text-soft underline">Cancel generation</button>}
       <button onClick={start} disabled={busy} className={btnPrimary}>
         {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}{" "}
         {busy ? (progress ?? "Writing your lesson…") : "Create Audio Lesson"}
@@ -273,9 +304,12 @@ function Player({
 }) {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const ask = useServerFn(askAudioStudy);
-  const quizFn = useServerFn(audioStudyQuiz);
-  const gradeFn = useServerFn(gradeRecall);
+  const prepareAsk = useServerFn(prepareAudioStudyAsk);
+  const saveAsk = useServerFn(saveAudioStudyAsk);
+  const askController = useRef<AbortController | null>(null);
+  const quizPrepare = useServerFn(prepareAudioStudyQuizStream);
+  const quizSave = useServerFn(saveAudioStudyQuizStream);
+  const gradePrepare = useServerFn(prepareRecallGradeStream);
   const voice = useServerFn(generateAudioSpeech);
   const [session, setSession] = useState(initial);
   const [urls, setUrls] = useState<string[]>([]);
@@ -458,24 +492,36 @@ function Player({
     setBusy("ask");
     const history = messages.slice(-8);
     setMessages((m) => [...m, { role: "user", content: text }]);
+    const controller = new AbortController(); askController.current = controller;
+    let reply = "";
     try {
-      const r = await ask({
-        data: { sessionId: session.id, question: text, sectionIndex, history },
-      });
-      setMessages((m) => [...m, { role: "assistant", content: r.reply }]);
+      const inputData = { sessionId: session.id, question: text, sectionIndex, history };
+      const prepared = await prepareAsk({ data: inputData });
+      setMessages((m) => [...m, { role: "assistant", content: "" }]);
+      reply = await streamAiText({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => {
+        setMessages((m) => m.map((item, i) => i === m.length - 1 && item.role === "assistant" ? { ...item, content: item.content + chunk } : item));
+      }});
+      await saveAsk({ data: { sessionId: session.id, question: text, reply, sectionIndex } });
+      await qc.invalidateQueries({ queryKey: ["audio-events", session.id] });
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Momentum couldn't answer that.");
-    } finally {
-      setBusy(null);
-    }
+      setMessages((m) => m.filter((item, i) => !(i === m.length - 1 && item.role === "assistant" && !item.content)));
+      if (!(e instanceof DOMException && e.name === "AbortError")) toast.error(e instanceof Error ? e.message : "Momentum couldn't answer that.");
+    } finally { askController.current = null; setBusy(null); }
   };
   const makeQuiz = async () => {
     audioRef.current?.pause();
     setPlaying(false);
     setBusy("quiz");
     try {
-      const q = await quizFn({ data: { sessionId: session.id, sectionIndex } });
-      setQuiz({ ...q, answer: "" });
+      const prompt = await quizPrepare({ data: { sessionId: session.id, sectionIndex } });
+      const q = await streamAiJson({ system: prompt.system, messages: prompt.messages, validate: (value) => {
+        if (!value || typeof value !== "object") throw new Error("The generated quiz question was not valid.");
+        const item = value as { question?: unknown; topic?: unknown; model?: unknown };
+        if (typeof item.question !== "string" || !item.question.trim() || typeof item.model !== "string" || !item.model.trim()) throw new Error("Couldn't create a reliable question. Please try again.");
+        return { question: item.question.trim().slice(0, 1000), topic: String(item.topic ?? prompt.defaultTopic).slice(0, 80), model: item.model.trim().slice(0, 3000) };
+      }});
+      const saved = await quizSave({ data: { sessionId: prompt.sessionId, sectionIndex: prompt.sectionIndex, ...q } });
+      setQuiz({ ...saved, answer: "" });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't create a question.");
     } finally {
@@ -486,9 +532,13 @@ function Player({
     if (!quiz || !user || busy) return;
     setBusy("grade");
     try {
-      const result = await gradeFn({
-        data: { setId: set.id, question: quiz.question, answer: reveal ? "" : quiz.answer },
-      });
+      const prompt = await gradePrepare({ data: { setId: set.id, question: quiz.question, answer: reveal ? "" : quiz.answer } });
+      const result = await streamAiJson({ system: prompt.system, messages: prompt.messages, validate: (value) => {
+        if (!value || typeof value !== "object") throw new Error("The answer grade was not valid.");
+        const item = value as { grade?: unknown; feedback?: unknown; model?: unknown };
+        if (!["correct", "mostly", "partial", "incorrect"].includes(String(item.grade))) throw new Error("The AI couldn't grade that answer reliably. Please try again.");
+        return { grade: item.grade as RecallGrade, feedback: String(item.feedback ?? ""), model: String(item.model ?? "") };
+      }});
       const first = !quiz.saved;
       setQuiz({ ...quiz, result, saved: true });
       if (first) {
@@ -803,9 +853,7 @@ function Player({
               placeholder="Ask about this part…"
               className={cn(inputCls, "flex-1")}
             />
-            <button disabled={!!busy || !input.trim()} className={btnPrimary} aria-label="Send">
-              <Send className="size-4" />
-            </button>
+            {busy === "ask" ? <button type="button" className={btnGhost} aria-label="Stop response" onClick={() => askController.current?.abort()}>Stop</button> : <button disabled={!!busy || !input.trim()} className={btnPrimary} aria-label="Send"><Send className="size-4" /></button>}
           </form>
         </section>
       </div>

@@ -7,16 +7,16 @@ import { Headphones, Loader2, SkipForward, Sparkles, Square } from "lucide-react
 import { useNavigate } from "@tanstack/react-router";
 import { supabase } from "@/integrations/supabase/client";
 import { planSession, type SessionStep } from "@/lib/study.functions";
+import { streamAiJson } from "@/lib/ai-stream.client";
 import { dayKey } from "@/lib/activity";
 import { logActivity } from "@/lib/log-activity";
 import type { StudySet } from "@/lib/queries";
-import type { Flashcard, setStats } from "@/lib/stats";
+import { type Flashcard, type setStats, type Attempt, type Mistake } from "@/lib/stats";
 import { cn } from "@/lib/utils";
 import { btnGhost, btnPrimary, Chips, ErrorBox } from "./ui";
 import { Flashcards } from "./Flashcards";
 import { ActiveRecall } from "./ActiveRecall";
 import { QuizRunner } from "./QuizRunner";
-import type { Attempt, Mistake } from "@/lib/stats";
 import { MistakeBank } from "./MistakeBank";
 
 type Stats = ReturnType<typeof setStats>;
@@ -75,29 +75,42 @@ export function StudyEverything({
   const [step, setStep] = useState(-1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamedPlan, setStreamedPlan] = useState("");
   const [summary, setSummary] = useState<Summary | null>(null);
   const startedAt = useRef<string>("");
   const done = useRef<string[]>([]);
   const before = useRef<number | null>(null);
+  const streamController = useRef<AbortController | null>(null);
 
   const build = async () => {
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setBusy(true);
     setError(null);
     setSummary(null);
     try {
-      const r = await plan({
-        data: {
-          setId: set.id,
-          minutes,
-          today: dayKey(new Date().toISOString()),
-          tzOffset: new Date().getTimezoneOffset(),
-        },
-      });
+      const input = { setId: set.id, minutes, today: dayKey(new Date().toISOString()), tzOffset: new Date().getTimezoneOffset() };
+      const prepared = await plan({ data: { ...input, prepareOnly: true } });
+      if (!("system" in prepared)) throw new Error("Couldn't prepare the study session.");
+      setStreamedPlan("");
+      const generated = await streamAiJson({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setStreamedPlan((old) => old + chunk), validate: (value) => {
+        if (!value || typeof value !== "object") throw new Error("The study session plan was not valid.");
+        const item = value as { headline?: unknown; reason?: unknown; steps?: unknown };
+        if (!Array.isArray(item.steps)) throw new Error("The study session plan did not contain steps.");
+        const allowed = ["flashcards", "recall", "adaptive", "exam", "guide", "mistakes", "audio"];
+        const steps = item.steps.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object").filter((entry) => allowed.includes(String(entry.kind))).map((entry) => ({ kind: entry.kind as SessionStep["kind"], title: String(entry.title ?? entry.kind), why: String(entry.why ?? ""), minutes: Math.max(1, Math.min(90, Number(entry.minutes) || 5)), count: Math.max(0, Math.min(30, Math.round(Number(entry.count) || 0))), topics: Array.isArray(entry.topics) ? entry.topics.map(String).slice(0, 6) : [], difficulty: (["easy", "medium", "hard", "mixed"].includes(String(entry.difficulty)) ? String(entry.difficulty) : "mixed") as SessionStep["difficulty"] })).slice(0, 6);
+        if (!steps.length) throw new Error("The study session plan did not contain usable steps.");
+        return { headline: String(item.headline ?? "Here's your focused study session."), reason: String(item.reason ?? ""), steps };
+      }});
+      const r = await plan({ data: { ...input, generatedPlan: JSON.stringify(generated) } });
+      if (!("headline" in r)) throw new Error("The study session plan couldn't be finalized.");
       setP(r);
       setStep(-1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't plan a session");
+      setError(e instanceof DOMException && e.name === "AbortError" ? "Planning cancelled. Nothing was saved." : e instanceof Error ? e.message : "Couldn't plan a session");
     }
+    streamController.current = null;
     setBusy(false);
   };
 
@@ -223,6 +236,8 @@ export function StudyEverything({
         <h2 className="font-display text-2xl uppercase mt-4">
           {p ? "Wrapping up" : "Analyzing your progress"}
         </h2>
+        {streamedPlan && <pre className="mt-5 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-xl border border-line bg-panel p-4 text-left text-xs text-soft">{streamedPlan}</pre>}
+        {!p && <button type="button" onClick={() => streamController.current?.abort()} className="mt-3 text-xs text-soft underline">Cancel planning</button>}
       </div>
     );
 

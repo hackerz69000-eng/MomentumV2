@@ -170,6 +170,28 @@ async function makeNotes(set: {
   }
 }
 
+function prepareNotesStreamPrompts(set: { name: string; subject: string; material_text: string; custom_instructions?: string }) {
+  const separated = splitPrimaryAndOptionalReadings(set.material_text);
+  if (separated.readings) return null;
+  const chunks = splitTextIntoChunks(set.material_text, 16000);
+  if (chunks.length <= 1) {
+    return {
+      header: "",
+      prompts: [{
+        system: NOTES_SYSTEM + ci(set),
+        messages: [{ role: "user" as const, content: `Study set: ${set.name} (${set.subject || "general"})\n\nMATERIAL (complete source):\n${chunks[0] ?? ""}` }],
+      }],
+    };
+  }
+  return {
+    header: `# ${set.name || "Complete Study Notes"}\n*Subject: ${set.subject || "General"}*`,
+    prompts: chunks.map((chunk, index) => ({
+      system: `${NOTES_SYSTEM}${ci(set)}\n\nLONG-SOURCE MODE: This is part ${index + 1} of ${chunks.length}. Make thorough notes ONLY for this part. Preserve its important definitions, explanations, examples, formulas, exceptions and relationships. Do not claim this is the whole course, do not add a Key Takeaways section, and do not refer to missing parts. Use meaningful headings so this part can be combined with the others.`,
+      messages: [{ role: "user" as const, content: `Study set: ${set.name} (${set.subject || "general"})\nSOURCE PART ${index + 1}/${chunks.length}:\n${chunk}` }],
+    })),
+  };
+}
+
 async function makeCards(set: {
   name?: string;
   subject?: string;
@@ -208,7 +230,12 @@ const idInput = (d: unknown) => z.object({ setId: z.string().min(1) }).parse(d);
 
 export const processSet = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator(idInput)
+  .inputValidator((d: unknown) => z.object({
+    setId: z.string().min(1).max(200),
+    prepareOnly: z.boolean().optional(),
+    generatedNotes: z.string().min(50).max(250000).optional(),
+    generatedCards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(80).optional() })).min(1).max(20).optional(),
+  }).parse(d))
   .handler(async ({ data, context }) => {
     const supabase = context.supabase;
     const set = await loadSet(supabase, data.setId);
@@ -219,12 +246,29 @@ export const processSet = createServerFn({ method: "POST" })
         .eq("id", set.id);
       if (statusError) throw new Error("Couldn't start processing this study set. Please try again.");
 
+      if (data.prepareOnly) {
+        const notesPlan = prepareNotesStreamPrompts(set);
+        if (!notesPlan) return { serverManaged: true as const };
+        const notesPrompts = notesPlan.prompts;
+        const notesHeader = notesPlan.header;
+        const cardsNotes = set.notes?.trim() ? `GENERATED STUDY NOTES:\n${clip(set.notes, 50000)}\n\n` : "";
+        const cardsSystem = CARDS_SYSTEM + ci(set);
+        const cardsMessages = [{ role: "user" as const, content: `STUDY SET: ${set.name || "Study Set"} (${set.subject || "general"})\n\n${cardsNotes}SOURCE MATERIAL (authoritative; verify every card against it):\n${clip(set.material_text, 50000)}` }];
+        return { notesPrompts, notesHeader, cardsSystem, cardsMessages };
+      }
+
       // Generate everything before replacing saved content, so an AI failure never
       // destroys the student's existing notes or cards.
-      const [notes, cards] = await Promise.all([
-        makeNotes(set),
-        makeCards(set),
-      ]);
+      let notes: string;
+      let cards: { q: string; a: string; t: string }[];
+      if (data.generatedNotes && data.generatedCards) {
+        notes = data.generatedNotes;
+        cards = data.generatedCards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "" }));
+      } else {
+        const generated = await Promise.all([data.generatedNotes ?? makeNotes(set), data.generatedCards ?? makeCards(set)]);
+        notes = generated[0];
+        cards = generated[1].map((card) => ({ q: card.q, a: card.a, t: card.t ?? "" }));
+      }
       const { data: oldCards, error: readError } = await supabase.from("flashcards").select("*").eq("set_id", set.id);
       if (readError) throw new Error("Couldn't safely replace the existing flashcards.");
       if (oldCards?.length) {
@@ -265,10 +309,15 @@ export const processSet = createServerFn({ method: "POST" })
 
 export const regenerateNotes = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator(idInput)
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), prepareOnly: z.boolean().optional(), generatedNotes: z.string().min(50).max(250000).optional() }).parse(d))
   .handler(async ({ data, context }) => {
     const set = await loadSet(context.supabase, data.setId);
-    const notes = await makeNotes(set);
+    if (data.prepareOnly) {
+      const notesPlan = prepareNotesStreamPrompts(set);
+      if (!notesPlan) return { serverManaged: true as const };
+      return { notesPrompts: notesPlan.prompts, notesHeader: notesPlan.header };
+    }
+    const notes = data.generatedNotes ?? await makeNotes(set);
     // Preserve the previous notes before overwriting them.
     if (set.notes?.trim()) {
       const { error: archiveError } = await context.supabase.from("trash").insert({
@@ -286,6 +335,39 @@ export const regenerateNotes = createServerFn({ method: "POST" })
       .eq("id", set.id);
     if (saveError) throw new Error("New notes were generated but couldn't be saved. Your previous notes are still available.");
     return { notes };
+  });
+
+export const prepareRegenerateCardsStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(idInput)
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId);
+    const notesContext = set.notes?.trim() ? `GENERATED STUDY NOTES:\n${clip(set.notes, 50000)}\n\n` : "";
+    return {
+      system: CARDS_SYSTEM + ci(set),
+      messages: [{ role: "user" as const, content: `STUDY SET: ${set.name || "Study Set"} (${set.subject || "general"})\n\n${notesContext}SOURCE MATERIAL (authoritative; verify every card against it):\n${clip(set.material_text, 50000)}` }],
+    };
+  });
+
+export const saveRegenerateCardsStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), cards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(80).optional() })).min(1).max(20) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const sb = context.supabase;
+    const set = await loadSet(sb, data.setId);
+    const cards = data.cards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "" })).filter((card) => card.q && card.a);
+    if (!cards.length) throw new Error("No useful flashcards could be generated from the supplied study material.");
+    const { data: old, error: readError } = await sb.from("flashcards").select("*").eq("set_id", set.id);
+    if (readError) throw new Error("Couldn't safely replace the existing flashcards.");
+    if (old?.length) {
+      const { error: archiveError } = await sb.from("trash").insert({ user_id: context.userId, kind: "flashcards", label: `${old.length} replaced flashcards — ${set.name}`, set_id: set.id, data: { rows: old } });
+      if (archiveError) throw new Error("Couldn't back up the existing flashcards, so they were left unchanged.");
+    }
+    const { error: deleteError } = await sb.from("flashcards").delete().eq("set_id", set.id);
+    if (deleteError) throw new Error("Couldn't replace the old flashcards. Your existing cards were kept.");
+    const { error: insertError } = await sb.from("flashcards").insert(cards.map((card, i) => ({ set_id: set.id, user_id: context.userId, question: card.q, answer: card.a, topic: card.t.slice(0, 60), position: i })));
+    if (insertError) throw new Error("New flashcards couldn't be saved. Your previous cards are in Recently Deleted.");
+    return { ok: true };
   });
 
 export const regenerateCards = createServerFn({ method: "POST" })
@@ -614,6 +696,8 @@ export const generateQuiz = createServerFn({ method: "POST" })
           .max(30)
           .optional(),
         lectureId: lectureIdField,
+        prepareOnly: z.boolean().optional(),
+        generatedText: z.string().min(20).max(100000).optional(),
       })
       .parse(d),
   )
@@ -624,7 +708,29 @@ export const generateQuiz = createServerFn({ method: "POST" })
       data.plan?.length && !data.lectureId
         ? mistakeLines(await openMistakes(context.supabase, set.id, 8))
         : [];
-    const questions = await makeQuestions(set, { ...data, avoid, retest });
+    const batchCount = Math.min(5, data.count);
+    const typeDesc = data.types.map((type) => type === "mc" ? '"mc" (multiple choice, 4 options)' : type === "tf" ? '"tf" (true/false, options ["True","False"])' : '"short" (short answer, 1-2 sentence expected answer)').join(", ");
+    const planText = data.plan?.length ? `\nADAPTIVE TOPIC PLAN — write this many questions per topic (use these exact topic names): ${data.plan.map((item) => `${item.topic}: ${item.count}`).join("; ")}. If a topic isn't in the material, use the closest topic.` : "";
+    const prompt = `You write ${data.exam ? "realistic practice exams" : "quizzes"} from study material. Return ONLY JSON:\n{"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"concise explanation of why the answer is right and the concept tested","topic":"short topic name (2-4 words)"}]}\nRules: exactly ${batchCount} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}${data.difficulty === "mixed" ? " (blend easy, medium and hard)" : ""}. For "mc"/"tf", "answer" is the 0-based index of the correct option. For "short", use "options": [] and "answer": -1, and put the model answer in "answerText". Reuse consistent topic names across questions. Test understanding, not trivia. Only use the material. Include a balanced mix of direct recall and application/relationship questions appropriate to the selected difficulty. Make questions distinct in the knowledge or reasoning they assess, not merely in wording. Use concise explanations of 1-2 sentences. ${data.questionGuidance?.trim() ? `\nSTUDENT QUESTION GUIDANCE:\n${data.questionGuidance.trim().slice(0, 2000)}` : ""}${QUALITY_RULES}${avoid.length ? `\nDo NOT repeat these recently asked questions:\n- ${avoid.slice(0, 40).join("\n- ")}` : ""}${planText}${retest.length ? `\nMISTAKE BANK — re-test these concepts with fresh wording:\n- ${retest.join("\n- ")}` : ""}${ci(set)}`;
+    const messages = [{ role: "user" as const, content: `MATERIAL:\n${clip(splitTextIntoChunks(set.material_text, 22000)[0] ?? set.material_text, 22000)}` }];
+    if (data.prepareOnly) return { system: prompt, messages, batchCount };
+    let questions: QuizQuestion[];
+    if (data.generatedText) {
+      const initial = parseQuestions(data.generatedText).filter((question) => !new Set(avoid.map(norm)).has(norm(question.question))).slice(0, batchCount);
+      let verified = data.exam ? initial : await validateQuestions(set.material_text, initial, `${data.questionGuidance?.trim() ? `\nTEST EXPECTATIONS: ${data.questionGuidance.trim().slice(0, 2000)}` : ""}${ci(set)}`);
+      if (!verified.length) {
+        questions = await makeQuestions(set, { ...data, avoid, retest });
+      } else {
+        const remaining = data.count - verified.length;
+        if (remaining > 0) {
+          const rest = await makeQuestions(set, { ...data, count: remaining, avoid: [...avoid, ...verified.map((question) => question.question)], retest: [] });
+          verified = [...verified, ...rest];
+        }
+        questions = verified.slice(0, data.count);
+      }
+    } else {
+      questions = await makeQuestions(set, { ...data, avoid, retest });
+    }
     if (!questions.length) throw new Error("Could not generate questions. Please try again.");
     return { questions };
   });
@@ -639,6 +745,8 @@ export const generateComprehensive = createServerFn({ method: "POST" })
         difficulty: DIFF,
         types: z.array(QTYPE).min(1),
         questionGuidance: z.string().max(2000).optional(),
+        prepareOnly: z.boolean().optional(),
+        generatedBySet: z.array(z.object({ setId: z.string().min(1).max(200), generatedText: z.string().min(20).max(100000) })).max(10).optional(),
       })
       .parse(d),
   )
@@ -654,6 +762,19 @@ export const generateComprehensive = createServerFn({ method: "POST" })
       return { set, count };
     });
     const results: { setName: string; questions: QuizQuestion[]; error?: string }[] = [];
+    const preparedPrompts: { setId: string; setName: string; system: string; messages: { role: "user"; content: string }[]; batchCount: number }[] = [];
+    if (data.prepareOnly) {
+      for (const { set, count } of allocations) {
+        if (count < 1) continue;
+        const avoid = await recentQuestions(context.supabase, set.id);
+        const batchCount = Math.min(5, count);
+        const typeDesc = data.types.map((type) => type === "mc" ? '"mc" (multiple choice, 4 options)' : type === "tf" ? '"tf" (true/false, options ["True","False"])' : '"short" (short answer, 1-2 sentence expected answer)').join(", ");
+        const system = `You write realistic comprehensive practice exam questions from this study set. Return ONLY JSON: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"concise explanation","topic":"short topic name"}]}. Exactly ${batchCount} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}. For mc/tf, answer is the 0-based index of the correct option. For short, options must be [] and answer -1, with the model answer in answerText. Use concise 1-2 sentence explanations. Only use material in this set. Avoid duplicates and ensure one defensible correct answer. ${data.questionGuidance?.trim() ? `Student guidance: ${data.questionGuidance.trim().slice(0, 2000)}.` : ""}${QUALITY_RULES}${avoid.length ? `\nDo not repeat these recent questions:\n- ${avoid.slice(0, 40).join("\n- ")}` : ""}${ci(set)}`;
+        preparedPrompts.push({ setId: set.id, setName: set.name, system, messages: [{ role: "user", content: `STUDY SET: ${set.name}\nMATERIAL:\n${clip(splitTextIntoChunks(set.material_text, 22000)[0] ?? set.material_text, 22000)}` }], batchCount });
+      }
+      return { prompts: preparedPrompts };
+    }
+    const generatedMap = new Map((data.generatedBySet ?? []).map((item) => [item.setId, item.generatedText]));
     const concurrency = 2;
     for (let offset = 0; offset < allocations.length; offset += concurrency) {
       const group = allocations.slice(offset, offset + concurrency);
@@ -663,14 +784,24 @@ export const generateComprehensive = createServerFn({ method: "POST" })
         try {
           const avoid = await recentQuestions(context.supabase, set.id);
           console.info(`[comprehensive-exam] Starting source set "${set.name}" (${count} questions; material=${set.material_text.length} chars; promptBudget=${perChars}).`);
-          const qs = await makeQuestions(set, {
-            count,
-            difficulty: data.difficulty,
-            types: data.types,
-            exam: true,
-            avoid,
-            questionGuidance: data.questionGuidance,
-          }, perChars);
+          const generatedText = generatedMap.get(set.id);
+          let qs: QuizQuestion[];
+          if (generatedText) {
+            const initial = parseQuestions(generatedText).filter((question) => !new Set(avoid.map(norm)).has(norm(question.question))).slice(0, Math.min(5, count));
+            let verified = initial;
+            if (verified.length) {
+              const remaining = count - verified.length;
+              if (remaining > 0) {
+                const rest = await makeQuestions(set, { count: remaining, difficulty: data.difficulty, types: data.types, exam: true, avoid: [...avoid, ...verified.map((question) => question.question)], questionGuidance: data.questionGuidance }, perChars);
+                verified = [...verified, ...rest];
+              }
+              qs = verified.slice(0, count);
+            } else {
+              qs = await makeQuestions(set, { count, difficulty: data.difficulty, types: data.types, exam: true, avoid, questionGuidance: data.questionGuidance }, perChars);
+            }
+          } else {
+            qs = await makeQuestions(set, { count, difficulty: data.difficulty, types: data.types, exam: true, avoid, questionGuidance: data.questionGuidance }, perChars);
+          }
           console.info(`[comprehensive-exam] Completed source set "${set.name}" (${qs.length}/${count} questions; ${Date.now() - startedAt}ms).`);
           return { setName: set.name, questions: qs.map((q) => ({ ...q, setId: set.id })) };
         } catch (error) {
@@ -695,6 +826,38 @@ export const generateComprehensive = createServerFn({ method: "POST" })
   });
 
 export type RecallQuestion = { question: string; topic: string };
+
+export const prepareRecallQuestionsStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), count: z.number().int().min(1).max(20), focus: z.array(z.string().max(80)).max(10), difficulty: DIFF.optional(), lectureId: lectureIdField }).parse(d))
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId, data.lectureId);
+    const avoid = await recentQuestions(context.supabase, set.id);
+    const retest = data.lectureId ? [] : mistakeLines(await openMistakes(context.supabase, set.id, 6));
+    return {
+      system: `You write active-recall questions: open questions a student must answer from memory in 1-4 sentences (explain, define, compare, why/how). No multiple choice, no yes/no. Return ONLY JSON: {"questions":[{"question":"...","topic":"short topic name (2-4 words)"}]}. Exactly ${data.count} questions, all different from each other. Every question must be answerable from the material alone, with one clear expected answer; don't ask about anything not in the material.${data.difficulty ? ` Difficulty: ${data.difficulty}.` : ""}${avoid.length ? ` Do not repeat these recent questions: ${avoid.slice(0, 30).join(" | ")}.` : ""}${ci(set)}${data.focus.length ? ` Prioritize these weak topics (about half the questions), using these exact topic names: ${data.focus.join(", ")}.` : ""}${retest.length ? ` Mistake Bank — the student repeatedly missed these concepts; re-test 1-3 of them with fresh wording: ${retest.join(" | ")}.` : ""}`,
+      messages: [{ role: "user" as const, content: `MATERIAL:\n${clip(set.material_text)}` }],
+    };
+  });
+
+export const prepareRecallHintStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), question: z.string().max(1000), lectureId: lectureIdField }).parse(d))
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId, data.lectureId);
+    return { system: `Give ONE short hint (max 20 words) that nudges the student toward the answer WITHOUT revealing it. No preamble.${ci(set)}\nMATERIAL:\n${clip(set.material_text, 30000)}`, messages: [{ role: "user" as const, content: data.question }] };
+  });
+
+export const prepareRecallGradeStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), question: z.string().max(1000), answer: z.string().max(4000), lectureId: lectureIdField }).parse(d))
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId, data.lectureId);
+    return {
+      system: `You grade a student's from-memory answer against the source material. Return ONLY JSON: {"grade":"correct|mostly|partial|incorrect","feedback":"1-3 sentences: what they got right and what they missed","model":"a concise model answer from the material"}. Grade on MEANING, not exact wording: accept synonyms, paraphrases and reasonable variations. "correct" = all key ideas; "mostly" = key idea right with a minor gap; "partial" = some relevant correct content but important parts missing or slightly wrong (give partial credit); "incorrect" = wrong, irrelevant or empty. The model answer must come from the material.${ci(set)}\nMATERIAL:\n${clip(set.material_text, 40000)}`,
+      messages: [{ role: "user" as const, content: `QUESTION: ${data.question}\nSTUDENT ANSWER: ${data.answer || "(empty)"}` }],
+    };
+  });
 
 export const generateRecall = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -807,6 +970,8 @@ export const generateGuide = createServerFn({ method: "POST" })
     setId: z.string().min(1).max(200),
     includedSetIds: z.array(z.string().min(1).max(200)).max(10).optional().default([]),
     testDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+    prepareOnly: z.boolean().optional(),
+    generatedGuide: z.string().min(20).max(100000).optional(),
   }).parse(d))
   .handler(async ({ data, context }) => {
     const sb = context.supabase;
@@ -852,19 +1017,43 @@ export const generateGuide = createServerFn({ method: "POST" })
     const sourceContext = sourceSets.map((source, index) =>
       `SOURCE ${index + 1}: ${source.name} (${source.subject || "General subject"})\nGENERATED NOTES:\n${clip(source.notes ?? "", index === 0 ? 12000 : 4000)}\n\nORIGINAL MATERIAL:\n${clip(source.material_text ?? "", index === 0 ? 22000 : 7000)}`
     ).join("\n\n==============================\n\n");
+    const boundedSourceContext = clip(sourceContext, 145000);
     const testDateContext = data.testDate
       ? `The student's test date is ${data.testDate}. Include a realistic study timeline counting back from that date: split work into manageable sessions, prioritize harder/high-yield topics first, schedule practice and active recall, and reserve the day before for mixed review. Do not claim there is time for more sessions than the date reasonably allows.`
       : "No test date was provided. Include a flexible study sequence rather than dated schedule.";
-    const guide = await aiText(
-      `You are an expert teacher and learning designer creating a polished, easy-to-follow study guide for a student preparing for a test. The student selected ${sourceSets.length} study set(s), which may cover multiple topics. Synthesize all selected sources into ONE coherent guide, keeping clear topic boundaries and explaining how related ideas connect.\n\nFORMAT AND READABILITY RULES:
-- Output clean Markdown only, with a useful title and a short overview that tells the student what they will learn. No AI preamble.\n- Make the guide scannable, not a wall of text: one # title, ## section headings, ### topic headings, short paragraphs (2-4 sentences), descriptive bullets, and numbered procedures. Use blank lines between every heading, paragraph, list, and blockquote.\n- Avoid Markdown tables. Present comparisons and topic maps as short labeled bullet lists so the guide stays readable on phones and narrow screens. Never output multiple table rows on one line, raw pipe characters, or escaped table syntax.\n- For each major topic, explain it in plain language, why it matters, the key details, and a concrete example when supported by the material. Define technical vocabulary before using it heavily.\n- **Teach the student how to study, not just what to memorize.** At the end of EACH major topic or content section (Core Concepts, Key Terms, Processes, Comparisons, Examples, Common Confusions, and Practice Questions), add a clearly labeled blockquote heading such as “Study this section (about 15 minutes)” followed by 2-4 numbered actions in the exact order the student should do them. Every action must name an actual Momentum tool and give a specific time estimate in minutes, plus what to do with that tool. Example sequence: Notes (4 min) → Flashcards (5 min) → Active Recall (4 min) → Adaptive Quiz (5 min). Adjust the sequence and time to the content; do not copy the same generic sequence blindly for every section. For difficult or repeatedly missed topics, add a short Mistake Bank or AI Tutor step. Do not suggest a tool that does not fit the section.\n- Include a clearly titled “How to Use This Guide” workflow near the beginning that explains what to do first, second, third, and fourth, including realistic minutes for Notes, Flashcards, Active Recall, Adaptive Quiz, Mistake Bank when there are recorded mistakes, and a Practice Exam. Explain when to move on: if the student misses a concept, revisit its explanation and retry recall before progressing. Avoid telling the student to use every tool on every topic.\n- Clearly distinguish source facts from additional explanation. If clarifying beyond the sources, label it “Additional explanation” and do not invent facts. If sources conflict, point out the difference instead of silently choosing one.\n- Include these main sections in this order after the overview and the initial “How to use this guide” workflow: ## Topic Map, ## Core Concepts Explained, ## Key Terms and Definitions, ## Processes, Formulas, and Important Details, ## Compare and Connect the Topics, ## Worked or Concrete Examples, ## Common Confusions and Mistakes, ## Practice Questions, ## Answer Key, ## Final Quick Review${data.testDate ? ", ## Study Plan Before the Test" : ", ## Flexible Study Plan"}.\n- Topic Map should use compact bullets and identify which study set/source each topic came from.\n- Practice Questions should contain 8-12 varied questions spanning ALL selected sets (mix recall, explain, apply, and compare); do not put answers beside the questions. Answer Key must answer them clearly and number-match.\n- Common Confusions should include actual misconceptions supported by source/performance data. Personalize it with the current set's performance data when available, but do not pretend to have quiz data for other sets.\n- Final Quick Review should be a compact high-yield checklist, not another long summary.\n- The study plan must include a total time budget and a day-by-day schedule when a test date is provided. For each session, state the topic, tool, exact minutes, and intended result. When there is no test date, provide a flexible 3-session plan with minutes. Keep each day's workload realistic and reserve the day before the test for mixed practice and light review.\n- ${testDateContext}\n- Use only material supported by the provided sources, apart from clearly labeled additional explanation. Do not omit important source topics just to make the guide shorter. Keep it readable and genuinely useful rather than dumping raw notes.\n\nCURRENT STUDY SET PERFORMANCE DATA:\n${perf}${ci(set)}`,
-      [{ role: "user", content: `STUDY GUIDE TITLE SET: ${set.name}\nTEST DATE: ${data.testDate ?? "Not provided"}\nSELECTED STUDY SETS: ${sourceSets.map((s) => `${s.name} (${s.subject || "General subject"})`).join("; ")}\n\n${sourceContext}` }],
-    );
+    const system = `You are an expert teacher and learning designer creating a polished, easy-to-follow study guide for a student preparing for a test. The student selected ${sourceSets.length} study set(s), which may cover multiple topics. Synthesize all selected sources into ONE coherent guide, keeping clear topic boundaries and explaining how related ideas connect.\n\nFORMAT AND READABILITY RULES:
+- Output clean Markdown only, with a useful title and a short overview that tells the student what they will learn. No AI preamble.\n- Make the guide scannable, not a wall of text: one # title, ## section headings, ### topic headings, short paragraphs (2-4 sentences), descriptive bullets, and numbered procedures. Use blank lines between every heading, paragraph, list, and blockquote.\n- Avoid Markdown tables. Present comparisons and topic maps as short labeled bullet lists so the guide stays readable on phones and narrow screens. Never output multiple table rows on one line, raw pipe characters, or escaped table syntax.\n- For each major topic, explain it in plain language, why it matters, the key details, and a concrete example when supported by the material. Define technical vocabulary before using it heavily.\n- **Teach the student how to study, not just what to memorize.** At the end of EACH major topic or content section (Core Concepts, Key Terms, Processes, Comparisons, Examples, Common Confusions, and Practice Questions), add a clearly labeled blockquote heading such as “Study this section (about 15 minutes)” followed by 2-4 numbered actions in the exact order the student should do them. Every action must name an actual Momentum tool and give a specific time estimate in minutes, plus what to do with that tool. Example sequence: Notes (4 min) → Flashcards (5 min) → Active Recall (4 min) → Adaptive Quiz (5 min). Adjust the sequence and time to the content; do not copy the same generic sequence blindly for every section. For difficult or repeatedly missed topics, add a short Mistake Bank or AI Tutor step. Do not suggest a tool that does not fit the section.\n- Include a clearly titled “How to Use This Guide” workflow near the beginning that explains what to do first, second, third, and fourth, including realistic minutes for Notes, Flashcards, Active Recall, Adaptive Quiz, Mistake Bank when there are recorded mistakes, and a Practice Exam. Explain when to move on: if the student misses a concept, revisit its explanation and retry recall before progressing. Avoid telling the student to use every tool on every topic.\n- Clearly distinguish source facts from additional explanation. If clarifying beyond the sources, label it “Additional explanation” and do not invent facts. If sources conflict, point out the difference instead of silently choosing one.\n- Include these main sections in this order after the overview and the initial “How to use this guide” workflow: ## Topic Map, ## Core Concepts Explained, ## Key Terms and Definitions, ## Processes, Formulas, and Important Details, ## Compare and Connect the Topics, ## Worked or Concrete Examples, ## Common Confusions and Mistakes, ## Practice Questions, ## Answer Key, ## Final Quick Review${data.testDate ? ", ## Study Plan Before the Test" : ", ## Flexible Study Plan"}.\n- Topic Map should use compact bullets and identify which study set/source each topic came from.\n- Practice Questions should contain 8-12 varied questions spanning ALL selected sets (mix recall, explain, apply, and compare); do not put answers beside the questions. Answer Key must answer them clearly and number-match.\n- Common Confusions should include actual misconceptions supported by source/performance data. Personalize it with the current set's performance data when available, but do not pretend to have quiz data for other sets.\n- Final Quick Review should be a compact high-yield checklist, not another long summary.\n- The study plan must include a total time budget and a day-by-day schedule when a test date is provided. For each session, state the topic, tool, exact minutes, and intended result. When there is no test date, provide a flexible 3-session plan with minutes. Keep each day's workload realistic and reserve the day before the test for mixed practice and light review.\n- ${testDateContext}\n- Use only material supported by the provided sources, apart from clearly labeled additional explanation. Do not omit important source topics just to make the guide shorter. Keep it readable and genuinely useful rather than dumping raw notes.\n\nCURRENT STUDY SET PERFORMANCE DATA:\n${perf}${ci(set)}`;
+    const messages = [{ role: "user" as const, content: `STUDY GUIDE TITLE SET: ${set.name}\nTEST DATE: ${data.testDate ?? "Not provided"}\nSELECTED STUDY SETS: ${sourceSets.map((s) => `${s.name} (${s.subject || "General subject"})`).join("; ")}\n\n${boundedSourceContext}` }];
+    if (data.prepareOnly) return { system, messages };
+    const guide = data.generatedGuide ?? await aiText(system, messages);
     const at = new Date().toISOString();
     const { error: saveError } = await sb.from("study_sets").update({ study_guide: guide, study_guide_at: at }).eq("id", set.id);
     if (saveError) throw new Error("The study guide was generated but couldn't be saved. Please try again.");
     await sb.from("study_activity").insert({ user_id: context.userId, set_id: set.id, kind: "guide", count: 1 });
     return { guide, at };
+  });
+
+export const prepareCoachStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({
+    question: z.string().min(1).max(2000),
+    history: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(6000) })).max(10),
+    setId: z.string().min(1).max(200).nullable(),
+    today: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    tzOffset: z.number().int().min(-900).max(900),
+  }).parse(d))
+  .handler(async ({ data, context }) => {
+    const { act, summaries, history } = await coachData(context.supabase, data.setId, data.today, data.tzOffset);
+    const system = `You are Momentum Coach, a personal study planner (not a subject tutor — don't teach content; the separate AI Tutor does that). Today is ${data.today}.
+Use the student's data below to give specific, prioritized recommendations. Prioritize upcoming exams and weak topics over studying everything equally. Recommend concrete actions with minutes, using the app's tools by name: "Review due Flashcards", "Active Recall (N questions)", "Adaptive Quiz", "Practice Exam", "Comprehensive Exam", "Study Guide — Weak Areas section", "Mistake Bank (review N mistakes)", "Audio Study", "Notes", "AI Tutor", "Ask Your Materials", "Lecture Mode". Recommend Audio Study when a student needs a guided explanation or has limited hands-on study time; recommend its Weak Topics mode only when weak-topic evidence exists. Concepts the student has missed repeatedly (Mistake Bank) get top priority. Name the study set and topic for each action. Keep it short: a brief sentence of reasoning, then a numbered plan. Test readiness is only an estimate — say so if you mention it. Use Markdown.
+
+STREAK: current ${act.current} days, longest ${act.longest}, studied today: ${act.studiedToday ? "yes" : "no"}, days studied ${act.daysStudied}, sessions ${act.sessions}, flashcards ${act.flashcards}, quizzes ${act.quizzes}, exams ${act.exams}, active recall ${act.recall}.
+
+RECENT HISTORY (newest first): ${history}
+
+STUDY SETS:
+${summaries.join("\n\n") || "No study sets yet — suggest creating one."}`;
+    return { system, messages: [...data.history, { role: "user" as const, content: data.question }] };
   });
 
 export const askCoach = createServerFn({ method: "POST" })
@@ -901,6 +1090,14 @@ ${summaries.join("\n\n") || "No study sets yet — suggest creating one."}`;
     const reply = await aiText(system, [...data.history, { role: "user", content: data.question }]);
     return { reply };
   });
+
+export const prepareGradeShortAnswersStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ items: z.array(z.object({ question: z.string().max(4000), expected: z.string().max(4000), given: z.string().max(4000) })).max(50) }).parse(d))
+  .handler(async ({ data }) => ({
+    system: `You grade student short answers fairly, on meaning rather than exact wording. Accept answers that capture the key idea even if worded differently, with synonyms or minor spelling errors; mark correct when the answer is mostly right. Return ONLY JSON: {"grades":[{"correct":true,"feedback":"one short sentence"}]} in the same order.`,
+    messages: [{ role: "user" as const, content: JSON.stringify(data.items) }],
+  }));
 
 export const gradeShortAnswers = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -942,6 +1139,18 @@ const EXPLAIN_MODES = {
   practice:
     "Write ONE practice question on this with a single defensible answer. Show the question, then a line '---', then **Answer:** and a one-sentence explanation.",
 } as const;
+
+export const prepareExplainPassageStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), passage: z.string().min(1).max(8000), mode: z.enum(["simple", "university", "example", "detail", "summary", "analogy", "compare", "mistakes", "practice"]) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId);
+    return {
+      system: `You help a student understand their study notes. ${EXPLAIN_MODES[data.mode]} Use the student's original material as context when relevant. Use Markdown. No preamble.${ci(set)}\n\nORIGINAL MATERIAL (context):\n${clip(set.material_text, 30000)}`,
+      messages: [{ role: "user" as const, content: `PASSAGE FROM MY NOTES:\n${data.passage}` }],
+      task: "fast" as const,
+    };
+  });
 
 export const explainPassage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -989,6 +1198,8 @@ export const generatePlan = createServerFn({ method: "POST" })
         minutesPerDay: z.number().int().min(10).max(600),
         weakTopics: z.array(z.string()).max(20),
         recent: z.string().max(2000).optional(),
+        prepareOnly: z.boolean().optional(),
+        generatedPlan: z.string().max(50000).optional(),
       })
       .parse(d),
   )
@@ -1012,18 +1223,13 @@ export const generatePlan = createServerFn({ method: "POST" })
       ? recentHistory(acts, [{ id: set.id, name: set.name }])
       : (data.recent ?? "");
     const planMistakes = mistakeLines(await openMistakes(context.supabase, set.id, 10));
-    const text = await aiText(
-      `You create simple, realistic study schedules. Return ONLY JSON: {"days":[{"date":"YYYY-MM-DD","title":"short focus","tasks":["task (~minutes)"]}]}
+    const system = `You create simple, realistic study schedules. Return ONLY JSON: {"days":[{"date":"YYYY-MM-DD","title":"short focus","tasks":["task (~minutes)"]}]}
 Make exactly ${n} consecutive days starting ${data.today}${days > 29 ? " (cover the first 30 days)" : `, ending on the exam day ${data.examDate}`}. Each day fits in ${data.minutesPerDay} minutes; 1-4 tasks per day with realistic minute allocations that add up to no more than the daily limit.
 ${deadlineGuidance}
-Use the app's tools in tasks: "Notes", "Study Guide", "Mistake Bank", "Flashcards", "Active Recall", "Adaptive Quiz", "Quiz", "Practice Exam", "AI Tutor". Cover important material, revisit weak topics more often${data.weakTopics.length ? ` (${data.weakTopics.join(", ")})` : ""}, ${planMistakes.length ? `schedule short "Mistake Bank" reviews for concepts the student keeps missing (${planMistakes.slice(0, 6).join(" | ")}), ` : ""}schedule practice exams only when the available timeline makes sense, and use a light final review on the day before / of the exam. Avoid repetitive tasks, unrealistic workloads, and guarantees about exam grades.${recent ? `\nRecent study history (adapt to it, don't repeat what was just done heavily): ${recent}` : ""}${ci(set)}`,
-      [
-        {
-          role: "user",
-          content: `Study set: ${set.name}\nMATERIAL:\n${clip(set.material_text, 30000)}`,
-        },
-      ],
-    );
+Use the app's tools in tasks: "Notes", "Study Guide", "Mistake Bank", "Flashcards", "Active Recall", "Adaptive Quiz", "Quiz", "Practice Exam", "AI Tutor". Cover important material, revisit weak topics more often${data.weakTopics.length ? ` (${data.weakTopics.join(", ")})` : ""}, ${planMistakes.length ? `schedule short "Mistake Bank" reviews for concepts the student keeps missing (${planMistakes.slice(0, 6).join(" | ")}), ` : ""}schedule practice exams only when the available timeline makes sense, and use a light final review on the day before / of the exam. Avoid repetitive tasks, unrealistic workloads, and guarantees about exam grades.${recent ? `\nRecent study history (adapt to it, don't repeat what was just done heavily): ${recent}` : ""}${ci(set)}`;
+    const messages = [{ role: "user" as const, content: `Study set: ${set.name}\nMATERIAL:\n${clip(set.material_text, 30000)}` }];
+    if (data.prepareOnly) return { system, messages };
+    const text = data.generatedPlan ?? await aiText(system, messages);
     const parsed = parseJson<{ days?: unknown }>(text);
     const rawDays = parsed && typeof parsed === "object" && Array.isArray(parsed.days) ? parsed.days : [];
     const plan = rawDays
@@ -1042,6 +1248,17 @@ Use the app's tools in tasks: "Notes", "Study Guide", "Mistake Bank", "Flashcard
   });
 
 
+
+export const prepareConceptConnectionsStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), focus: z.string().max(120).optional() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId);
+    return {
+      system: `Build a compact concept-connection map for this study set. Return ONLY JSON: {"concepts":[{"name":"","summary":"","importance":"high|medium|low","connections":[{"to":"exact concept name","relationship":"causes|depends on|contrasts with|explains|part of|related to"}]}]}. Create 5-10 concepts that are actually supported by the student's material. Use exact repeated terminology from the material. Connections must point only to another concept in the returned list. Prefer meaningful relationships a student could use to understand or remember the material; do not create generic filler. Keep each summary under 35 words. If a focus is provided, prioritize it. ${data.focus ? `FOCUS: ${data.focus}` : ""}${ci(set)}\nMATERIAL:\n${clip(set.material_text, 42000)}`,
+      messages: [{ role: "user" as const, content: `Create the concept map for: ${set.name}` }],
+    };
+  });
 
 export const generateConceptConnections = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -1126,6 +1343,39 @@ If the answer isn't in the material, say so briefly and give general guidance.
 
 MATERIAL:
 ${clip(set.material_text, 40000)}`;
+
+export const prepareTutorStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), content: z.string().min(1).max(4000) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const sb = context.supabase;
+    const set = await loadSet(sb, data.setId);
+    const { data: userMsg, error } = await sb.from("tutor_messages")
+      .insert({ set_id: set.id, user_id: context.userId, role: "user", content: data.content })
+      .select("id").single();
+    if (error || !userMsg) throw new Error("Couldn't save your message");
+    const { data: history } = await sb.from("tutor_messages").select("role, content")
+      .eq("set_id", set.id).order("created_at", { ascending: false }).limit(20);
+    const messages = (history ?? []).reverse().map((m: {role:string;content:string}) => ({
+      role: m.role === "assistant" ? "assistant" as const : "user" as const, content: m.content,
+    }));
+    return { setId: set.id, userMessageId: userMsg.id, system: tutorSystem(set), messages };
+  });
+
+export const saveTutorStreamReply = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), userMessageId: z.string().uuid(), reply: z.string().min(1).max(30000) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const sb = context.supabase;
+    const { data: userMsg, error: userError } = await sb.from("tutor_messages").select("id,set_id,user_id,role")
+      .eq("id", data.userMessageId).eq("set_id", data.setId).eq("user_id", context.userId).single();
+    if (userError || !userMsg || userMsg.role !== "user") throw new Error("The tutor conversation could not be verified.");
+    const { data: saved, error } = await sb.from("tutor_messages")
+      .insert({ set_id: data.setId, user_id: context.userId, role: "assistant", content: data.reply })
+      .select("id, role, content, created_at").single();
+    if (error || !saved) throw new Error("Couldn't save the tutor response");
+    return { message: saved };
+  });
 
 export const askTutor = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -1303,6 +1553,8 @@ export const planSession = createServerFn({ method: "POST" })
         minutes: z.number().int().min(10).max(120),
         today: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
         tzOffset: z.number().int().min(-900).max(900),
+        prepareOnly: z.boolean().optional(),
+        generatedPlan: z.string().max(30000).optional(),
       })
       .parse(d),
   )
@@ -1314,8 +1566,7 @@ export const planSession = createServerFn({ method: "POST" })
       history,
       currentStats: st,
     } = await coachData(context.supabase, data.setId, data.today, data.tzOffset);
-    const text = await aiText(
-      `You are Momentum Coach building ONE focused study session for the set "${set.name}" lasting about ${data.minutes} minutes. Today is ${data.today}.
+    const system = `You are Momentum Coach building ONE focused study session for the set "${set.name}" lasting about ${data.minutes} minutes. Today is ${data.today}.
 Decide what's most useful from the data. Guidelines: if flashcards are due, start with "flashcards"; weak topics → "recall" on those topics; a topic missed repeatedly → "guide" (read its Weak Areas / explanation) followed by "recall" on it; exam within ~7 days → include an "exam" step (short practice exam); use "audio" when a guided explanation would help, especially for difficult or connected concepts; doing well (readiness ≥ 75) → harder difficulty and exam-style practice; 15 minutes → 1-2 short focused steps; 30 → 2-3 steps; 60+ → 3-5 mixed steps. "adaptive" = adaptive quiz. "mistakes" = retry questions from the Mistake Bank — include it early whenever the set has mistakes that need review, especially repeated ones. Step minutes should add up to roughly ${data.minutes}.
 Counts: mistakes = how many to retry (3-10, ≤ open mistakes), flashcards = max cards to review (≤ due count when due), recall = questions (3-10), adaptive = questions (5-15), exam = questions (10-20), guide = 0.
 Return ONLY JSON: {"headline":"one sentence","reason":"1-2 sentences naming the exam timing and weakest topics, e.g. 'You have a Biology test in 3 days. Your weakest areas are X and Y, so most of today is on those.'","steps":[{"kind":"mistakes|flashcards|recall|adaptive|exam|guide|audio","title":"short","why":"short","minutes":10,"count":10,"topics":["exact weak topic names"],"difficulty":"easy|medium|hard|mixed"}]}${ci(set)}
@@ -1323,9 +1574,10 @@ Return ONLY JSON: {"headline":"one sentence","reason":"1-2 sentences naming the 
 STREAK: current ${act.current}, studied today: ${act.studiedToday ? "yes" : "no"}
 RECENT HISTORY: ${history}
 DATA:
-${summaries.join("\n\n")}`,
-      [{ role: "user", content: `Plan my ${data.minutes}-minute session.` }],
-    );
+${summaries.join("\n\n")}`;
+    const messages = [{ role: "user" as const, content: `Plan my ${data.minutes}-minute session.` }];
+    if (data.prepareOnly) return { system, messages };
+    const text = data.generatedPlan ?? await aiText(system, messages);
     const p = parseJson<{ headline?: string; reason?: string; steps?: unknown }>(text);
     const rawSteps = Array.isArray(p?.steps) ? p.steps.filter((step): step is Partial<SessionStep> => !!step && typeof step === "object") : [];
     const kinds = [
@@ -1423,6 +1675,35 @@ async function loadMistake(sb: any, id: string) {
     question_data: { options?: string[] } | null;
   };
 }
+
+export const prepareExplainMistakeStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ mistakeId: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const m = await loadMistake(context.supabase, data.mistakeId);
+    const set = await loadSet(context.supabase, m.set_id);
+    return {
+      system: `You help a student understand a question they got wrong. Using the material as the source, explain in Markdown: **Why the correct answer is right** (say where in the material), **Why your answer was off** (be kind and specific; if their answer was empty, skip this), **Why the other choices are wrong** (only if it was multiple choice), **What this tests** (the concept), **Remember for next time** (a short memory hook). Keep it under 250 words. Don't invent facts not in the material; label any extra background "(Additional context)".${ci(set)}\nMATERIAL:\n${clip(set.material_text, 30000)}`,
+      messages: [{ role: "user" as const, content: `TOPIC: ${m.topic}\nQUESTION: ${m.question}${m.question_data?.options?.length ? `\nOPTIONS: ${m.question_data.options.join(" | ")}` : ""}\nMY ANSWER: ${m.student_answer}\nCORRECT ANSWER: ${m.correct_answer}\nEXPLANATION GIVEN: ${m.explanation}` }],
+      task: "fast" as const,
+    };
+  });
+
+export const prepareMistakePatternsStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const set = await loadSet(context.supabase, data.setId);
+    const { data: rows } = await context.supabase.from("mistakes").select("question, student_answer, correct_answer, topic, wrong_count, source_kind").eq("set_id", data.setId).neq("status", "mastered").order("wrong_count", { ascending: false }).limit(40);
+    if (!rows?.length) return { system: "", messages: [] as { role: "user"; content: string }[], task: "fast" as const, empty: "No open mistakes to analyze yet." };
+    const list = rows.map((r, i) => `${i + 1}. [${r.topic}] (${r.wrong_count}x, ${r.source_kind}) Q: ${r.question.slice(0, 300)} | MY ANSWER: ${(r.student_answer || "(blank)").slice(0, 200)} | CORRECT: ${r.correct_answer.slice(0, 200)}`).join("\n");
+    return {
+      system: `You analyze a student's wrong answers to find PATTERNS, not to re-explain each question. Markdown, under 250 words, with bold headings:\n**Patterns I see** — 2-4 bullets; each names the pattern (e.g. confusing two specific terms, misreading "NOT" questions, weak on a topic) and cites question numbers.\n**What's really going on** — the underlying misconception in 1-2 sentences, using the material's terminology.\n**Fix it** — 3 concrete actions in Momentum (e.g. Active Recall on X, flashcards on Y, re-read section Z).\nOnly claim patterns the evidence supports; with few mistakes, say the evidence is limited.${ci(set)}\nMATERIAL:\n${clip(set.material_text, 20000)}`,
+      messages: [{ role: "user" as const, content: `MY OPEN MISTAKES:\n${list}` }],
+      task: "fast" as const,
+      empty: undefined as string | undefined,
+    };
+  });
 
 export const explainMistake = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])

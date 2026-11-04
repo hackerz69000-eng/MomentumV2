@@ -4,7 +4,8 @@ import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { Compass, Loader2, Send } from "lucide-react";
-import { askCoach } from "@/lib/study.functions";
+import { prepareCoachStream } from "@/lib/study.functions";
+import { streamAiText } from "@/lib/ai-stream.client";
 import { dayKey } from "@/lib/activity";
 import { btnPrimary, ErrorBox, inputCls } from "@/components/set/ui";
 import { cn } from "@/lib/utils";
@@ -38,7 +39,8 @@ const SUGGEST = [
 
 function CoachPage() {
   const { set } = Route.useSearch();
-  const ask = useServerFn(askCoach);
+  const prepare = useServerFn(prepareCoachStream);
+  const abortRef = useRef<AbortController | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -56,7 +58,7 @@ function CoachPage() {
     setBusy(true);
     setError(null);
     try {
-      const r = await ask({
+      const prepared = await prepare({
         data: {
           question: q,
           history,
@@ -65,10 +67,25 @@ function CoachPage() {
           tzOffset: new Date().getTimezoneOffset(),
         },
       });
-      setMsgs((m) => [...m, { role: "assistant", content: r.reply }]);
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setMsgs((m) => [...m, { role: "assistant", content: "" }]);
+      await streamAiText({
+        system: prepared.system,
+        messages: prepared.messages,
+        task: "reasoning",
+        signal: controller.signal,
+        onDelta: (delta) => setMsgs((m) => {
+          const next = [...m];
+          const last = next[next.length - 1];
+          if (last?.role === "assistant") next[next.length - 1] = { ...last, content: last.content + delta };
+          return next;
+        }),
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "The coach couldn't respond");
     }
+    abortRef.current = null;
     setBusy(false);
   };
 
@@ -120,6 +137,7 @@ function CoachPage() {
           {busy && (
             <div className="flex items-center gap-2 text-sm text-soft">
               <Loader2 className="size-4 animate-spin" /> Looking at your progress…
+              <button type="button" onClick={() => abortRef.current?.abort()} className="underline">Stop</button>
             </div>
           )}
           {error && <ErrorBox msg={error} />}

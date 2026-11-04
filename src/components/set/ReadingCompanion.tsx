@@ -1,15 +1,15 @@
 import { useServerFn } from "@tanstack/react-start";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
+import { streamAiText, streamAiJson } from "@/lib/ai-stream.client";
 import { toast } from "sonner";
 import { BookOpen, FileText, GraduationCap, Loader2, MessageCircle, Sparkles, Layers, RefreshCw, Send, Link2, Unlink, BookMarked, LibraryBig, AlertTriangle, Trash2, Copy, Check, ChevronDown, ChevronUp } from "lucide-react";
 import type { StudySet } from "@/lib/queries";
-import { readingAddDocument, readingDeleteDocument, readingAsk, readingGenerateCards, readingListSources, readingLinkSource, readingSaveCards, readingSummary, readingUnlinkSource, readingImplementIntoNotes, readingApplyNotesAdditions } from "@/lib/reading.functions";
+import { readingAddDocument, readingDeleteDocument, readingAskPrepare, readingListSources, readingLinkSource, readingSaveCards, readingUnlinkSource, readingApplyNotesAdditions, prepareReadingSummaryStream, prepareReadingCardsStream, prepareReadingNotesAdditionsStream } from "@/lib/reading.functions";
 import { btnGhost, btnPrimary, inputCls } from "./ui";
-import { ACCEPT, MAX_BYTES, extractFile, fileKind } from "@/lib/extract";
+import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { ocrFile } from "@/lib/study.functions";
-import { storeOriginal } from "@/lib/extract";
 import { useAuth } from "@/hooks/use-auth";
 
 type DraftCard = { q: string; a: string; t?: string };
@@ -18,19 +18,21 @@ type SourceOption = { key: string; title: string; kind: "reading" | "lecture"; l
 export function ReadingCompanion({ set }: { set: StudySet }) {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const summaryFn = useServerFn(readingSummary);
-  const implementNotesFn = useServerFn(readingImplementIntoNotes);
+  const summaryPrepareFn = useServerFn(prepareReadingSummaryStream);
+  const notesPrepareFn = useServerFn(prepareReadingNotesAdditionsStream);
   const applyNotesFn = useServerFn(readingApplyNotesAdditions);
   const addReadingFn = useServerFn(readingAddDocument);
   const deleteReadingFn = useServerFn(readingDeleteDocument);
   const ocrFn = useServerFn(ocrFile);
-  const askFn = useServerFn(readingAsk);
-  const generateFn = useServerFn(readingGenerateCards);
+  const askPrepareFn = useServerFn(readingAskPrepare);
+  const askController = useRef<AbortController | null>(null);
+  const generatePrepareFn = useServerFn(prepareReadingCardsStream);
   const saveFn = useServerFn(readingSaveCards);
   const listFn = useServerFn(readingListSources);
   const linkFn = useServerFn(readingLinkSource);
   const unlinkFn = useServerFn(readingUnlinkSource);
   const [busy, setBusy] = useState<"summary" | "ask" | "cards" | "save" | "link" | string | null>(null);
+  const generationController = useRef<AbortController | null>(null);
   const [summary, setSummary] = useState("");
   const [notesAdditions, setNotesAdditions] = useState("");
   const [activeSummarySection, setActiveSummarySection] = useState(0);
@@ -42,6 +44,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [cards, setCards] = useState<DraftCard[]>([]);
+  const [cardsStreamText, setCardsStreamText] = useState("");
   const [selected, setSelected] = useState<number[]>([]);
   const [sourceKey, setSourceKey] = useState("all");
   const [sourceKind, setSourceKind] = useState<"set_material" | "lecture">("set_material");
@@ -85,16 +88,33 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
   };
 
   const run = async <T,>(kind: string, fn: () => Promise<T>): Promise<T | null> => {
+    generationController.current?.abort();
+    generationController.current = new AbortController();
     setBusy(kind);
     try { return await fn(); }
-    catch (e) { toast.error(e instanceof Error ? e.message : "Something went wrong"); return null; }
-    finally { setBusy(null); }
+    catch (e) { if (e instanceof DOMException && e.name === "AbortError") toast.info("Generation cancelled. Saved content is unchanged."); else toast.error(e instanceof Error ? e.message : "Something went wrong"); return null; }
+    finally { generationController.current = null; setBusy(null); }
   };
   const refreshSources = async () => {
     await qc.invalidateQueries({ queryKey: ["reading-companion-sources", set.id] });
   };
   const implementIntoNotes = async () => {
-    const result = await run("implement-notes", () => implementNotesFn({ data: { setId: set.id } }));
+    const result = await run("implement-notes", async () => {
+      const prompts = await notesPrepareFn({ data: { setId: set.id } });
+      const parts: string[] = [];
+      setNotesAdditions("");
+      for (const prompt of prompts) {
+        let current = "";
+        const part = await streamAiText({ system: prompt.system, messages: prompt.messages, ...(generationController.current ? { signal: generationController.current.signal } : {}), onDelta: (chunk) => {
+          current += chunk;
+          setNotesAdditions([...parts, current].join("\n\n"));
+        } });
+        if (part.trim() && !/^NO_NEW_INFORMATION\.?$/i.test(part.trim())) parts.push(part.trim());
+        setNotesAdditions(parts.join("\n\n"));
+      }
+      const additions = [...new Set(parts)].join("\n\n").slice(0, 29000);
+      return { additions, message: additions ? "Review the proposed additions before applying them." : "Your notes already cover the useful information in these readings." };
+    });
     if (result) {
       setNotesAdditions(result.additions);
       if (!result.additions) toast.success(result.message);
@@ -111,17 +131,37 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
     }
   };
   const makeSummary = async () => {
-    const result = await run("summary", () => summaryFn({ data: { setId: set.id, sourceKey: selectedSourceKey } }));
+    const result = await run("summary", async () => {
+      const prompt = await summaryPrepareFn({ data: { setId: set.id, sourceKey: selectedSourceKey } });
+      setSummary("");
+      const summaryText = await streamAiText({ system: prompt.system, messages: prompt.messages, ...(generationController.current ? { signal: generationController.current.signal } : {}), onDelta: (chunk) => setSummary((old) => old + chunk) });
+      return { summary: summaryText };
+    });
     if (result) { setSummary(result.summary); setSummarySourceKey(sourceKey); setActiveSummarySection(0); setExpandedSummarySections([]); setCompletedSections([]); setShowAnswerKey(false); }
   };
   const ask = async (e: FormEvent) => {
     e.preventDefault(); if (!question.trim()) return;
     const q = question.trim();
-    const result = await run("ask", () => askFn({ data: { setId: set.id, question: q, sourceKey: selectedSourceKey } }));
-    if (result) { setAnswer(result.answer); setQuestion(""); }
+    setBusy("ask"); setAnswer("");
+    const controller = new AbortController(); askController.current = controller;
+    try {
+      const prepared = await askPrepareFn({ data: { setId: set.id, question: q, sourceKey: selectedSourceKey } });
+      await streamAiText({ system: prepared.system, messages: prepared.messages, signal: controller.signal, onDelta: (chunk) => setAnswer((old) => old + chunk) });
+      setQuestion("");
+    } catch (e) { if (!(e instanceof DOMException && e.name === "AbortError")) toast.error(e instanceof Error ? e.message : "Momentum couldn't answer that."); }
+    finally { askController.current = null; setBusy(null); }
   };
   const generate = async () => {
-    const result = await run("cards", () => generateFn({ data: { setId: set.id } }));
+    const result = await run("cards", async () => {
+      const prompt = await generatePrepareFn({ data: { setId: set.id } });
+      setCardsStreamText("");
+      const generated = await streamAiJson({ system: prompt.system, messages: prompt.messages, ...(generationController.current ? { signal: generationController.current.signal } : {}), onDelta: (chunk) => setCardsStreamText((old) => old + chunk), validate: (value) => {
+        if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The generated flashcards were not valid.");
+        return (value as { cards: unknown[] }).cards.filter((card): card is DraftCard => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "" })).slice(0, 15);
+      }});
+      if (!generated.length) throw new Error("No flashcards could be generated from these sources.");
+      return { cards: generated };
+    });
     if (result) { setCards(result.cards); setSelected(result.cards.map((_: DraftCard, i: number) => i)); }
   };
   const saveCards = async () => {
@@ -208,7 +248,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
         <div className="rounded-xl border border-mint/30 bg-mint/[0.04] p-4 space-y-3">
           <div className="flex items-center gap-2 font-semibold"><Sparkles className="size-4 text-mint"/> Implement into Notes</div>
           <p className="text-sm text-soft">Compare your reading PDFs with the existing notes and prepare only useful missing information. Existing notes are never replaced or deleted. Review the additions before saving.</p>
-          <button type="button" className={btnPrimary} disabled={!!busy || !readingCount || sourcesQ.isError} onClick={() => void implementIntoNotes()}>{busy === "implement-notes" ? <Loader2 className="size-4 animate-spin"/> : <Sparkles className="size-4"/>}Scan readings and prepare additions</button>
+          <button type="button" className={btnPrimary} disabled={!!busy || !readingCount || sourcesQ.isError} onClick={() => void implementIntoNotes()}>{busy === "implement-notes" ? <Loader2 className="size-4 animate-spin"/> : <Sparkles className="size-4"/>}Scan readings and prepare additions</button>{busy === "implement-notes" && <button type="button" className={btnGhost} onClick={() => generationController.current?.abort()}>Cancel</button>}
           {notesAdditions && <div className="space-y-3 border-t border-line/60 pt-3"><p className="text-xs text-soft">Preview — these additions will be merged without removing existing notes.</p><div className="max-h-[28rem] overflow-auto rounded-xl border border-line/70 bg-background/40 p-4"><div className="prose prose-sm dark:prose-invert max-w-none"><MarkdownContent>{notesAdditions}</MarkdownContent></div></div><div className="flex flex-wrap gap-2"><button type="button" className={btnPrimary} disabled={!!busy} onClick={() => void applyNotesAdditions()}>{busy === "apply-notes" ? <Loader2 className="size-4 animate-spin"/> : <Check className="size-4"/>}Add to Notes</button><button type="button" className={btnGhost} disabled={!!busy} onClick={() => setNotesAdditions("")}>Discard preview</button></div></div>}
         </div>
         <div className="rounded-xl border border-line/70 p-4 space-y-3">
@@ -223,7 +263,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
         </div>
       </>}
     </div>
-    <div className="rounded-2xl bg-panel border border-line/70 p-5 space-y-3"><div className="flex items-center gap-2"><Sparkles className="size-5 text-cool2"/><h3 className="font-semibold">Study brief</h3></div><p className="text-sm text-soft">Build an active study session, not just a summary: compare the sources, mark sections as reviewed, attempt practice questions before revealing the key, and turn the hardest concepts into flashcards.</p><label className="block text-xs text-soft space-y-1">Use sources<select className={inputCls + " w-full sm:max-w-xl"} value={sourceKey} onChange={e => setSourceKey(e.target.value)}><option value="all">All connected sources</option>{sources.map(s => <option key={s.key} value={s.key}>{s.title}</option>)}</select></label><button className={btnPrimary} disabled={!!busy || !sources.length || sourcesQ.isError} onClick={() => void makeSummary()}>{busy === "summary" ? <Loader2 className="size-4 animate-spin"/> : <RefreshCw className="size-4"/>}{summary ? "Refresh lecture guide" : "Explain my lecture using the reading"}</button>{summary && <section className="reading-output border-t border-line/60 pt-5 space-y-4" aria-label="Generated study brief">
+    <div className="rounded-2xl bg-panel border border-line/70 p-5 space-y-3"><div className="flex items-center gap-2"><Sparkles className="size-5 text-cool2"/><h3 className="font-semibold">Study brief</h3></div><p className="text-sm text-soft">Build an active study session, not just a summary: compare the sources, mark sections as reviewed, attempt practice questions before revealing the key, and turn the hardest concepts into flashcards.</p><label className="block text-xs text-soft space-y-1">Use sources<select className={inputCls + " w-full sm:max-w-xl"} value={sourceKey} onChange={e => setSourceKey(e.target.value)}><option value="all">All connected sources</option>{sources.map(s => <option key={s.key} value={s.key}>{s.title}</option>)}</select></label><button className={btnPrimary} disabled={!!busy || !sources.length || sourcesQ.isError} onClick={() => void makeSummary()}>{busy === "summary" ? <Loader2 className="size-4 animate-spin"/> : <RefreshCw className="size-4"/>}{summary ? "Refresh lecture guide" : "Explain my lecture using the reading"}</button>{busy === "summary" && <button type="button" className={btnGhost} onClick={() => generationController.current?.abort()}>Cancel</button>}{summary && <section className="reading-output border-t border-line/60 pt-5 space-y-4" aria-label="Generated study brief">
       <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="eyebrow text-cool2">Your study workspace</p><h4 className="font-display text-xl mt-1">Study brief, section by section</h4><p className="text-xs text-soft mt-1">Jump to a topic, compare the sources, then use the practice questions to check what you remember.</p></div><button type="button" className={btnGhost} onClick={() => void copySummary()}>{copiedSummary ? <Check className="size-4"/> : <Copy className="size-4"/>}{copiedSummary ? "Copied" : "Copy brief"}</button></div>
       {summaryIsStale && <div role="status" className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-3 text-sm">You changed the selected sources after this brief was generated. Refresh the brief to compare the current selection.</div>}
       <div className="rounded-xl border border-line/70 p-4 space-y-2"><div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold">Study session progress</p><p className="text-xs text-soft">Mark a section reviewed when you can explain it without looking.</p></div><span className="text-sm font-semibold tabular-nums">{completedCount}/{summarySections.length}</span></div><div className="h-2 rounded-full bg-foreground/10 overflow-hidden"><div className="h-full rounded-full bg-mint transition-all" style={{width: `${summarySections.length ? completedCount / summarySections.length * 100 : 0}%`}} /></div><div className="flex flex-wrap gap-2"><button type="button" className={btnGhost} onClick={() => setCompletedSections(summarySections.map((_, i) => i))}>Mark all reviewed</button><button type="button" className={btnGhost} onClick={() => setCompletedSections([])}>Reset progress</button></div></div>
@@ -239,7 +279,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
         </section>;
       })}</div>
     </section>}</div>
-    <div className="rounded-2xl bg-panel border border-line/70 p-5 space-y-3"><div className="flex items-center gap-2"><MessageCircle className="size-5 text-cool2"/><h3 className="font-semibold">Ask your course sources</h3></div><p className="text-sm text-soft">Ask why a lecture concept works, how the reading explains it, what the teacher added, or what to review. Momentum should distinguish source evidence from explanation and never invent page numbers.</p><form onSubmit={ask} className="space-y-2"><label className="block text-xs text-soft space-y-1">Answer from<select className={inputCls + " w-full"} value={sourceKey} onChange={e => setSourceKey(e.target.value)}><option value="all">All connected sources</option>{sources.map(s => <option key={s.key} value={s.key}>{s.title}</option>)}</select></label><div className="flex gap-2"><input value={question} onChange={e => setQuestion(e.target.value)} className={inputCls + " flex-1 min-w-0"} placeholder="e.g. Compare the reading with the lecture…"/><button disabled={!!busy || !question.trim() || !sources.length || sourcesQ.isError} className={btnPrimary}>{busy === "ask" ? <Loader2 className="size-4 animate-spin"/> : <Send className="size-4"/>}Ask</button></div></form>{answer && <article className="rounded-xl border border-line/70 bg-foreground/[0.025] p-4 md:p-5"><div className="prose prose-invert prose-sm max-w-none prose-headings:normal-case prose-headings:font-display prose-headings:tracking-normal prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg prose-p:leading-7 prose-li:my-1 prose-strong:text-foreground prose-h2:mt-6 prose-h3:mt-4"><MarkdownContent>{answer}</MarkdownContent></div></article>}</div>
-    <div className="rounded-2xl bg-panel border border-line/70 p-5 space-y-3"><div className="flex items-center gap-2"><Layers className="size-5 text-cool2"/><h3 className="font-semibold">Turn sources into flashcards</h3></div><p className="text-sm text-soft">Generate a preview from connected readings and lectures, select what to keep, and add it to this existing set. Duplicate questions are skipped, including duplicates within the preview.</p><button className={btnGhost} disabled={!!busy || !sources.length || sourcesQ.isError} onClick={() => void generate()}>{busy === "cards" ? <Loader2 className="size-4 animate-spin"/> : <Sparkles className="size-4"/>}Generate preview</button>{cards.length > 0 && <div className="space-y-3 border-t border-line/60 pt-4">{cards.map((c, i) => <label key={`${i}-${c.q}`} className="flex gap-3 rounded-lg border border-line/70 p-3 cursor-pointer"><input type="checkbox" checked={selected.includes(i)} onChange={e => setSelected(old => e.target.checked ? [...old, i] : old.filter(n => n !== i))} className="mt-1"/><span className="min-w-0"><span className="block text-sm font-semibold">{c.q}</span><span className="block text-sm text-soft mt-1">{c.a}</span>{c.t && <span className="block text-xs text-cool2 mt-1">{c.t}</span>}</span></label>)}<div className="flex flex-wrap items-center gap-2"><button className={btnPrimary} disabled={!!busy || !selected.length} onClick={() => void saveCards()}>{busy === "save" ? <Loader2 className="size-4 animate-spin"/> : <Layers className="size-4"/>}Add {selected.length} selected</button><button className={btnGhost} onClick={() => {setCards([]);setSelected([])}}>Discard preview</button></div></div>}</div>
+    <div className="rounded-2xl bg-panel border border-line/70 p-5 space-y-3"><div className="flex items-center gap-2"><MessageCircle className="size-5 text-cool2"/><h3 className="font-semibold">Ask your course sources</h3></div><p className="text-sm text-soft">Ask why a lecture concept works, how the reading explains it, what the teacher added, or what to review. Momentum should distinguish source evidence from explanation and never invent page numbers.</p><form onSubmit={ask} className="space-y-2"><label className="block text-xs text-soft space-y-1">Answer from<select className={inputCls + " w-full"} value={sourceKey} onChange={e => setSourceKey(e.target.value)}><option value="all">All connected sources</option>{sources.map(s => <option key={s.key} value={s.key}>{s.title}</option>)}</select></label><div className="flex gap-2"><input value={question} onChange={e => setQuestion(e.target.value)} className={inputCls + " flex-1 min-w-0"} placeholder="e.g. Compare the reading with the lecture…"/>{busy === "ask" ? <button type="button" className={btnGhost} onClick={() => askController.current?.abort()}>Stop</button> : <button disabled={!!busy || !question.trim() || !sources.length || sourcesQ.isError} className={btnPrimary}><Send className="size-4"/>Ask</button>}</div></form>{answer && <article className="rounded-xl border border-line/70 bg-foreground/[0.025] p-4 md:p-5"><div className="prose prose-invert prose-sm max-w-none prose-headings:normal-case prose-headings:font-display prose-headings:tracking-normal prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg prose-p:leading-7 prose-li:my-1 prose-strong:text-foreground prose-h2:mt-6 prose-h3:mt-4"><MarkdownContent>{answer}</MarkdownContent></div></article>}</div>
+    <div className="rounded-2xl bg-panel border border-line/70 p-5 space-y-3"><div className="flex items-center gap-2"><Layers className="size-5 text-cool2"/><h3 className="font-semibold">Turn sources into flashcards</h3></div><p className="text-sm text-soft">Generate a preview from connected readings and lectures, select what to keep, and add it to this existing set. Duplicate questions are skipped, including duplicates within the preview.</p><button className={btnGhost} disabled={!!busy || !sources.length || sourcesQ.isError} onClick={() => void generate()}>{busy === "cards" ? <Loader2 className="size-4 animate-spin"/> : <Sparkles className="size-4"/>}Generate preview</button>{busy === "cards" && <button type="button" className={btnGhost} onClick={() => generationController.current?.abort()}>Cancel</button>}{busy === "cards" && cardsStreamText && <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg bg-accent p-3 text-xs text-soft">{cardsStreamText}</pre>}{cards.length > 0 && <div className="space-y-3 border-t border-line/60 pt-4">{cards.map((c, i) => <label key={`${i}-${c.q}`} className="flex gap-3 rounded-lg border border-line/70 p-3 cursor-pointer"><input type="checkbox" checked={selected.includes(i)} onChange={e => setSelected(old => e.target.checked ? [...old, i] : old.filter(n => n !== i))} className="mt-1"/><span className="min-w-0"><span className="block text-sm font-semibold">{c.q}</span><span className="block text-sm text-soft mt-1">{c.a}</span>{c.t && <span className="block text-xs text-cool2 mt-1">{c.t}</span>}</span></label>)}<div className="flex flex-wrap items-center gap-2"><button className={btnPrimary} disabled={!!busy || !selected.length} onClick={() => void saveCards()}>{busy === "save" ? <Loader2 className="size-4 animate-spin"/> : <Layers className="size-4"/>}Add {selected.length} selected</button><button className={btnGhost} onClick={() => {setCards([]);setSelected([])}}>Discard preview</button></div></div>}</div>
   </div>;
 }

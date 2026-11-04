@@ -1,4 +1,5 @@
 import { useServerFn } from "@tanstack/react-start";
+import { streamAiText, streamAiJson } from "@/lib/ai-stream.client";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -6,9 +7,9 @@ import { Lightbulb, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  generateRecall,
-  gradeRecall,
-  recallHint,
+  prepareRecallQuestionsStream,
+  prepareRecallGradeStream,
+  prepareRecallHintStream,
   type RecallGrade,
   type RecallQuestion,
 } from "@/lib/study.functions";
@@ -50,9 +51,9 @@ export function ActiveRecall({
 }) {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const gen = useServerFn(generateRecall);
-  const gradeFn = useServerFn(gradeRecall);
-  const hintFn = useServerFn(recallHint);
+  const genPrepare = useServerFn(prepareRecallQuestionsStream);
+  const gradePrepare = useServerFn(prepareRecallGradeStream);
+  const hintPrepare = useServerFn(prepareRecallHintStream);
   const [count, setCount] = useState(preset?.count ?? 10);
   const [qs, setQs] = useState<RecallQuestion[] | null>(null);
   const [draftReady, setDraftReady] = useState(false);
@@ -68,6 +69,7 @@ export function ActiveRecall({
   const [showModel, setShowModel] = useState(false);
   const [busy, setBusy] = useState<null | "gen" | "grade" | "hint">(null);
   const [error, setError] = useState<string | null>(null);
+  const [streamedQuestions, setStreamedQuestions] = useState("");
   const [tally, setTally] = useState({ done: 0, good: 0 });
 
   useEffect(() => {
@@ -106,6 +108,7 @@ export function ActiveRecall({
         .map((t) => t.topic)
         .slice(0, 6);
   const auto = useRef(false);
+  const streamController = useRef<AbortController | null>(null);
   useEffect(() => {
     if (draftReady && preset && !qs && !auto.current) {
       auto.current = true;
@@ -127,25 +130,30 @@ export function ActiveRecall({
   }, [qs, q, tally]);
 
   const start = async () => {
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
     setBusy("gen");
     setError(null);
     try {
-      const r = await gen({
-        data: {
-          setId,
-          count: Math.max(1, count),
-          focus: weak,
-          lectureId,
-          ...(preset?.difficulty ? { difficulty: preset.difficulty } : {}),
-        },
-      });
+      const prompt = await genPrepare({ data: { setId, count: Math.max(1, count), focus: weak, lectureId, ...(preset?.difficulty ? { difficulty: preset.difficulty } : {}) } });
+      setStreamedQuestions("");
+      const questions = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk), validate: (value) => {
+        if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The Active Recall questions were not valid.");
+        const seen = new Set<string>();
+        const parsed = (value as { questions: unknown[] }).questions.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ question: String(item.question ?? "").trim(), topic: String(item.topic ?? "General").slice(0, 60) })).filter((item) => { const key = item.question.toLowerCase().replace(/\s+/g, " "); if (!key || seen.has(key)) return false; seen.add(key); return true; }).slice(0, count);
+        if (!parsed.length) throw new Error("Could not generate questions. Please try again.");
+        return parsed as RecallQuestion[];
+      }});
+      const r = { questions };
       setQs(r.questions);
       setI(0);
       reset();
       setTally({ done: 0, good: 0 });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed");
+      setError(e instanceof DOMException && e.name === "AbortError" ? "Generation cancelled. Nothing was saved." : e instanceof Error ? e.message : "Failed");
     }
+    streamController.current = null;
     setBusy(null);
   };
   const reset = () => {
@@ -198,9 +206,13 @@ export function ActiveRecall({
     if (!q) return;
     setBusy("grade");
     try {
-      const r = await gradeFn({
-        data: { setId, lectureId, question: q.question, answer: reveal ? "" : answer },
-      });
+      const prompt = await gradePrepare({ data: { setId, lectureId, question: q.question, answer: reveal ? "" : answer } });
+      const r = await streamAiJson({ system: prompt.system, messages: prompt.messages, validate: (value) => {
+        if (!value || typeof value !== "object") throw new Error("The answer grade was not valid.");
+        const item = value as { grade?: unknown; feedback?: unknown; model?: unknown };
+        if (!["correct", "mostly", "partial", "incorrect"].includes(String(item.grade))) throw new Error("The AI couldn't grade that answer reliably. Your answer is still here — try again.");
+        return { grade: item.grade as RecallGrade, feedback: String(item.feedback ?? ""), model: String(item.model ?? "") };
+      }});
       const firstTry = !result;
       setResult(r);
       if (reveal) setShowModel(true);
@@ -215,7 +227,9 @@ export function ActiveRecall({
     if (!q) return;
     setBusy("hint");
     try {
-      setHint((await hintFn({ data: { setId, lectureId, question: q.question } })).hint);
+      const prompt = await hintPrepare({ data: { setId, lectureId, question: q.question } });
+      const hintText = await streamAiText({ system: prompt.system, messages: prompt.messages });
+      setHint(hintText.trim());
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "No hint available");
     }
@@ -239,7 +253,9 @@ export function ActiveRecall({
           onChange={setCount}
           options={[5, 10, 15, 20].map((v) => ({ v, l: String(v) }))}
         />
+        {busy === "gen" && streamedQuestions && <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg bg-accent p-3 text-left text-xs text-soft">{streamedQuestions}</pre>}
         {error && <ErrorBox msg={error} />}
+        {busy === "gen" && <button type="button" onClick={() => streamController.current?.abort()} className="text-xs text-soft underline">Cancel generation</button>}
         <button onClick={start} disabled={!!busy} className={btnPrimary}>
           {busy === "gen" && <Loader2 className="size-4 animate-spin" />} Start Active Recall
         </button>
