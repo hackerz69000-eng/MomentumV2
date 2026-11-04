@@ -13,6 +13,16 @@ describe("parseStreamedJson", () => {
     expect(parseStreamedJson('```\n{"ok":true}\n```', (value) => value)).toEqual({ ok: true });
   });
 
+  it("extracts JSON when the model adds a short preamble or trailing text", () => {
+    expect(parseStreamedJson('Here are the cards:\n{"cards":[{"q":"Q","a":"A"}]}\nDone.', (value) => value)).toEqual({
+      cards: [{ q: "Q", a: "A" }],
+    });
+  });
+
+  it("ignores a reasoning block before the final JSON payload", () => {
+    expect(parseStreamedJson('<think>Let me reason this through.</think>\n{"ok":true}', (value) => value)).toEqual({ ok: true });
+  });
+
   it("runs feature validation after parsing", () => {
     expect(() => parseStreamedJson('{"cards":[]}', (value) => {
       const cards = (value as { cards?: unknown }).cards;
@@ -22,6 +32,6 @@ describe("parseStreamedJson", () => {
   });
 
   it("rejects malformed JSON", () => {
-    expect(() => parseStreamedJson('{"cards":[}', (value) => value)).toThrow(/valid JSON/i);
+    expect(() => parseStreamedJson('{"cards":[}', (value) => value)).toThrow(/malformed structured data/i);
   });
 });

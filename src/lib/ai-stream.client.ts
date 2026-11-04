@@ -14,6 +14,7 @@ export async function streamAiText(options: {
   system: string;
   messages: StreamMessage[];
   task?: "fast" | "reasoning";
+  jsonMode?: boolean;
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
 }): Promise<string> {
@@ -26,7 +27,7 @@ export async function streamAiText(options: {
   const response = await fetch("/api/ai-stream", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, Accept: "text/event-stream" },
-    body: JSON.stringify({ system: options.system, messages: options.messages, task: options.task ?? "fast" }),
+    body: JSON.stringify({ system: options.system, messages: options.messages, task: options.task ?? "fast", jsonMode: options.jsonMode === true }),
     ...(options.signal ? { signal: options.signal } : {}),
   });
 
@@ -41,6 +42,7 @@ export async function streamAiText(options: {
   let buffer = "";
   let result = "";
   let finished = false;
+  let finishReason: string | null = null;
 
   const consumeEvent = (event: string) => {
     const dataLines = event.split(/\r?\n/).filter((line) => line.startsWith("data:"));
@@ -62,7 +64,10 @@ export async function streamAiText(options: {
       ? delta
       : Array.isArray(delta) ? delta.map((part) => part.text ?? "").join("") : "";
     if (chunk) { result += chunk; options.onDelta?.(chunk); }
-    if (payload.choices?.[0]?.finish_reason) finished = true;
+    if (payload.choices?.[0]?.finish_reason) {
+      finishReason = payload.choices?.[0]?.finish_reason ?? null;
+      finished = true;
+    }
   };
 
   try {
@@ -87,19 +92,59 @@ export async function streamAiText(options: {
     reader.releaseLock();
   }
 
+  if (finishReason === "length") {
+    throw new Error("The AI response reached its output limit before it could finish. Try a smaller document or try again.");
+  }
   if (!result.trim()) throw new Error("NVIDIA returned an empty response. Please try again.");
   return result;
 }
 
 
 /** Parse a completed streamed JSON payload and run the caller's schema guard. */
+function extractJsonPayload(text: string): string {
+  const normalized = text.trim()
+    .replace(/^\uFEFF/, "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim();
+
+  // Prefer a complete top-level JSON object/array even if the model adds a
+  // short preamble or trailing commentary outside the structured response.
+  const firstObject = normalized.indexOf("{");
+  const firstArray = normalized.indexOf("[");
+  const starts = [firstObject, firstArray].filter((index) => index >= 0);
+  if (!starts.length) return normalized;
+  const start = Math.min(...starts);
+  const opener = normalized[start]!;
+  const closer = opener === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < normalized.length; i += 1) {
+    const char = normalized[i]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') { inString = true; continue; }
+    if (char === opener) depth += 1;
+    else if (char === closer) {
+      depth -= 1;
+      if (depth === 0) return normalized.slice(start, i + 1);
+    }
+  }
+  return normalized.slice(start);
+}
+
 export function parseStreamedJson<T>(text: string, validate: (value: unknown) => T): T {
   let parsed: unknown;
   try {
-    const normalized = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-    parsed = JSON.parse(normalized);
+    parsed = JSON.parse(extractJsonPayload(text));
   } catch {
-    throw new Error("The AI response wasn't valid JSON. Nothing was saved; please try again.");
+    throw new Error("The AI returned incomplete or malformed structured data. Nothing was saved; please try again.");
   }
   return validate(parsed);
 }
@@ -118,9 +163,10 @@ export async function streamAiJson<T>(options: {
   validate: (value: unknown) => T;
 }): Promise<T> {
   const text = await streamAiText({
-    system: options.system,
+    system: `${options.system}\n\nOUTPUT REQUIREMENT: Return a complete, syntactically valid JSON value only. Do not include markdown fences, commentary, or reasoning outside the JSON.`,
     messages: options.messages,
     ...(options.task ? { task: options.task } : {}),
+    jsonMode: true,
     ...(options.signal ? { signal: options.signal } : {}),
     onDelta: (chunk) => options.onDelta?.(chunk),
   });

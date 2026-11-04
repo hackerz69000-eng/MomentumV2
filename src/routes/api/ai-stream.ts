@@ -34,7 +34,7 @@ export const Route = createFileRoute("/api/ai-stream")({
         if (new TextEncoder().encode(rawBody).byteLength > MAX_BODY) {
           return json({ error: "AI request is too large." }, 413);
         }
-        let body: { system?: unknown; messages?: unknown; task?: unknown };
+        let body: { system?: unknown; messages?: unknown; task?: unknown; jsonMode?: unknown };
         try { body = JSON.parse(rawBody) as typeof body; }
         catch { return json({ error: "Invalid AI request." }, 400); }
 
@@ -69,7 +69,8 @@ export const Route = createFileRoute("/api/ai-stream")({
                 model,
                 messages: [{ role: "system", content: system }, ...messages],
                 temperature: 0.2,
-                max_tokens: 6000,
+                max_tokens: body.jsonMode === true ? 8192 : 6000,
+                ...(body.jsonMode === true ? { response_format: { type: "json_object" } } : {}),
                 stream: true,
                 ...(model.startsWith("nvidia/nemotron-3") ? { chat_template_kwargs: { enable_thinking: model.includes("ultra") } } : {}),
               }),
