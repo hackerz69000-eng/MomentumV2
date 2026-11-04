@@ -1104,7 +1104,7 @@ ${data.context?.trim() || "No extracted lecture text was supplied. Describe only
 
 LECTURE CONTEXT:
 ${data.context?.trim() || "No additional lecture context supplied; use only the provided file."}`;
-    const visionModel = process.env["NVIDIA_VISION_MODEL"]?.trim() || "nvidia/nemotron-nano-12b-v2-vl";
+    const visionModel = process.env["NVIDIA_VISION_MODEL"]?.trim() || "nvidia/nemotron-3.5-super-vl-120b-a12b";
     const prompt = task === "describe_visuals"
       ? `Analyze the visual content in ${data.filename}. Focus on the meaning of the visuals in relation to the supplied lecture context.`
       : `Read and explain the content of ${data.filename}, including its visuals.`;
@@ -1156,7 +1156,7 @@ export const askTutor = createServerFn({ method: "POST" })
       }));
     let reply: string;
     try {
-      reply = await aiText(tutorSystem(set), messages);
+      reply = await aiText(tutorSystem(set), messages, { task: "reasoning" });
     } catch (e) {
       await cleanup();
       throw e;

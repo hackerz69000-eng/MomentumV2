@@ -1,40 +1,37 @@
-# NVIDIA NIM provider setup
+# Momentum AI model configuration
 
-Momentum's server-side text generation, vision/OCR, and microphone transcription use NVIDIA-hosted NIM APIs. The app uses the OpenAI-compatible Chat Completions endpoint.
+Momentum uses NVIDIA-hosted NIM chat-completion endpoints for text generation and image/document understanding. Audio transcription and generated speech use Deepgram's dedicated speech APIs.
 
-## Required Vercel environment variables
+## Vercel environment variables
 
-- `NVIDIA_API_KEY` — API key from the NVIDIA API Catalog / Build.NVIDIA.com. Keep it server-side; do not prefix it with `VITE_`.
-- `NVIDIA_MODEL=stepfun-ai/step-3.5-flash` — default text model for study sets, notes, flashcards, quizzes, tutoring, writing, and other text tasks.
-- `NVIDIA_FALLBACK_MODELS=meta/llama-3.1-8b-instruct` — optional comma-separated fallback model IDs. The fallback is attempted for model-specific errors and transient server/rate-limit failures.
-- `NVIDIA_VISION_MODEL=nvidia/nemotron-nano-12b-v2-vl` — vision-language model for image OCR, diagrams, and visual explanations.
-- `NVIDIA_ASR_MODEL=nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` — audio-capable model for microphone transcription.
-- `DEEPGRAM_API_KEY` — retained for the existing text-to-speech feature; it is separate from NIM.
+- `NVIDIA_API_KEY` — API key from NVIDIA Build / API Catalog. Keep it server-side; never prefix it with `VITE_`.
+- `NVIDIA_MODEL=nvidia/nemotron-3.5-lightning-30b-a3b` — fast default model for flashcards, study guides, quizzes, summaries, and everyday generation.
+- `NVIDIA_REASONING_MODEL=nvidia/nemotron-3-ultra-550b-a55b` — stronger reasoning route for essay grading, AI Tutor, Ask Your Materials, and answer explanations. If unavailable for the account, Momentum falls back to the primary model.
+- `NVIDIA_FALLBACK_MODELS=stepfun-ai/step-3.5-flash` — optional comma-separated fallback model IDs.
+- `NVIDIA_VISION_MODEL=nvidia/nemotron-3.5-super-vl-120b-a12b` — image and document-page understanding.
+- `DEEPGRAM_API_KEY` — speech-to-text transcription and existing text-to-speech generation.
 
 ## Setup
 
-1. Create or use an NVIDIA Developer account and obtain an API key from https://build.nvidia.com/.
-2. Add `NVIDIA_API_KEY` and the model variables above to Vercel for the environments you use.
-3. Remove the old `BYTEZ_*` variables from Vercel after confirming no other deployment still depends on them.
-4. Redeploy.
-5. Test a short tutor prompt, study-set generation, flashcards, a quiz, image/PDF OCR, and a short microphone transcription.
+1. Generate an NVIDIA API key at https://build.nvidia.com/.
+2. Add the NVIDIA variables above to Vercel for the environments you use.
+3. Keep `DEEPGRAM_API_KEY` configured for microphone transcription and generated audio.
+4. Redeploy and test a short tutor question, study-set generation, flashcards, an essay grade, image/document OCR, microphone transcription, and audio generation.
 
-## Provider details
+## Provider and routing details
 
-- Text and vision requests use `https://integrate.api.nvidia.com/v1/chat/completions`.
-- Requests use Bearer-token authentication and the OpenAI-compatible chat-completions message format.
-- The transcription route sends WAV audio as a data URL to the audio-capable Nemotron Omni model. NVIDIA model support and audio input limits can vary; verify the selected model remains enabled for your API key.
-- `NVIDIA_FALLBACK_MODELS` is an ordered fallback list, not a live availability or credit monitor.
+- NVIDIA text/image requests use `https://integrate.api.nvidia.com/v1/chat/completions` with Bearer-token authentication.
+- `aiText` selects the fast model by default. Features can request the reasoning route; if the selected reasoning model fails because of availability, rate limits, or transient provider errors, Momentum tries the primary model and then configured fallbacks.
+- Nemotron reasoning is enabled for the Ultra route and disabled for the Lightning fast route.
+- `aiImage` uses the Nemotron 3.5 Super VL model for image inputs.
+- Audio transcription uses Deepgram Nova-3. NVIDIA's Parakeet and Nemotron Omni model assets are available for download/self-hosting, but should not be assumed to be hosted audio API endpoints.
 
-## Important access / production note
+## Performance notes
 
-NVIDIA describes Developer Program access to hosted NIM endpoints as intended for prototyping, research, development, and testing. NVIDIA states that serving real end users in production requires an NVIDIA AI Enterprise license. Check the current NVIDIA terms and account entitlements before deploying Momentum to public users.
+- Study-set notes and flashcards are generated concurrently. Flashcards are grounded directly in uploaded source material so they do not need to wait for notes generation.
+- Long-source note chunks and optional-reading enrichment chunks use bounded concurrency while preserving source order.
+- The app's existing server-function response contract remains non-streaming. True token-by-token browser display requires a separate streaming API/UI implementation.
 
-## Performance changes in this migration
+## Trial and production access
 
-- Study-set notes and flashcards are generated concurrently. Flashcards are grounded directly in the uploaded source material so they do not need to wait for the notes request.
-- Long-source note chunks and optional-reading enrichment chunks are processed with a concurrency limit of three, preserving source order when results are combined.
-- Retry delays were reduced and provider fallback is limited to model-specific/transient errors.
-- The create-study-set UI now avoids promising a fixed 20–60 second generation time.
-
-Streaming note: the NIM API supports streamed chat completions, but this migration keeps the current server-function return contract non-streaming. True token-by-token display in the browser needs a separate streaming UI/API path; simply enabling upstream streaming would not make the existing server-function UI update progressively.
+NVIDIA's Build API trial endpoints are subject to NVIDIA's current trial terms, access limits, and model availability. Confirm the current terms and account entitlements before serving real end users at scale. A free prototype endpoint should not be assumed to provide unlimited production capacity.

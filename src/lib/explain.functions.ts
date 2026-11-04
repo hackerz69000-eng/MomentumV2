@@ -39,6 +39,7 @@ MATERIAL:\n${clip(set.material_text, 35000)}`,
           content: `TOPIC: ${data.topic}\nQUESTION: ${data.question}${opts}\nCORRECT ANSWER: ${data.correct}\nMY ANSWER: ${data.given || "(blank)"}`,
         },
       ],
+      { task: "reasoning" },
     );
     return { text };
   });

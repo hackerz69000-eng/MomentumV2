@@ -157,7 +157,7 @@ ${block || "(no material)"}`;
           content: m.content,
         })),
         { role: "user", content: data.content },
-      ]);
+      ], { task: "reasoning" });
       const cited = [
         ...new Set([...reply.matchAll(/\[S(\d+)\]/g)].map((m) => Number(m[1]))),
       ].filter((n) => n >= 1 && n <= chunks.length);

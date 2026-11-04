@@ -286,7 +286,7 @@ export const gradeEssay = createServerFn({ method: "POST" })
         role: "user",
         content: `ASSIGNMENT INSTRUCTIONS / ESSAY QUESTION:\n${clip(e.instructions || "(not provided)", 10000)}\n\nRUBRIC:\n${clip(e.rubric || "(not provided)", 10000)}\n\nTEACHER INSTRUCTIONS:\n${clip(e.teacher_notes || "(not provided)", 5000)}\n\nREQUIRED SOURCES / MATERIALS:\n${clip(e.sources || "(not provided)", 15000)}${mat.text}\n\nSTUDENT ESSAY (${e.essay.trim().split(/\s+/).length} words):\n${clip(e.essay, 60000)}`,
       },
-    ]);
+    ], { task: "reasoning" });
     const parsed = parseJson<Partial<EssayResult>>(text);
     const r = parsed && typeof parsed === "object" ? parsed : {};
     const arr = (x: unknown) => (Array.isArray(x) ? x.map(String).filter(Boolean) : []);

@@ -4,9 +4,7 @@ import { verifySupabaseAccessToken } from "@/integrations/supabase/verify-token.
 // Stay below Vercel Functions’ request-body cap, including multipart overhead.
 // The recorder’s 60-second 16 kHz mono WAV segments are about 1.9 MiB.
 const MAX_FILE = 4 * 1024 * 1024;
-const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
-const NVIDIA_ASR_MODEL =
-  process.env["NVIDIA_ASR_MODEL"]?.trim() || "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning";
+const DEEPGRAM_URL = "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&language=en";
 
 function json(data: unknown, status: number) {
   return new Response(JSON.stringify(data), {
@@ -52,12 +50,11 @@ async function authorized(request: Request) {
 }
 
 function safeProviderMessage(status: number) {
-  if (status === 400 || status === 415) return "NVIDIA transcription could not read this audio. Try recording again.";
-  if (status === 401 || status === 403) return "NVIDIA rejected the API key or model access. Check NVIDIA_API_KEY and model access.";
+  if (status === 400 || status === 415) return "Deepgram could not read this audio. Try recording again.";
+  if (status === 401 || status === 403) return "Deepgram rejected the API key. Check DEEPGRAM_API_KEY in Vercel.";
   if (status === 413) return "This audio segment is too large for transcription.";
-  if (status === 429) return "NVIDIA transcription is busy right now. Please wait a moment and try again.";
-  if (status === 402) return "NVIDIA transcription access or usage limits are unavailable for this model.";
-  return "NVIDIA transcription failed. Please try again in a moment.";
+  if (status === 429) return "Deepgram transcription is busy right now. Please wait a moment and try again.";
+  return "Deepgram transcription failed. Please try again in a moment.";
 }
 
 export const Route = createFileRoute("/api/transcribe")({
@@ -71,8 +68,8 @@ export const Route = createFileRoute("/api/transcribe")({
           return json({ error: "Audio segment too large." }, 413);
         }
 
-        const apiKey = process.env["NVIDIA_API_KEY"]?.trim();
-        if (!apiKey) return json({ error: "NVIDIA NIM is not configured. Set NVIDIA_API_KEY in Vercel." }, 500);
+        const apiKey = process.env["DEEPGRAM_API_KEY"]?.trim();
+        if (!apiKey) return json({ error: "Audio transcription is not configured. Set DEEPGRAM_API_KEY in Vercel." }, 500);
 
         let form: FormData;
         try {
@@ -94,51 +91,27 @@ export const Route = createFileRoute("/api/transcribe")({
           String.fromCharCode(...header.slice(8, 12)) === "WAVE";
         if (!isWav) return json({ error: "Audio must be a valid WAV segment. Please record again." }, 415);
 
-        const audioBase64 = Buffer.from(await file.arrayBuffer()).toString("base64");
         let upstream: Response;
         try {
-          upstream = await fetch(NVIDIA_URL, {
+          upstream = await fetch(DEEPGRAM_URL, {
             method: "POST",
             headers: {
-              Authorization: `Bearer ${apiKey}`,
-              "Content-Type": "application/json",
+              Authorization: `Token ${apiKey}`,
+              "Content-Type": "audio/wav",
               Accept: "application/json",
             },
-            body: JSON.stringify({
-              model: NVIDIA_ASR_MODEL,
-              messages: [
-                {
-                  role: "system",
-                  content: "You are a speech transcription engine. Transcribe the audio accurately and return only the spoken words. Do not summarize, explain, or add commentary.",
-                },
-                {
-                  role: "user",
-                  content: [
-                    {
-                      type: "audio_url",
-                      audio_url: { url: `data:audio/wav;base64,${audioBase64}` },
-                    },
-                    { type: "text", text: "Transcribe this audio verbatim. Return only the transcript." },
-                  ],
-                },
-              ],
-              temperature: 0,
-              max_tokens: 2048,
-              stream: false,
-              chat_template_kwargs: { enable_thinking: false },
-            }),
+            body: await file.arrayBuffer(),
             signal: AbortSignal.any([request.signal, AbortSignal.timeout(60_000)]),
           });
         } catch (error) {
           if (request.signal.aborted) return new Response(null, { status: 499 });
           if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-            return json({ error: "NVIDIA transcription timed out. Please try the segment again." }, 504);
+            return json({ error: "Transcription timed out. Please try the segment again." }, 504);
           }
-          return json({ error: "Couldn't connect to NVIDIA NIM transcription. Please try again." }, 502);
+          return json({ error: "Couldn't connect to Deepgram transcription. Please try again." }, 502);
         }
 
         if (!upstream.ok) {
-          // Read a bounded amount for diagnostics without returning provider internals to the browser.
           try { await upstream.body?.cancel(); } catch { /* ignore cancellation errors */ }
           const status = upstream.status === 429 ? 429
             : upstream.status === 413 ? 413
@@ -148,17 +121,14 @@ export const Route = createFileRoute("/api/transcribe")({
         }
 
         let payload: {
-          choices?: Array<{ message?: { content?: unknown } }>;
-          error?: unknown;
+          results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> };
         };
         try {
           payload = await upstream.json() as typeof payload;
         } catch {
-          return json({ error: "NVIDIA transcription returned an unreadable response." }, 502);
+          return json({ error: "Deepgram returned an unreadable transcription response." }, 502);
         }
-        if (payload.error) return json({ error: "NVIDIA could not transcribe this audio. Check the selected model and try again." }, 502);
-        const content = payload.choices?.[0]?.message?.content;
-        const transcript = typeof content === "string" ? content.trim() : "";
+        const transcript = payload.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ?? "";
         if (!transcript) return json({ error: "No speech was detected in this audio segment." }, 422);
         return sse(transcript);
       },

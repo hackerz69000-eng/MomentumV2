@@ -1,7 +1,10 @@
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
-const NVIDIA_MODEL = process.env["NVIDIA_MODEL"]?.trim() || "stepfun-ai/step-3.5-flash";
+const NVIDIA_MODEL =
+  process.env["NVIDIA_MODEL"]?.trim() || "nvidia/nemotron-3.5-lightning-30b-a3b";
+const NVIDIA_REASONING_MODEL =
+  process.env["NVIDIA_REASONING_MODEL"]?.trim() || "nvidia/nemotron-3-ultra-550b-a55b";
 const NVIDIA_VISION_MODEL =
-  process.env["NVIDIA_VISION_MODEL"]?.trim() || "nvidia/nemotron-nano-12b-v2-vl";
+  process.env["NVIDIA_VISION_MODEL"]?.trim() || "nvidia/nemotron-3.5-super-vl-120b-a12b";
 
 type ModelMessage = {
   role: "user" | "assistant";
@@ -68,7 +71,7 @@ function extractText(payload: unknown): string {
 }
 
 function configuredTextModels(preferred?: string): string[] {
-  const configured = (process.env["NVIDIA_FALLBACK_MODELS"] ?? "")
+  const configured = (process.env["NVIDIA_FALLBACK_MODELS"] ?? "stepfun-ai/step-3.5-flash")
     .split(",")
     .map((model) => model.trim())
     .filter(Boolean);
@@ -105,6 +108,9 @@ async function callNvidia(
         temperature: 0.2,
         max_tokens: 6000,
         stream: false,
+        ...(model.startsWith("nvidia/nemotron-3")
+          ? { chat_template_kwargs: { enable_thinking: model.includes("ultra") } }
+          : {}),
       }),
     });
   } catch (error) {
@@ -170,7 +176,7 @@ QUALITY RULES:
 function shouldTryNextModel(error: unknown): boolean {
   if (!(error instanceof NvidiaError)) return false;
   const status = error.statusCode;
-  return status === 400 || status === 404 || status === 408 || status === 429 ||
+  return status === 400 || status === 403 || status === 404 || status === 408 || status === 429 ||
     (typeof status === "number" && status >= 500) ||
     /model.*not found|unknown model|empty response|invalid response|inference error|couldn't connect|timed out/i.test(error.message);
 }
@@ -178,13 +184,21 @@ function shouldTryNextModel(error: unknown): boolean {
 export async function aiText(
   system: string,
   messages: ModelMessage[],
-  opts: { grounded?: boolean; retries?: number; timeoutMs?: number; model?: string } = {},
+  opts: {
+    grounded?: boolean;
+    retries?: number;
+    timeoutMs?: number;
+    model?: string;
+    task?: "fast" | "reasoning";
+  } = {},
 ): Promise<string> {
   if (opts.grounded !== false) system += GROUNDING;
   const retryDelays = [700];
   const retryCount = Math.max(0, Math.min(retryDelays.length, opts.retries ?? 1));
   const timeoutMs = Math.max(1000, Math.min(90_000, opts.timeoutMs ?? 90_000));
-  const models = configuredTextModels(opts.model);
+  const preferredModel = opts.model?.trim() ||
+    (opts.task === "reasoning" ? NVIDIA_REASONING_MODEL : NVIDIA_MODEL);
+  const models = configuredTextModels(preferredModel);
   let lastError: unknown;
 
   for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {

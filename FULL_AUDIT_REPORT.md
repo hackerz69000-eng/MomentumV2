@@ -9,7 +9,7 @@ Audited the supplied project archive (`project/`), including 171 TypeScript/TSX 
 1. **Vercel function discovery:** Removed the invalid `functions.src/server.ts` override. TanStack Start + Nitro generates the deployable function structure; the source server entry is not itself a Vercel function glob. `vercel.json` now declares the TanStack Start framework only.
 2. **Build configuration independent of Lovable:** Replaced `@lovable.dev/vite-tanstack-config` with explicit TanStack Start, Nitro, React, Tailwind, and TS path plugins. Kept the existing custom SSR error wrapper as the server entry.
 3. **Removed Lovable dependencies and editor-only hooks:** Removed Lovable auth package, Lovable Vite config package, Lovable preview-session bridge, Lovable editor telemetry hook, unused Lovable auth helper, and `.lovable` metadata. Supabase auth falls back to its normal browser storage behavior outside the removed preview bridge.
-4. **NVIDIA NIM transcription:** Replaced the Lovable AI Gateway transcription route with NVIDIA's hosted Parakeet ASR endpoint. The route verifies the Supabase bearer token, enforces a 4 MiB WAV segment limit sized below Vercel request-body limits, checks the WAV container header, applies a timeout, handles upstream failures without leaking provider internals, and preserves the recorder's existing SSE event contract. `NVIDIA_ASR_ENDPOINT` can override the default hosted endpoint.
+4. **Speech transcription:** The original migration attempted to use a hosted NVIDIA Parakeet ASR endpoint. The November 2026 model-routing update moved microphone transcription to Deepgram Nova-3 because NVIDIA's Parakeet/Nemotron Omni catalogue entries should not be assumed to be hosted chat/audio API endpoints. The route still verifies the Supabase bearer token, enforces a 4 MiB WAV segment limit, checks the WAV header, applies a timeout, and preserves the recorder's SSE event contract.
 5. **Environment/docs cleanup:** Removed Lovable environment references, documented NVIDIA NIM and Deepgram's existing Audio Study TTS role, added server-only service-role/database variables to the example template, and changed the Drizzle migration connection variable to `DATABASE_URL`.
 6. **Type-check command:** Added `npm run typecheck` (`tsc --noEmit`) so type validation is available separately from Vite's transpile/build.
 
@@ -34,10 +34,10 @@ Dependency installation repeatedly timed out in this environment. As a result, I
 
 ## Deployment notes
 
-- Set `NVIDIA_API_KEY` as a server-side Vercel environment variable. The same key must have access to the selected NVIDIA chat model and the hosted speech endpoint.
-- `NVIDIA_ASR_ENDPOINT` defaults to NVIDIA's hosted Parakeet ASR endpoint. NVIDIA may require the model endpoint to be enabled/accepted for the account; if it is not accessible, configure an endpoint enabled for that account.
-- Keep `NIM_MODEL` server-side. Do not prefix provider secrets with `VITE_`.
-- `DEEPGRAM_API_KEY` remains required only for the existing Audio Study text-to-speech feature; it is not used for chat generation or lecture transcription in this version.
+- Set `NVIDIA_API_KEY` as a server-side Vercel environment variable for chat and image understanding.
+- `NVIDIA_MODEL` defaults to Nemotron 3.5 Lightning; `NVIDIA_REASONING_MODEL` defaults to Nemotron 3 Ultra; `NVIDIA_VISION_MODEL` defaults to Nemotron 3.5 Super VL.
+- Keep all provider keys server-side. Do not prefix provider secrets with `VITE_`.
+- `DEEPGRAM_API_KEY` is required for both microphone transcription (Nova-3) and Audio Study text-to-speech.
 - Apply the database migrations documented in `README.md` to the intended Supabase project before relying on features that require them.
 
 ## Remaining risk / honest status
@@ -46,10 +46,10 @@ This is a static audit plus targeted fixes, not a production certification. Beca
 
 ## Lecture-image understanding enhancement (2026-10-20)
 
-- Added a separate `NIM_VISION_MODEL` setting, defaulting to `meta/llama-3.2-90b-vision-instruct`, so image understanding does not replace the existing `NIM_MODEL` used for text generation. NVIDIA documents this model as accepting text and images through the OpenAI-compatible chat-completions endpoint.
+- The November 2026 model-routing update uses `NVIDIA_VISION_MODEL=nvidia/nemotron-3.5-super-vl-120b-a12b` for image/document understanding, separate from the text-generation routes.
 - Corrected image payloads to the NVIDIA-compatible `image_url` content-part format.
 - PDF pages are rendered in the browser and passed as JPEGs to the vision model. Searchable PDFs receive a visual-analysis pass even when text extraction succeeds; scanned PDFs use page-image OCR with visual explanation. Visual/OCR processing is capped at 20 pages per PDF, and the material includes a note if later pages were not image-analyzed.
 - PowerPoint extraction now follows slide image relationships and analyzes up to 12 embedded raster images per file, grounding each description in that slide's text. Unsupported vector image formats are skipped rather than mislabeled.
 - Standalone image uploads receive OCR plus diagram/chart explanation. When multiple files are uploaded together, text/PDF/PowerPoint files are processed before standalone images so image descriptions can use earlier lecture text as context.
 - The note-generation prompt explicitly preserves visual explanations, ties them to the relevant topic when supported, and tells the model not to invent unreadable labels or unsupported relationships.
-- Validation limitation: the dependency install still timed out, so browser PDF rendering and live NVIDIA vision calls have not been integration-tested in this environment. Verify with a searchable PDF, a scanned PDF, a PowerPoint with a labelled diagram, and a standalone image after configuring `NIM_VISION_MODEL` access in NVIDIA NIM.
+- Validation limitation: the dependency install still timed out, so browser PDF rendering and live NVIDIA vision calls have not been integration-tested in this environment. Verify with a searchable PDF, a scanned PDF, a PowerPoint with a labelled diagram, and a standalone image after configuring `NVIDIA_VISION_MODEL` access in NVIDIA NIM.
