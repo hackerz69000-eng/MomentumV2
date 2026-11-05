@@ -16,6 +16,7 @@ async function streamAiTextUnlocked(options: {
   messages: StreamMessage[];
   task?: "fast" | "reasoning" | "vision";
   jsonMode?: boolean;
+  requestId?: string;
   signal?: AbortSignal | undefined;
   onDelta?: ((text: string) => void) | undefined;
 }): Promise<string> {
@@ -25,12 +26,19 @@ async function streamAiTextUnlocked(options: {
   if (!token) throw new Error("Please sign in again.");
   if (options.signal?.aborted) throw new DOMException("The request was stopped.", "AbortError");
 
+  const headers = new Headers({ "Content-Type": "application/json", Authorization: `Bearer ${token}`, Accept: "text/event-stream", "Cache-Control": "no-cache" });
+  if (options.requestId) headers.set("X-Momentum-Request-ID", options.requestId);
   const response = await fetch("/api/ai-stream", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, Accept: "text/event-stream" },
+    headers,
+    cache: "no-store",
     body: JSON.stringify({ system: options.system, messages: options.messages, task: options.task ?? "fast", jsonMode: options.jsonMode === true }),
     ...(options.signal ? { signal: options.signal } : {}),
   });
+
+  if (options.requestId && response.headers.get("x-momentum-request-id") !== options.requestId) {
+    throw new Error("The AI response did not match this fresh generation request. Please retry.");
+  }
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { error?: string };
@@ -196,6 +204,7 @@ export async function streamAiJson<T>(options: {
   system: string;
   messages: StreamMessage[];
   task?: "fast" | "reasoning" | "vision";
+  requestId?: string;
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
   validate: (value: unknown) => T;
@@ -205,6 +214,7 @@ export async function streamAiJson<T>(options: {
     messages: options.messages,
     ...(options.task ? { task: options.task } : {}),
     jsonMode: true,
+    ...(options.requestId ? { requestId: options.requestId } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
     onDelta: (chunk) => options.onDelta?.(chunk),
   });

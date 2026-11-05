@@ -14,6 +14,8 @@ const readingCards = readFileSync(resolve(process.cwd(), "src/lib/reading.functi
 const flashcardComponent = readFileSync(resolve(process.cwd(), "src/components/set/Flashcards.tsx"), "utf8");
 const readingCompanion = readFileSync(resolve(process.cwd(), "src/components/set/ReadingCompanion.tsx"), "utf8");
 const questionRegistryMigration = readFileSync(resolve(process.cwd(), "supabase/migrations/20261106000000_generated_question_registry.sql"), "utf8");
+const aiStreamClient = readFileSync(resolve(process.cwd(), "src/lib/ai-stream.client.ts"), "utf8");
+const aiStreamRoute = readFileSync(resolve(process.cwd(), "src/routes/api/ai-stream.ts"), "utf8");
 
 function question(index: number): GeneratedQuizQuestion {
   return { type: "mc", question: `Question ${index}?`, options: ["A", "B", "C", "D"], answer: 0, answerText: "A", explanation: "The material supports A.", topic: "Topic" };
@@ -165,6 +167,74 @@ describe("reliable quiz batches", () => {
     expect(result.questions.map((item) => item.question)).toEqual(["¿Qué es la célula?"]);
   });
 
+  it("separates exact, near, and semantic duplicate counters", () => {
+    const seen = [
+      "WHAT causes osmosis?!",
+      "Which sequence of events occurs during aerobic cellular respiration in mitochondria and produces the most ATP energy?",
+      "Define osmosis",
+    ];
+    const result = inspectQuizBatch([
+      { ...question(1), question: "What causes osmosis?" },
+      { ...question(2), question: "Which sequence of stages occurs during aerobic cellular respiration in mitochondria and produces the most ATP energy?" },
+      { ...question(3), question: "What is osmosis?" },
+    ], seen);
+    expect(result).toMatchObject({ duplicateCount: 3, exactDuplicateCount: 1, nearDuplicateCount: 1, semanticDuplicateCount: 1 });
+    expect(result.duplicateFingerprints).toHaveLength(3);
+  });
+
+  it("recovers the reported 2-of-20 stall when later source parts receive live accepted-question context", async () => {
+    const restoreLog = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    localStorage.setItem("momentum:quiz-diagnostics", "enabled");
+    const completed: GeneratedQuizQuestion[] = [];
+    let cursor = 3;
+    const makeSupported = (index: number) => ({
+      ...question(index),
+      question: `Which mechanism best explains how concept ${index} changes the outcome in its study example?`,
+      topic: `Topic ${Math.ceil(index / 4)}`,
+      explanation: `The source describes mechanism ${index} and its specific outcome.`,
+    });
+    try {
+      // First source part: the model returns two supported items, then repeats
+      // them on both replacement requests, reproducing the accepted 2/5 state.
+      const partial = await generateValidatedQuizBatch(5, completed, [], async (_feedback, attempt) => {
+        if (attempt === 0) return { questions: [makeSupported(1), makeSupported(2)] };
+        return { questions: [makeSupported(1), makeSupported(2), makeSupported(1)] };
+      }, { diagnostics: { requestedTotal: 20, completedCount: 0, sourcePartIndex: 0, sourceChars: 900, sourceFingerprint: "source-part-0" } });
+      expect(partial).toHaveLength(2);
+      completed.push(...partial);
+
+      // The following pre-planned source parts are generated after part zero.
+      // Their first response must be given the questions already accepted.
+      for (let partIndex = 1; partIndex < 4; partIndex += 1) {
+        const batch = await generateValidatedQuizBatch(5, completed, [], async (_feedback, attempt, requestId, usedQuestions) => {
+          expect(attempt).toBe(0);
+          expect(requestId).toContain("-");
+          expect(usedQuestions).toEqual(expect.arrayContaining(completed.map((item) => item.question)));
+          return { questions: Array.from({ length: 5 }, () => makeSupported(cursor++)) };
+        }, { diagnostics: { requestedTotal: 20, completedCount: completed.length, sourcePartIndex: partIndex, sourceChars: 800, sourceFingerprint: `source-part-${partIndex}` } });
+        completed.push(...batch);
+      }
+
+      // Planner revisits the unfinished part and requests its exact remainder.
+      const remainder = await generateValidatedQuizBatch(3, completed, [], async (_feedback, attempt, _requestId, usedQuestions) => {
+        expect(attempt).toBe(0);
+        expect(usedQuestions).toHaveLength(17);
+        return { questions: Array.from({ length: 3 }, () => makeSupported(cursor++)) };
+      }, { diagnostics: { requestedTotal: 20, completedCount: completed.length, sourcePartIndex: 0, sourceChars: 900, sourceFingerprint: "source-part-0" } });
+      completed.push(...remainder);
+      expect(completed).toHaveLength(20);
+      expect(new Set(completed.map((item) => item.question)).size).toBe(20);
+      const responseEvents = restoreLog.mock.calls.map(([, event]) => event as { event?: string; requestId?: string; responseFingerprint?: string; responseFresh?: boolean; completedBeforeBatch?: number; usedQuestionContextCount?: number });
+      expect(responseEvents.filter((event) => event.event === "quiz_batch_response").length).toBeGreaterThan(4);
+      expect(responseEvents.every((event) => !!event.requestId && !!event.responseFingerprint)).toBe(true);
+      expect(responseEvents.some((event) => event.responseFresh === false)).toBe(true);
+      expect(responseEvents.some((event) => (event.usedQuestionContextCount ?? 0) >= 2)).toBe(true);
+    } finally {
+      localStorage.removeItem("momentum:quiz-diagnostics");
+      restoreLog.mockRestore();
+    }
+  });
+
   it("retries alternative grouped response shapes and reports malformed JSON payloads", async () => {
     const response = { multiple_choice_questions: [{ prompt: "What is 2 + 2?", choices: ["4", "3", "5", "6"], correct_answer: "4", explanation: "Arithmetic." }] };
     const result = await generateValidatedQuizBatch(1, [], [], async () => response);
@@ -230,5 +300,17 @@ describe("reliable quiz batches", () => {
     expect(questionRegistryMigration).toMatch(/pg_advisory_xact_lock/);
     expect(questionRegistryMigration).toMatch(/ON CONFLICT \(user_id, set_id, normalized_question\) DO NOTHING/);
     expect(questionRegistryMigration).toMatch(/REVOKE INSERT, UPDATE, DELETE/);
+  });
+
+  it("sends accepted questions with every later pre-planned batch and correlates uncached provider requests", () => {
+    expect(quizRunner).toMatch(/QUESTIONS ALREADY GENERATED OR USED FOR THIS MATERIAL/);
+    expect(quizRunner).toContain("diagnosticFingerprint(typeof prompt.messages[0]?.content");
+    expect(studyFunctions).toMatch(/MATERIAL PART \$\{partIndex \+ 1\}/);
+    expect(studyFunctions).toMatch(/\$\{part\}/);
+    expect(aiStreamClient).toMatch(/cache: "no-store"/);
+    expect(aiStreamClient).toMatch(/X-Momentum-Request-ID/);
+    expect(aiStreamClient).toMatch(/response\.headers\.get\("x-momentum-request-id"\)/);
+    expect(aiStreamRoute).toMatch(/"cache-control": "no-store, no-cache, no-transform"/);
+    expect(aiStreamRoute).toMatch(/"x-momentum-request-id": requestId/);
   });
 });

@@ -8,6 +8,7 @@ type StreamJsonOptions<T> = {
   system: string;
   messages: { role: "user" | "assistant"; content: string | import("./ai-stream.client").StreamContentPart[] }[];
   task?: "fast" | "reasoning" | "vision";
+  requestId?: string;
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
   validate: (value: unknown) => T;

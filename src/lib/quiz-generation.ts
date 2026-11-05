@@ -50,6 +50,22 @@ function questionSignature(text: string): string {
   return `${intent}:${[...new Set(tokens)].sort().join(" ")}`;
 }
 
+function duplicateKind(candidate: string, previous: string): QuizDuplicateKind | null {
+  const normalized = normalizeQuizQuestionText(candidate);
+  const priorNormalized = normalizeQuizQuestionText(previous);
+  if (!normalized || !priorNormalized) return null;
+  if (normalized === priorNormalized) return "exact";
+  if (questionSignature(candidate) === questionSignature(previous)) return "semantic";
+  const candidateTokens = new Set(questionTokens(candidate));
+  const priorUnique = new Set(questionTokens(previous));
+  if (candidateTokens.size < 4 || priorUnique.size < 4) return null;
+  const intersection = [...candidateTokens].filter((token) => priorUnique.has(token)).length;
+  const union = new Set([...candidateTokens, ...priorUnique]).size;
+  const jaccard = intersection / union;
+  const containment = intersection / Math.min(candidateTokens.size, priorUnique.size);
+  return (jaccard >= 0.82 && intersection >= 4) || (containment >= 0.92 && intersection >= 5) ? "near" : null;
+}
+
 /** Stable database key for case/punctuation/intent paraphrase collisions. */
 export function questionReservationKey(text: string): string {
   return questionSignature(text);
@@ -61,26 +77,7 @@ export function questionReservationKey(text: string): string {
  * wording while requiring several shared content terms for a near-match.
  */
 export function isDuplicateQuestionText(candidate: string, seen: Iterable<string>): boolean {
-  const normalized = normalizeQuizQuestionText(candidate);
-  if (!normalized) return false;
-  for (const previous of seen) {
-    const priorNormalized = normalizeQuizQuestionText(previous);
-    if (!priorNormalized) continue;
-    if (normalized === priorNormalized) return true;
-    const candidateTokens = new Set(questionTokens(candidate));
-    const priorUnique = new Set(questionTokens(previous));
-    // A signature match means both the intent and all remaining content terms
-    // match. This preserves definition paraphrase detection without rejecting
-    // every question that merely mentions the same short concept.
-    if (questionSignature(candidate) === questionSignature(previous)) return true;
-    if (candidateTokens.size < 4 || priorUnique.size < 4) continue;
-    const intersection = [...candidateTokens].filter((token) => priorUnique.has(token)).length;
-    const union = new Set([...candidateTokens, ...priorUnique]).size;
-    const jaccard = intersection / union;
-    const containment = intersection / Math.min(candidateTokens.size, priorUnique.size);
-    if (jaccard >= 0.82 && intersection >= 4) return true;
-    if (containment >= 0.92 && intersection >= 5) return true;
-  }
+  for (const previous of seen) if (duplicateKind(candidate, previous)) return true;
   return false;
 }
 
@@ -107,9 +104,35 @@ export type QuizBatchValidation = {
   questions: GeneratedQuizQuestion[];
   invalidCount: number;
   duplicateCount: number;
+  exactDuplicateCount: number;
+  nearDuplicateCount: number;
+  semanticDuplicateCount: number;
+  duplicateFingerprints: string[];
   inputCount: number;
   formatError?: string;
 };
+
+export type QuizDuplicateKind = "exact" | "near" | "semantic";
+
+/** Compact identifier for comparing responses without printing source text. */
+export function diagnosticFingerprint(value: string): string {
+  let first = 2166136261;
+  let second = 2246822519;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    first = Math.imul(first ^ code, 16777619);
+    second = Math.imul(second ^ code, 3266489917);
+  }
+  return `${(first >>> 0).toString(16).padStart(8, "0")}${(second >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function logQuizDiagnostic(details: Record<string, unknown>): void {
+  try {
+    if (typeof window !== "undefined" && window.localStorage.getItem("momentum:quiz-diagnostics") === "enabled") {
+      console.info("[Momentum quiz generation]", details);
+    }
+  } catch { /* Diagnostics must never interrupt quiz generation. */ }
+}
 
 /** Accept equivalent JSON wrappers while preserving strict per-question validation. */
 export function extractQuizQuestionArray(value: unknown): { questions: unknown[]; formatError?: string } {
@@ -179,6 +202,10 @@ export function inspectQuizBatch(payload: unknown, alreadySeen: Iterable<string>
   const valid: GeneratedQuizQuestion[] = [];
   let invalidCount = 0;
   let duplicateCount = 0;
+  let exactDuplicateCount = 0;
+  let nearDuplicateCount = 0;
+  let semanticDuplicateCount = 0;
+  const duplicateFingerprints: string[] = [];
   for (const item of extracted.questions) {
     if (!item || typeof item !== "object" || Array.isArray(item)) { invalidCount += 1; continue; }
     const q = item as Record<string, unknown>;
@@ -210,7 +237,18 @@ export function inspectQuizBatch(payload: unknown, alreadySeen: Iterable<string>
     const question = questionValue.trim();
     const key = normalizeQuizQuestionText(question);
     if (!key) { invalidCount += 1; continue; }
-    if (isDuplicateQuestionText(question, seen)) { duplicateCount += 1; continue; }
+    const duplicateKinds = seen.map((previous) => duplicateKind(question, previous));
+    const duplicate = duplicateKinds.includes("exact") ? "exact"
+      : duplicateKinds.includes("semantic") ? "semantic"
+      : duplicateKinds.includes("near") ? "near" : null;
+    if (duplicate) {
+      duplicateCount += 1;
+      if (duplicate === "exact") exactDuplicateCount += 1;
+      else if (duplicate === "near") nearDuplicateCount += 1;
+      else semanticDuplicateCount += 1;
+      duplicateFingerprints.push(diagnosticFingerprint(normalizeQuizQuestionText(question)));
+      continue;
+    }
     seen.push(question);
     valid.push({
       type,
@@ -223,7 +261,7 @@ export function inspectQuizBatch(payload: unknown, alreadySeen: Iterable<string>
       ...(Number.isInteger(q["imageIndex"]) && Number(q["imageIndex"]) >= 0 && Number(q["imageIndex"]) < 3 ? { imageIndex: Number(q["imageIndex"]) } : {}),
     });
   }
-  return { questions: valid, invalidCount, duplicateCount, inputCount: extracted.questions.length, ...(extracted.formatError ? { formatError: extracted.formatError } : {}) };
+  return { questions: valid, invalidCount, duplicateCount, exactDuplicateCount, nearDuplicateCount, semanticDuplicateCount, duplicateFingerprints, inputCount: extracted.questions.length, ...(extracted.formatError ? { formatError: extracted.formatError } : {}) };
 }
 
 export function validateQuizBatch(raw: unknown[] | unknown, alreadySeen: Iterable<string> = []): GeneratedQuizQuestion[] {
@@ -261,7 +299,7 @@ export function sanitizeQuizResumeParts(
 
 export class QuizBatchValidationError extends Error {
   constructor(readonly validation: QuizBatchValidation, readonly expectedCount: number) {
-    const reason = validation.formatError ?? `${validation.invalidCount} invalid and ${validation.duplicateCount} duplicate question(s)`;
+    const reason = validation.formatError ?? `${validation.invalidCount} invalid; ${validation.exactDuplicateCount} exact, ${validation.nearDuplicateCount} near, and ${validation.semanticDuplicateCount} semantic duplicate(s)`;
     super(`Only ${validation.questions.length} of ${expectedCount} questions were valid and unique (${reason}).`);
     this.name = "QuizBatchValidationError";
   }
@@ -272,14 +310,21 @@ export async function generateValidatedQuizBatch(
   expectedCount: number,
   existingQuestions: GeneratedQuizQuestion[],
   excludedQuestions: string[],
-  request: (feedback: string | null, attempt: number) => Promise<unknown>,
-  options: { signal?: AbortSignal; attempts?: number; allowedTypes?: readonly GeneratedQuizQuestion["type"][] } = {},
+  request: (feedback: string | null, attempt: number, requestId: string, usedQuestions: string[]) => Promise<unknown>,
+  options: {
+    signal?: AbortSignal;
+    attempts?: number;
+    allowedTypes?: readonly GeneratedQuizQuestion["type"][];
+    diagnostics?: { batchId?: string; requestedTotal?: number; completedCount?: number; sourcePartIndex?: number; sourceChars?: number; sourceFingerprint?: string };
+  } = {},
 ): Promise<GeneratedQuizQuestion[]> {
   const maxAttempts = Math.max(1, Math.min(3, options.attempts ?? 3));
   const accepted: GeneratedQuizQuestion[] = [];
   const seen = [...excludedQuestions, ...existingQuestions.map((question) => question.question)];
-  let lastValidation: QuizBatchValidation = { questions: [], invalidCount: 0, duplicateCount: 0, inputCount: 0, formatError: "No response was received." };
+  let lastValidation: QuizBatchValidation = { questions: [], invalidCount: 0, duplicateCount: 0, exactDuplicateCount: 0, nearDuplicateCount: 0, semanticDuplicateCount: 0, duplicateFingerprints: [], inputCount: 0, formatError: "No response was received." };
   let lastError: unknown;
+  const observedResponses = new Set<string>();
+  const batchId = options.diagnostics?.batchId ?? `quiz-${diagnosticFingerprint(`${Date.now()}:${Math.random()}`)}`;
   for (let attempt = 0; attempt < maxAttempts && accepted.length < expectedCount; attempt += 1) {
     if (options.signal?.aborted) throw new DOMException("Generation cancelled.", "AbortError");
     const missing = expectedCount - accepted.length;
@@ -295,8 +340,10 @@ export async function generateValidatedQuizBatch(
     const feedback = attempt === 0 ? null : lastValidation.formatError
       ? `The previous reply could not be parsed: ${lastValidation.formatError}${lastError instanceof Error ? ` (${lastError.message})` : ""}. Return exactly ${missing} replacement question(s) as one JSON object with a top-level "questions" array. Each item must use type "mc", "tf", or "short"; keys "question", "options", "answer", "answerText", "explanation", and "topic"; obey the requested answer-index rules; include every required field; do not add prose or code fences.${avoidList}`
       : `The previous reply yielded ${lastValidation.questions.length} valid question(s), ${lastValidation.invalidCount} invalid item(s), and ${lastValidation.duplicateCount} duplicate item(s). Keep valid questions already accepted; now return exactly ${missing} replacement question(s) that pass the same validation. Use one JSON object with a top-level "questions" array and canonical fields type, question, options, answer, answerText, explanation, and topic. ${options.allowedTypes ? `Use only these requested question types: ${options.allowedTypes.join(", ")}.` : ""} Do not repeat any excluded or already accepted question. Do not relax source grounding or guess.${avoidList}`;
+    const requestId = `${batchId}-${attempt + 1}`;
+    const acceptedBefore = accepted.length;
     try {
-      const payload = await request(feedback, attempt);
+      const payload = await request(feedback, attempt, requestId, usedQuestions);
       const inspected = inspectQuizBatch(payload, seen);
       if (options.allowedTypes) {
         const allowed = new Set(options.allowedTypes);
@@ -310,11 +357,62 @@ export async function generateValidatedQuizBatch(
       const remainingValid = lastValidation.questions.slice(0, missing);
       accepted.push(...remainingValid);
       remainingValid.forEach((question) => seen.push(question.question));
+      const responseQuestions = extractQuizQuestionArray(payload).questions.map((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return "";
+        return String(field(item as Record<string, unknown>, ["question", "prompt", "text"]) ?? "").trim();
+      }).filter(Boolean);
+      const candidateFingerprints = responseQuestions.map((question) => diagnosticFingerprint(normalizeQuizQuestionText(question))).sort();
+      const responseFingerprint = diagnosticFingerprint(candidateFingerprints.join("|"));
+      const responseFresh = !observedResponses.has(responseFingerprint);
+      observedResponses.add(responseFingerprint);
+      logQuizDiagnostic({
+        event: "quiz_batch_response",
+        batchId,
+        requestId,
+        requestReturned: true,
+        responseFresh,
+        responseFingerprint,
+        requestedTotal: options.diagnostics?.requestedTotal ?? expectedCount,
+        completedBeforeBatch: options.diagnostics?.completedCount ?? existingQuestions.length,
+        batchSize: expectedCount,
+        sourcePartIndex: options.diagnostics?.sourcePartIndex ?? null,
+        sourceChars: options.diagnostics?.sourceChars ?? null,
+        sourceFingerprint: options.diagnostics?.sourceFingerprint ?? null,
+        replacementAttempt: attempt,
+        replacementRequested: attempt > 0 ? missing : 0,
+        candidateCount: lastValidation.inputCount,
+        validCandidateCount: lastValidation.questions.length,
+        candidateFingerprints,
+        acceptedThisResponse: accepted.length - acceptedBefore,
+        acceptedTotalAfterResponse: (options.diagnostics?.completedCount ?? existingQuestions.length) + accepted.length,
+        remainingTotalAfterResponse: Math.max(0, (options.diagnostics?.requestedTotal ?? expectedCount) - (options.diagnostics?.completedCount ?? existingQuestions.length) - accepted.length),
+        invalidRejected: lastValidation.invalidCount,
+        exactDuplicatesRejected: lastValidation.exactDuplicateCount,
+        nearDuplicatesRejected: lastValidation.nearDuplicateCount,
+        semanticDuplicatesRejected: lastValidation.semanticDuplicateCount,
+        usedQuestionContextCount: usedQuestions.length,
+        duplicateFingerprints: lastValidation.duplicateFingerprints,
+      });
       lastError = null;
     } catch (error) {
       if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
       lastError = error;
-      lastValidation = { questions: [], invalidCount: 0, duplicateCount: 0, inputCount: 0, formatError: `The provider response was malformed, incomplete, or unavailable${error instanceof Error ? `: ${error.message}` : ""}.` };
+      logQuizDiagnostic({
+        event: "quiz_batch_request_failed",
+        batchId,
+        requestId,
+        requestReturned: false,
+        requestedTotal: options.diagnostics?.requestedTotal ?? expectedCount,
+        completedBeforeBatch: options.diagnostics?.completedCount ?? existingQuestions.length,
+        batchSize: expectedCount,
+        sourcePartIndex: options.diagnostics?.sourcePartIndex ?? null,
+        sourceChars: options.diagnostics?.sourceChars ?? null,
+        sourceFingerprint: options.diagnostics?.sourceFingerprint ?? null,
+        replacementAttempt: attempt,
+        replacementRequested: attempt > 0 ? missing : 0,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+      lastValidation = { questions: [], invalidCount: 0, duplicateCount: 0, exactDuplicateCount: 0, nearDuplicateCount: 0, semanticDuplicateCount: 0, duplicateFingerprints: [], inputCount: 0, formatError: `The provider response was malformed, incomplete, or unavailable${error instanceof Error ? `: ${error.message}` : ""}.` };
     }
   }
   if (!accepted.length) {

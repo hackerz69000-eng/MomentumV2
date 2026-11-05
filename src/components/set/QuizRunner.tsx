@@ -21,7 +21,7 @@ import { recordStudySessionCompletion } from "@/components/DailyStreak";
 import { updateLocalSetProgress } from "@/lib/local-store";
 import { extractQuizVisuals, extractQuizVisualsCached, loadCachedQuizVisuals } from "@/lib/extract";
 import { attachQuizVisuals, scoreQuizAnswer, serializeQuizAnswer } from "@/lib/quiz-results";
-import { createQuizProgressKey, extractQuizQuestionArray, generateValidatedQuizBatch, normalizeQuizQuestionText, validateQuizBatch, withQuizBatchRetries, type GeneratedQuizQuestion } from "@/lib/quiz-generation";
+import { createQuizProgressKey, diagnosticFingerprint, extractQuizQuestionArray, generateValidatedQuizBatch, normalizeQuizQuestionText, validateQuizBatch, withQuizBatchRetries, type GeneratedQuizQuestion } from "@/lib/quiz-generation";
 import type { StudySet } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { btnGhost, btnPrimary, Chips, ErrorBox, inputCls } from "./ui";
@@ -339,14 +339,19 @@ export function QuizRunner({
             const current = parts.get(prompt.partIndex) ?? [];
             const existing = [...parts.values()].flat();
             let batch: GeneratedQuizQuestion[];
-            try { batch = await generateValidatedQuizBatch(prompt.batchCount, existing, avoidBySet[prompt.setId] ?? [], async (feedback) => {
-              const messages = feedback ? [...prompt.messages, { role: "user" as const, content: feedback }] : prompt.messages;
-              return streamAiJson({ system: feedback ? `${prompt.system}\n\nThe previous response did not contain enough valid unique questions. Follow the correction in the next user message exactly.` : prompt.system, messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
+            try { batch = await generateValidatedQuizBatch(prompt.batchCount, existing, avoidBySet[prompt.setId] ?? [], async (feedback, _attempt, requestId, usedQuestions) => {
+              const contextMessage = usedQuestions.length ? `QUESTIONS ALREADY GENERATED OR USED FOR THIS MATERIAL — do not repeat or lightly reword these. Ask about different facts, relationships, mechanisms, applications, or reasoning steps while continuing to use the source material in the preceding message:\n- ${usedQuestions.join("\n- ")}` : "";
+              const messages = [
+                ...prompt.messages,
+                ...(contextMessage ? [{ role: "user" as const, content: contextMessage }] : []),
+                ...(feedback ? [{ role: "user" as const, content: feedback }] : []),
+              ];
+              return streamAiJson({ system: feedback ? `${prompt.system}\n\nThe previous response did not contain enough valid unique questions. Follow the correction in the next user message exactly.` : prompt.system, messages, requestId, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
                 const extracted = extractQuizQuestionArray(value);
                 if (extracted.formatError) throw new Error(extracted.formatError);
                 return extracted.questions;
               }});
-            }, { signal: controller.signal, allowedTypes: input.types }); }
+            }, { signal: controller.signal, allowedTypes: input.types, diagnostics: { batchId: `${diagnosticFingerprint(`${generationId}|${prompt.setId}|${prompt.partIndex}|${crypto.randomUUID()}`)}`, requestedTotal: input.count, completedCount: [...generatedBySet.values()].reduce((sum, parts) => sum + [...parts.values()].reduce((n, part) => n + part.length, 0), 0), sourcePartIndex: prompt.partIndex, sourceChars: typeof prompt.messages[0]?.content === "string" ? prompt.messages[0].content.length : 0, sourceFingerprint: diagnosticFingerprint(typeof prompt.messages[0]?.content === "string" ? prompt.messages[0].content : "") } }); }
             catch (error) {
               const completed = [...generatedBySet.values()].reduce((sum, parts) => sum + [...parts.values()].reduce((n, part) => n + part.length, 0), 0);
               throw new Error(`Comprehensive exam generation is at ${completed} of ${input.count}. This batch needed ${prompt.batchCount} new valid questions but could not complete; saved batches are preserved. Retry to resume. ${readableGenerationError(error)}`);
@@ -405,14 +410,19 @@ export function QuizRunner({
               ...quizImages.map((image) => ({ type: "image_url" as const, image_url: { url: image.data } })),
             ] }] : prompt.messages;
             let batch: GeneratedQuizQuestion[];
-            try { batch = await generateValidatedQuizBatch(prompt.batchCount, existing, avoidQuestions, async (feedback) => {
-              const retryMessages = feedback ? [...messages, { role: "user" as const, content: feedback }] : messages;
-              return streamAiJson({ system: feedback ? `${prompt.system}\n\nThe previous response did not contain enough valid unique questions. Follow the correction in the next user message exactly.` : prompt.system, messages: retryMessages, task: quizImages.length ? "vision" : "fast", signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
+            try { batch = await generateValidatedQuizBatch(prompt.batchCount, existing, avoidQuestions, async (feedback, _attempt, requestId, usedQuestions) => {
+              const contextMessage = usedQuestions.length ? `QUESTIONS ALREADY GENERATED OR USED FOR THIS MATERIAL — do not repeat or lightly reword these. Ask about different facts, relationships, mechanisms, applications, or reasoning steps while continuing to use the source material in the preceding message:\n- ${usedQuestions.join("\n- ")}` : "";
+              const retryMessages = [
+                ...messages,
+                ...(contextMessage ? [{ role: "user" as const, content: contextMessage }] : []),
+                ...(feedback ? [{ role: "user" as const, content: feedback }] : []),
+              ];
+              return streamAiJson({ system: feedback ? `${prompt.system}\n\nThe previous response did not contain enough valid unique questions. Follow the correction in the next user message exactly.` : prompt.system, messages: retryMessages, task: quizImages.length ? "vision" : "fast", requestId, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
                 const extracted = extractQuizQuestionArray(value);
                 if (extracted.formatError) throw new Error(extracted.formatError);
                 return extracted.questions;
               }});
-            }, { signal: controller.signal, allowedTypes: input.types }); }
+            }, { signal: controller.signal, allowedTypes: input.types, diagnostics: { batchId: `${diagnosticFingerprint(`${generationId}|${prompt.partIndex}|${crypto.randomUUID()}`)}`, requestedTotal: input.count, completedCount: [...generatedByPart.values()].reduce((sum, part) => sum + part.length, 0), sourcePartIndex: prompt.partIndex, sourceChars: typeof prompt.messages[0]?.content === "string" ? prompt.messages[0].content.length : 0, sourceFingerprint: diagnosticFingerprint(typeof prompt.messages[0]?.content === "string" ? prompt.messages[0].content : "") } }); }
             catch (error) {
               const completed = [...generatedByPart.values()].reduce((sum, part) => sum + part.length, 0);
               throw new Error(`Quiz generation is at ${completed} of ${input.count}. This batch needed ${prompt.batchCount} new valid questions but could not complete; saved batches are preserved. Retry to resume. ${readableGenerationError(error)}`);

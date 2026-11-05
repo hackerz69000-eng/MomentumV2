@@ -9,10 +9,12 @@ const MAX_CONTENT = 160_000;
 type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 type Message = { role: "user" | "assistant"; content: string | ContentPart[] };
 
-function json(data: unknown, status: number) {
+function json(data: unknown, status: number, requestId?: string) {
+  const headers = new Headers({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  if (requestId) headers.set("x-momentum-request-id", requestId);
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    headers,
   });
 }
 
@@ -20,24 +22,26 @@ export const Route = createFileRoute("/api/ai-stream")({
   server: {
     handlers: {
       POST: async ({ request }) => {
+        const rawRequestId = request.headers.get("x-momentum-request-id") ?? "";
+        const requestId = /^[a-z0-9._-]{1,100}$/i.test(rawRequestId) ? rawRequestId : undefined;
         const authorization = request.headers.get("authorization") ?? "";
         const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
         if (!token || !(await verifySupabaseAccessToken(token))) {
-          return json({ error: "Please sign in again." }, 401);
+          return json({ error: "Please sign in again." }, 401, requestId);
         }
 
         const length = Number(request.headers.get("content-length") ?? 0);
-        if (length > MAX_BODY) return json({ error: "AI request is too large." }, 413);
+        if (length > MAX_BODY) return json({ error: "AI request is too large." }, 413, requestId);
 
         let rawBody: string;
         try { rawBody = await request.text(); }
-        catch { return json({ error: "Invalid AI request." }, 400); }
+        catch { return json({ error: "Invalid AI request." }, 400, requestId); }
         if (new TextEncoder().encode(rawBody).byteLength > MAX_BODY) {
-          return json({ error: "AI request is too large." }, 413);
+          return json({ error: "AI request is too large." }, 413, requestId);
         }
         let body: { system?: unknown; messages?: unknown; task?: unknown; jsonMode?: unknown };
         try { body = JSON.parse(rawBody) as typeof body; }
-        catch { return json({ error: "Invalid AI request." }, 400); }
+        catch { return json({ error: "Invalid AI request." }, 400, requestId); }
 
         const system = typeof body.system === "string" ? body.system.trim() : "";
         const messages = Array.isArray(body.messages) ? body.messages as Message[] : [];
@@ -61,11 +65,11 @@ export const Route = createFileRoute("/api/ai-stream")({
           totalContent > MAX_BODY ||
           messages.some((m) => !m || !["user", "assistant"].includes(m.role) || !validContent(m.content)) ||
           (task === "vision" && !messages.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url")))) {
-          return json({ error: "The AI prompt or conversation is invalid or too large." }, 400);
+          return json({ error: "The AI prompt or conversation is invalid or too large." }, 400, requestId);
         }
 
         const apiKey = process.env["NVIDIA_API_KEY"]?.trim();
-        if (!apiKey) return json({ error: "NVIDIA AI is not configured. Set NVIDIA_API_KEY in Vercel." }, 500);
+        if (!apiKey) return json({ error: "NVIDIA AI is not configured. Set NVIDIA_API_KEY in Vercel." }, 500, requestId);
         const preferredModel = task === "vision"
           ? process.env["NVIDIA_VISION_MODEL"]?.trim() || "nvidia/nemotron-3.5-super-vl-120b-a12b"
           : task === "reasoning"
@@ -81,6 +85,7 @@ export const Route = createFileRoute("/api/ai-stream")({
           try {
             const candidate = await fetch(`${BASE_URL}/chat/completions`, {
               method: "POST",
+              cache: "no-store",
               headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "text/event-stream" },
               body: JSON.stringify({
                 model,
@@ -101,27 +106,28 @@ export const Route = createFileRoute("/api/ai-stream")({
               : candidate.status === 429 ? "NVIDIA is busy. Wait a moment and try again."
               : `NVIDIA streaming request failed${detail ? `: ${detail}` : ` (${candidate.status}).`}`;
             const retryable = [400, 403, 404, 408, 429].includes(candidate.status) || candidate.status >= 500;
-            if (!retryable || index === models.length - 1) return json({ error: lastError }, candidate.status >= 400 && candidate.status < 600 ? candidate.status : 502);
+            if (!retryable || index === models.length - 1) return json({ error: lastError }, candidate.status >= 400 && candidate.status < 600 ? candidate.status : 502, requestId);
           } catch (error) {
-            if (request.signal.aborted) return json({ error: "The AI request was cancelled." }, 499);
+            if (request.signal.aborted) return json({ error: "The AI request was cancelled." }, 499, requestId);
             lastError = error instanceof Error && error.name === "TimeoutError"
               ? "The NVIDIA request timed out. Try a shorter response or smaller source document."
               : "Couldn't connect to NVIDIA. Please try again.";
-            if (index === models.length - 1) return json({ error: lastError }, 502);
+            if (index === models.length - 1) return json({ error: lastError }, 502, requestId);
           }
         }
-        if (!upstream?.body) return json({ error: lastError }, 502);
+        if (!upstream?.body) return json({ error: lastError }, 502, requestId);
 
         // Forward provider SSE bytes without buffering so the browser can render tokens immediately.
         return new Response(upstream.body, {
           status: 200,
           headers: {
             "content-type": "text/event-stream; charset=utf-8",
-            "cache-control": "no-cache, no-transform",
+            "cache-control": "no-store, no-cache, no-transform",
             connection: "keep-alive",
             "x-accel-buffering": "no",
             "x-content-type-options": "nosniff",
             "vary": "Authorization",
+            ...(requestId ? { "x-momentum-request-id": requestId } : {}),
           },
         });
       },
