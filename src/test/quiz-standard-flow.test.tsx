@@ -97,3 +97,51 @@ describe("standard quiz generation when image questions are off", () => {
     expect(mocks.prepareQuizReviewStream).not.toHaveBeenCalled();
   });
 });
+
+describe("exam generation entry points", () => {
+  const makeQuestions = (count: number) => Array.from({ length: count }, (_, index) => ({
+    type: "mc" as const, question: `Exam question ${index + 1}?`, options: ["A", "B", "C", "D"], answer: 1,
+    answerText: "B", explanation: "Supported by the source.", topic: "Cell biology",
+  }));
+  const client = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const set = (id: string): StudySet => ({ id, name: `Biology ${id}`, user_id: "user-1", material_text: "Cells and their parts" }) as StudySet;
+
+  it("creates a Practice Exam through the exam-configured regular batch path", async () => {
+    const questions = makeQuestions(3);
+    mocks.from.mockImplementation(() => { throw new Error("Practice Exams without visual questions must not query image storage."); });
+    mocks.generateQuiz.mockImplementation(({ data }: { data: { prepareOnly?: boolean; exam?: boolean; generatedText?: string } }) => {
+      if (data.prepareOnly) return Promise.resolve({ sourceRevision: "source-version-1", avoidQuestions: [], prompts: data.generatedText ? [] : [{ partIndex: 0, batchCount: 3, system: "exam", messages: [{ role: "user", content: "lecture text" }] }] });
+      return Promise.resolve({ questions });
+    });
+    mocks.streamAiJson.mockResolvedValue(questions);
+
+    render(<QueryClientProvider client={client()}><QuizRunner set={set("set-practice")} kind="exam" attempts={[]} preset={{ count: 3, minutes: 0, types: ["mc"] }} /></QueryClientProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Start exam" }));
+
+    expect(await screen.findByText(/Exam question \d+\?/)).toBeInTheDocument();
+    expect(mocks.generateQuiz).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ exam: true, count: 3 }) }));
+    expect(mocks.prepareQuizReviewStream).not.toHaveBeenCalled();
+  });
+
+  it("builds a Comprehensive Exam from both selected sets and finalizes the requested total", async () => {
+    const questions = makeQuestions(5).map((question, index) => ({ ...question, setId: index < 3 ? "set-a" : "set-b" }));
+    mocks.from.mockImplementation(() => { throw new Error("Comprehensive Exams do not load image questions."); });
+    mocks.generateComprehensive.mockImplementation(({ data }: { data: { prepareOnly?: boolean; count: number; generatedBySet?: { setId: string; generatedText: string }[] } }) => {
+      if (!data.prepareOnly) return Promise.resolve({ questions });
+      if (data.generatedBySet?.length) return Promise.resolve({ prompts: [], sourceRevisions: { "set-a": "rev-a", "set-b": "rev-b" }, avoidQuestionsBySet: {} });
+      return Promise.resolve({ prompts: [
+        { setId: "set-a", partIndex: 0, batchCount: 3, system: "comprehensive", messages: [{ role: "user", content: "set A material" }] },
+        { setId: "set-b", partIndex: 0, batchCount: 2, system: "comprehensive", messages: [{ role: "user", content: "set B material" }] },
+      ], sourceRevisions: { "set-a": "rev-a", "set-b": "rev-b" }, avoidQuestionsBySet: { "set-a": [], "set-b": [] } });
+    });
+    mocks.streamAiJson.mockResolvedValueOnce(questions.slice(0, 3)).mockResolvedValueOnce(questions.slice(3));
+
+    render(<QueryClientProvider client={client()}><QuizRunner sets={[set("set-a"), set("set-b")]} kind="comprehensive" attempts={[]} preset={{ count: 5, minutes: 0, types: ["mc"] }} /></QueryClientProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Start exam" }));
+
+    expect(await screen.findByText(/Exam question \d+\?/)).toBeInTheDocument();
+    expect(mocks.generateComprehensive).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ setIds: ["set-a", "set-b"], count: 5 }) }));
+    expect(mocks.streamAiJson).toHaveBeenCalledTimes(2);
+    expect(mocks.generateComprehensive).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ sourceRevisions: { "set-a": "rev-a", "set-b": "rev-b" } }) }));
+  });
+});

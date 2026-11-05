@@ -8,7 +8,7 @@ import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server
 import type { Json } from "@/integrations/supabase/types";
 import { assertGenerationClaimed, assertGenerationSourceRevision } from "./study-generation-guards";
 import { studySourceVersion } from "./study-source-version";
-import { quizBatchSize } from "./quiz-generation";
+import { inspectQuizBatch, normalizeQuizQuestionText, quizBatchSize, sanitizeQuizResumeParts } from "./quiz-generation";
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -75,12 +75,7 @@ async function recentQuestions(supabase: any, setId: string): Promise<string[]> 
   return [...new Set(qs)].slice(0, 40);
 }
 
-const norm = (t: string) =>
-  t
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]+/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+const norm = normalizeQuizQuestionText;
 
 function splitPrimaryAndOptionalReadings(material: string): { lecture: string; readings: string | null } {
   const marker = "=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===";
@@ -423,45 +418,8 @@ const QUALITY_RULES = `QUALITY RULES (mandatory):
 - For mixed difficulty, include a real spread of foundational, application, and challenging questions. Do not make every question difficult just by making its wording longer.`;
 
 function parseQuestions(text: string): QuizQuestion[] {
-  const parsed = parseJson<{ questions?: unknown }>(text);
-  const rawQuestions = parsed && typeof parsed === "object" && Array.isArray(parsed.questions) ? parsed.questions : [];
-  const out: QuizQuestion[] = [];
-  const seen = new Set<string>();
-  for (const raw of rawQuestions) {
-    if (!raw || typeof raw !== "object") continue;
-    const q = raw as Partial<QuizQuestion>;
-    if (!q?.question || typeof q.question !== "string" || !q.question.trim()) continue;
-    if (q.type !== "mc" && q.type !== "tf" && q.type !== "short") continue;
-    const type = q.type;
-    const options = Array.isArray(q.options) ? q.options.map((o) => String(o).trim()) : [];
-    if (options.some((o) => !o)) continue;
-    const answer = Number(q.answer);
-    const answerText = typeof q.answerText === "string" ? q.answerText.trim() : "";
-    const explanation = typeof q.explanation === "string" ? q.explanation.trim() : "";
-    // Reject malformed structures instead of silently showing incomplete or mis-keyed questions.
-    if (type === "mc" && (options.length !== 4 || !Number.isInteger(answer) || answer < 0 || answer >= 4)) continue;
-    if (type === "tf" && (options.length !== 2 || !Number.isInteger(answer) || answer < 0 || answer >= 2)) continue;
-    if (type === "short" && (!answerText || options.length > 0)) continue;
-    if (type !== "short" && !answerText && !options[answer]) continue;
-    if (type === "mc" && new Set(options.map(norm)).size !== options.length) continue;
-    if (type === "tf" && (new Set(options.map(norm)).size !== 2 || !options.some((o) => norm(o) === "true") || !options.some((o) => norm(o) === "false"))) continue;
-    if (!explanation) continue;
-    const key = norm(q.question);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      type,
-      question: q.question.trim(),
-      options: type === "short" ? [] : options,
-      answer: type === "short" ? -1 : answer,
-      // For objective questions, the option indexed as correct is the single source of truth.
-      answerText: type === "short" ? answerText : options[answer]!,
-      explanation,
-      topic: typeof q.topic === "string" ? q.topic.trim().slice(0, 60) || "General" : "General",
-      ...(Number.isInteger(q.imageIndex) && Number(q.imageIndex) >= 0 && Number(q.imageIndex) < 3 ? { imageIndex: Number(q.imageIndex) } : {}),
-    });
-  }
-  return out;
+  try { return inspectQuizBatch(parseJson<unknown>(text)).questions; }
+  catch { return []; }
 }
 
 function parseQuestionParts(text: string): QuizQuestion[] {
@@ -511,32 +469,27 @@ export const generateQuiz = createServerFn({ method: "POST" })
       ? mistakeLines(await openMistakes(context.supabase, set.id, 8)) : [];
     const sourceParts = splitTextIntoChunks(set.material_text, 22000);
     if (!sourceParts.length) throw new Error("Add readable study material before generating questions.");
-    const priorParts = (() => {
-      try {
-        const parsed = JSON.parse(data.generatedText ?? "{}") as { parts?: { partIndex?: number; questions?: unknown[] }[] };
-        return new Map((parsed.parts ?? []).filter((part) => Number.isInteger(part.partIndex)).map((part) => [part.partIndex!, Array.isArray(part.questions) ? part.questions : []]));
-      } catch { return new Map<number, unknown[]>(); }
-    })();
-    const seenPrior = new Set(avoid.map(norm));
-    const validPriorParts = new Map<number, QuizQuestion[]>();
-    for (const [partIndex, rawQuestions] of priorParts) {
-      const accepted = parseQuestions(JSON.stringify({ questions: rawQuestions })).filter((question) => {
-        const key = norm(question.question);
-        if (!key || seenPrior.has(key)) return false;
-        seenPrior.add(key);
-        return true;
-      });
-      validPriorParts.set(partIndex, accepted);
-    }
-    const validPrior = [...validPriorParts.values()].flat();
-    const effectiveAvoid = [...avoid, ...validPrior.map((question) => question.question)];
-    const batchSize = quizBatchSize(process.env["QUIZ_GENERATION_BATCH_SIZE"]);
     let allocated = 0;
     const partTargets = sourceParts.map((_, index) => {
       const target = Math.ceil((data.count - allocated) / Math.max(1, sourceParts.length - index));
       allocated += target;
       return target;
     });
+    const priorParts = (() => {
+      try {
+        const parsed = JSON.parse(data.generatedText ?? "{}") as { parts?: { partIndex?: number; questions?: unknown[] }[] };
+        return new Map((parsed.parts ?? []).filter((part) => Number.isInteger(part.partIndex)).map((part) => [part.partIndex!, Array.isArray(part.questions) ? part.questions : []]));
+      } catch { return new Map<number, unknown[]>(); }
+    })();
+    const validPriorParts = sanitizeQuizResumeParts(
+      [...priorParts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })),
+      partTargets,
+      avoid,
+      data.types,
+    ) as Map<number, QuizQuestion[]>;
+    const validPrior = [...validPriorParts.values()].flat();
+    const effectiveAvoid = [...avoid, ...validPrior.map((question) => question.question)];
+    const batchSize = quizBatchSize(process.env["QUIZ_GENERATION_BATCH_SIZE"]);
     const typeDesc = data.types.map((type) => type === "mc" ? '"mc" (multiple choice, 4 options)' : type === "tf" ? '"tf" (true/false, options ["True","False"])' : '"short" (short answer, 1-2 sentence expected answer)').join(", ");
     const planText = data.plan?.length ? `\nADAPTIVE TOPIC PLAN — write this many questions per topic (use these exact topic names): ${data.plan.map((item) => `${item.topic}: ${item.count}`).join("; ")}. If a topic isn't in the material, use the closest topic.` : "";
     if (data.prepareOnly) {
@@ -551,7 +504,8 @@ export const generateQuiz = createServerFn({ method: "POST" })
       return { prompts, complete: prompts.length === 0, sourceRevision: await studySourceVersion(set), avoidQuestions: avoid };
     }
     if (data.sourceRevision) assertGenerationSourceRevision(data.sourceRevision, await studySourceVersion(set));
-    const questions = parseQuestionParts(data.generatedText ?? "").filter((question) => !new Set(avoid.map(norm)).has(norm(question.question))).slice(0, data.count);
+    const allowedTypes = new Set(data.types);
+    const questions = parseQuestionParts(data.generatedText ?? "").filter((question) => allowedTypes.has(question.type) && !new Set(avoid.map(norm)).has(norm(question.question))).slice(0, data.count);
     if (questions.length !== data.count) throw new Error(`Momentum generated ${questions.length} of ${data.count} requested questions. Your material is preserved; retry generation to fill the missing questions.`);
     return { questions };
   });
@@ -608,28 +562,6 @@ export const generateComprehensive = createServerFn({ method: "POST" })
       for (const { set, count } of allocations) {
         if (count < 1) continue;
         const avoid = await recentQuestions(context.supabase, set.id);
-        const priorText = (data.generatedBySet ?? []).find((item) => item.setId === set.id)?.generatedText;
-        const priorParts = (() => {
-          try {
-            const parsed = JSON.parse(priorText ?? "{}") as { parts?: { partIndex?: number; questions?: unknown[] }[] };
-            return new Map((parsed.parts ?? []).filter((part) => Number.isInteger(part.partIndex)).map((part) => [part.partIndex!, Array.isArray(part.questions) ? part.questions : []]));
-          } catch { return new Map<number, unknown[]>(); }
-        })();
-        const seenPrior = new Set([...avoid.map(norm), ...currentQuizSeen]);
-        const validPriorParts = new Map<number, QuizQuestion[]>();
-        for (const [partIndex, rawQuestions] of priorParts) {
-          const accepted = parseQuestions(JSON.stringify({ questions: rawQuestions })).filter((question) => {
-            const key = norm(question.question);
-            if (!key || seenPrior.has(key)) return false;
-            seenPrior.add(key);
-            return true;
-          });
-          validPriorParts.set(partIndex, accepted);
-        }
-        const validPrior = [...validPriorParts.values()].flat();
-        validPrior.forEach((question) => currentQuizSeen.add(norm(question.question)));
-        avoidQuestionsBySet[set.id] = [...avoid, ...[...currentQuizSeen].map((key) => key)];
-        const effectiveAvoid = [...avoid, ...validPrior.map((question) => question.question), ...[...currentQuizSeen]];
         const sourceParts = splitTextIntoChunks(set.material_text, 22000);
         if (!sourceParts.length) throw new Error(`Study set “${set.name}” has no readable source material.`);
         let allocatedForSet = 0;
@@ -638,6 +570,23 @@ export const generateComprehensive = createServerFn({ method: "POST" })
           allocatedForSet += target;
           return target;
         });
+        const priorText = (data.generatedBySet ?? []).find((item) => item.setId === set.id)?.generatedText;
+        const priorParts = (() => {
+          try {
+            const parsed = JSON.parse(priorText ?? "{}") as { parts?: { partIndex?: number; questions?: unknown[] }[] };
+            return new Map((parsed.parts ?? []).filter((part) => Number.isInteger(part.partIndex)).map((part) => [part.partIndex!, Array.isArray(part.questions) ? part.questions : []]));
+          } catch { return new Map<number, unknown[]>(); }
+        })();
+        const validPriorParts = sanitizeQuizResumeParts(
+          [...priorParts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })),
+          partTargets,
+          [...avoid, ...currentQuizSeen],
+          data.types,
+        ) as Map<number, QuizQuestion[]>;
+        const validPrior = [...validPriorParts.values()].flat();
+        validPrior.forEach((question) => currentQuizSeen.add(norm(question.question)));
+        avoidQuestionsBySet[set.id] = [...avoid, ...[...currentQuizSeen].map((key) => key)];
+        const effectiveAvoid = [...avoid, ...validPrior.map((question) => question.question), ...[...currentQuizSeen]];
         const typeDesc = data.types.map((type) => type === "mc" ? '"mc" (multiple choice, 4 options)' : type === "tf" ? '"tf" (true/false, options ["True","False"])' : '"short" (short answer, 1-2 sentence expected answer)').join(", ");
         for (let partIndex = 0; partIndex < sourceParts.length; partIndex += 1) {
           const already = validPriorParts.get(partIndex) ?? [];
@@ -662,9 +611,10 @@ export const generateComprehensive = createServerFn({ method: "POST" })
       const generated = generatedText ? parseQuestionParts(generatedText) : [];
       const avoid = await recentQuestions(context.supabase, set.id);
       const recent = new Set(avoid.map(norm));
+      const allowedTypes = new Set(data.types);
       const unique = generated.filter((question) => {
         const key = norm(question.question);
-        if (recent.has(key) || currentQuizSeen.has(key)) return false;
+        if (!allowedTypes.has(question.type) || recent.has(key) || currentQuizSeen.has(key)) return false;
         currentQuizSeen.add(key);
         return true;
       }).slice(0, count);

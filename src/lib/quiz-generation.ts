@@ -10,34 +10,117 @@ export type GeneratedQuizQuestion = {
 };
 
 export function normalizeQuizQuestionText(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim();
+  return text.normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N} ]+/gu, " ").replace(/\s+/g, " ").trim();
 }
 
-/** Strictly validate a provider batch before it can count as completed progress. */
-export function validateQuizBatch(raw: unknown[], alreadySeen: Iterable<string> = []): GeneratedQuizQuestion[] {
+export type QuizBatchValidation = {
+  questions: GeneratedQuizQuestion[];
+  invalidCount: number;
+  duplicateCount: number;
+  inputCount: number;
+  formatError?: string;
+};
+
+/** Accept equivalent JSON wrappers while preserving strict per-question validation. */
+export function extractQuizQuestionArray(value: unknown): { questions: unknown[]; formatError?: string } {
+  if (typeof value === "string") {
+    try { value = JSON.parse(value) as unknown; }
+    catch { return { questions: [], formatError: "The response was malformed JSON." }; }
+  }
+  if (Array.isArray(value)) return { questions: value };
+  if (!value || typeof value !== "object") return { questions: [], formatError: "Expected a question array or JSON object containing questions." };
+  const record = value as Record<string, unknown>;
+  for (const key of ["questions", "items", "quiz", "quizQuestions", "quiz_questions", "results", "questionList", "question_list"]) {
+    if (Array.isArray(record[key])) return { questions: record[key] as unknown[] };
+  }
+  for (const key of ["data", "result", "exam"]) {
+    const nested = record[key];
+    if (nested && typeof nested === "object") {
+      const extracted = extractQuizQuestionArray(nested);
+      if (!extracted.formatError) return extracted;
+    }
+  }
+  const grouped = [
+    ["mc", ["multiple_choice_questions", "multipleChoiceQuestions", "mc_questions", "mcq"]],
+    ["tf", ["true_false_questions", "trueFalseQuestions", "true_false"]],
+    ["short", ["short_answer_questions", "shortAnswerQuestions", "short_answer"]],
+  ] as const;
+  const groupedQuestions = grouped.flatMap(([type, keys]) => keys.flatMap((key) => Array.isArray(record[key])
+    ? (record[key] as unknown[]).map((question) => question && typeof question === "object" && !Array.isArray(question)
+      ? { type, ...(question as Record<string, unknown>) }
+      : question)
+    : []));
+  if (groupedQuestions.length) return { questions: groupedQuestions };
+  return { questions: [], formatError: "The JSON object did not contain a recognized questions array." };
+}
+
+function field(record: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) if (record[key] !== undefined && record[key] !== null) return record[key];
+  return undefined;
+}
+
+function canonicalType(value: unknown): GeneratedQuizQuestion["type"] | null {
+  const type = String(value ?? "").toLowerCase().replace(/[\s-]+/g, "_");
+  if (["mc", "mcq", "multiple_choice", "multiplechoice", "multiple_choice_question", "choice"].includes(type)) return "mc";
+  if (["tf", "true_false", "true/false", "truefalse", "boolean"].includes(type)) return "tf";
+  if (["short", "short_answer", "shortanswer", "free_response", "open_ended"].includes(type)) return "short";
+  return null;
+}
+
+function canonicalAnswer(value: unknown, options: string[]): number {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  if (typeof value === "boolean") return value ? 0 : 1;
+  if (typeof value !== "string") return Number.NaN;
+  const normalized = normalizeQuizQuestionText(value);
+  const exactIndex = options.findIndex((option) => normalizeQuizQuestionText(option) === normalized);
+  if (exactIndex >= 0) return exactIndex;
+  if (/^[a-d]$/i.test(value.trim())) return value.trim().toUpperCase().charCodeAt(0) - 65;
+  if ((normalized === "true" || normalized === "false") && options.length === 2) {
+    return options.findIndex((option) => normalizeQuizQuestionText(option) === normalized);
+  }
+  if (/^-?\d+$/.test(value.trim())) return Number(value);
+  return Number.NaN;
+}
+
+/** Strictly validate a provider payload before it can count as completed progress. */
+export function inspectQuizBatch(payload: unknown, alreadySeen: Iterable<string> = []): QuizBatchValidation {
+  const extracted = extractQuizQuestionArray(payload);
   const seen = new Set([...alreadySeen].map(normalizeQuizQuestionText));
   const valid: GeneratedQuizQuestion[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
+  let invalidCount = 0;
+  let duplicateCount = 0;
+  for (const item of extracted.questions) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) { invalidCount += 1; continue; }
     const q = item as Record<string, unknown>;
-    if (typeof q["question"] !== "string" || !q["question"].trim() || !["mc", "tf", "short"].includes(String(q["type"]))) continue;
-    const type = q["type"] as GeneratedQuizQuestion["type"];
-    const options = Array.isArray(q["options"]) ? q["options"].map((option) => String(option).trim()) : [];
-    if (options.some((option) => !option)) continue;
-    const answer = Number(q["answer"]);
-    const answerText = typeof q["answerText"] === "string" ? q["answerText"].trim() : "";
-    const explanation = typeof q["explanation"] === "string" ? q["explanation"].trim() : "";
-    if (type === "mc" && (options.length !== 4 || !Number.isInteger(answer) || answer < 0 || answer >= 4)) continue;
-    if (type === "tf" && (options.length !== 2 || !Number.isInteger(answer) || answer < 0 || answer >= 2)) continue;
-    if (type === "short" && (!answerText || options.length > 0)) continue;
-    if (type !== "short" && !answerText && !options[answer]) continue;
+    const questionValue = field(q, ["question", "prompt", "text"]);
+    const type = canonicalType(field(q, ["type", "questionType", "question_type", "kind"]));
+    if (typeof questionValue !== "string" || !questionValue.trim() || !type) { invalidCount += 1; continue; }
+    const rawOptions = field(q, ["options", "choices"]);
+    const options = Array.isArray(rawOptions)
+      ? rawOptions.map((option) => String(option).trim())
+      : rawOptions && typeof rawOptions === "object"
+        ? Object.entries(rawOptions as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([, option]) => String(option).trim())
+        : [];
+    if (options.some((option) => !option)) { invalidCount += 1; continue; }
+    if (type === "tf" && options.length === 0) options.push("True", "False");
+    const rawAnswer = field(q, ["answer", "answerIndex", "answer_index", "correctIndex", "correct_index", "correctOption", "correct_option", "correctAnswer", "correct_answer"]);
+    const answer = canonicalAnswer(rawAnswer, options);
+    const answerTextValue = field(q, ["answerText", "answer_text", "modelAnswer", "model_answer", "correctAnswerText", "correct_answer_text"]);
+    const answerText = typeof answerTextValue === "string" ? answerTextValue.trim() : type === "short" && typeof rawAnswer === "string" ? rawAnswer.trim() : "";
+    const explanationValue = field(q, ["explanation", "rationale", "feedback", "reason"]);
+    const explanation = typeof explanationValue === "string" ? explanationValue.trim() : "";
+    if (type === "mc" && (options.length !== 4 || !Number.isInteger(answer) || answer < 0 || answer >= 4)) { invalidCount += 1; continue; }
+    if (type === "tf" && (options.length !== 2 || !Number.isInteger(answer) || answer < 0 || answer >= 2)) { invalidCount += 1; continue; }
+    if (type === "short" && (!answerText || options.length > 0)) { invalidCount += 1; continue; }
+    if (type !== "short" && !answerText && !options[answer]) { invalidCount += 1; continue; }
     const normalizedOptions = options.map(normalizeQuizQuestionText);
     if ((type === "mc" && new Set(normalizedOptions).size !== 4) ||
-        (type === "tf" && (new Set(normalizedOptions).size !== 2 || !normalizedOptions.includes("true") || !normalizedOptions.includes("false")))) continue;
-    if (!explanation) continue;
-    const question = q["question"].trim();
+        (type === "tf" && (new Set(normalizedOptions).size !== 2 || !normalizedOptions.includes("true") || !normalizedOptions.includes("false")))) { invalidCount += 1; continue; }
+    if (!explanation) { invalidCount += 1; continue; }
+    const question = questionValue.trim();
     const key = normalizeQuizQuestionText(question);
-    if (!key || seen.has(key)) continue;
+    if (!key) { invalidCount += 1; continue; }
+    if (seen.has(key)) { duplicateCount += 1; continue; }
     seen.add(key);
     valid.push({
       type,
@@ -46,11 +129,105 @@ export function validateQuizBatch(raw: unknown[], alreadySeen: Iterable<string> 
       answer: type === "short" ? -1 : answer,
       answerText: type === "short" ? answerText : options[answer]!,
       explanation,
-      topic: typeof q["topic"] === "string" ? q["topic"].trim().slice(0, 60) || "General" : "General",
+      topic: typeof field(q, ["topic", "category", "subject"]) === "string" ? String(field(q, ["topic", "category", "subject"])).trim().slice(0, 60) || "General" : "General",
       ...(Number.isInteger(q["imageIndex"]) && Number(q["imageIndex"]) >= 0 && Number(q["imageIndex"]) < 3 ? { imageIndex: Number(q["imageIndex"]) } : {}),
     });
   }
-  return valid;
+  return { questions: valid, invalidCount, duplicateCount, inputCount: extracted.questions.length, ...(extracted.formatError ? { formatError: extracted.formatError } : {}) };
+}
+
+export function validateQuizBatch(raw: unknown[] | unknown, alreadySeen: Iterable<string> = []): GeneratedQuizQuestion[] {
+  return inspectQuizBatch(raw, alreadySeen).questions;
+}
+
+/** Validate and bound browser-stored progress before it is reused by a server plan. */
+export function sanitizeQuizResumeParts(
+  rawParts: unknown,
+  targetCounts: number[],
+  excludedQuestions: Iterable<string> = [],
+  allowedTypes?: readonly GeneratedQuizQuestion["type"][],
+): Map<number, GeneratedQuizQuestion[]> {
+  const result = new Map<number, GeneratedQuizQuestion[]>();
+  if (!Array.isArray(rawParts)) return result;
+  const seen = new Set([...excludedQuestions].map(normalizeQuizQuestionText));
+  for (const rawPart of rawParts) {
+    if (!rawPart || typeof rawPart !== "object" || Array.isArray(rawPart)) continue;
+    const part = rawPart as { partIndex?: unknown; questions?: unknown };
+    const partIndex = part.partIndex;
+    if (!Number.isInteger(partIndex) || (partIndex as number) < 0 || (partIndex as number) >= targetCounts.length || !Array.isArray(part.questions)) continue;
+    const current = result.get(partIndex as number) ?? [];
+    const remaining = Math.max(0, (targetCounts[partIndex as number] ?? 0) - current.length);
+    if (!remaining) continue;
+    const allowed = allowedTypes ? new Set(allowedTypes) : null;
+    const accepted = inspectQuizBatch(part.questions, seen).questions
+      .filter((question) => !allowed || allowed.has(question.type))
+      .slice(0, remaining);
+    accepted.forEach((question) => seen.add(normalizeQuizQuestionText(question.question)));
+    if (accepted.length) result.set(partIndex as number, [...current, ...accepted]);
+    else if (!result.has(partIndex as number)) result.set(partIndex as number, []);
+  }
+  return result;
+}
+
+export class QuizBatchValidationError extends Error {
+  constructor(readonly validation: QuizBatchValidation, readonly expectedCount: number) {
+    const reason = validation.formatError ?? `${validation.invalidCount} invalid and ${validation.duplicateCount} duplicate question(s)`;
+    super(`Only ${validation.questions.length} of ${expectedCount} questions were valid and unique (${reason}).`);
+    this.name = "QuizBatchValidationError";
+  }
+}
+
+/** Keep all valid items from a partial response and ask only for its missing replacements. */
+export async function generateValidatedQuizBatch(
+  expectedCount: number,
+  existingQuestions: GeneratedQuizQuestion[],
+  excludedQuestions: string[],
+  request: (feedback: string | null, attempt: number) => Promise<unknown>,
+  options: { signal?: AbortSignal; attempts?: number; allowedTypes?: readonly GeneratedQuizQuestion["type"][] } = {},
+): Promise<GeneratedQuizQuestion[]> {
+  const maxAttempts = Math.max(1, Math.min(3, options.attempts ?? 3));
+  const accepted: GeneratedQuizQuestion[] = [];
+  const seen = new Set([...excludedQuestions, ...existingQuestions.map((question) => question.question)].map(normalizeQuizQuestionText));
+  let lastValidation: QuizBatchValidation = { questions: [], invalidCount: 0, duplicateCount: 0, inputCount: 0, formatError: "No response was received." };
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxAttempts && accepted.length < expectedCount; attempt += 1) {
+    if (options.signal?.aborted) throw new DOMException("Generation cancelled.", "AbortError");
+    const missing = expectedCount - accepted.length;
+    const usedQuestions = [...new Set([
+      ...excludedQuestions,
+      ...existingQuestions.map((question) => question.question),
+      ...accepted.map((question) => question.question),
+    ])].slice(-80);
+    const avoidList = usedQuestions.length ? ` Already-used questions that must not be repeated:\n- ${usedQuestions.join("\n- ")}` : "";
+    const feedback = attempt === 0 ? null : lastValidation.formatError
+      ? `The previous reply could not be parsed: ${lastValidation.formatError}${lastError instanceof Error ? ` (${lastError.message})` : ""}. Return exactly ${missing} replacement question(s) as one JSON object with a top-level "questions" array. Each item must use type "mc", "tf", or "short"; keys "question", "options", "answer", "answerText", "explanation", and "topic"; obey the requested answer-index rules; include every required field; do not add prose or code fences.${avoidList}`
+      : `The previous reply yielded ${lastValidation.questions.length} valid question(s), ${lastValidation.invalidCount} invalid item(s), and ${lastValidation.duplicateCount} duplicate item(s). Keep valid questions already accepted; now return exactly ${missing} replacement question(s) that pass the same validation. Use one JSON object with a top-level "questions" array and canonical fields type, question, options, answer, answerText, explanation, and topic. ${options.allowedTypes ? `Use only these requested question types: ${options.allowedTypes.join(", ")}.` : ""} Do not repeat any excluded or already accepted question. Do not relax source grounding or guess.${avoidList}`;
+    try {
+      const payload = await request(feedback, attempt);
+      const inspected = inspectQuizBatch(payload, [...seen]);
+      if (options.allowedTypes) {
+        const allowed = new Set(options.allowedTypes);
+        const questions = inspected.questions.filter((question) => allowed.has(question.type));
+        lastValidation = {
+          ...inspected,
+          questions,
+          invalidCount: inspected.invalidCount + inspected.questions.length - questions.length,
+        };
+      } else lastValidation = inspected;
+      const remainingValid = lastValidation.questions.slice(0, missing);
+      accepted.push(...remainingValid);
+      remainingValid.forEach((question) => seen.add(normalizeQuizQuestionText(question.question)));
+      lastError = null;
+    } catch (error) {
+      if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
+      lastError = error;
+      lastValidation = { questions: [], invalidCount: 0, duplicateCount: 0, inputCount: 0, formatError: `The provider response was malformed, incomplete, or unavailable${error instanceof Error ? `: ${error.message}` : ""}.` };
+    }
+  }
+  if (!accepted.length) {
+    throw new QuizBatchValidationError({ ...lastValidation, questions: accepted }, expectedCount);
+  }
+  return accepted;
 }
 
 export function quizBatchSize(value: string | undefined): number {
@@ -59,7 +236,7 @@ export function quizBatchSize(value: string | undefined): number {
 }
 
 export async function withQuizBatchRetries<T>(
-  operation: () => Promise<T>,
+  operation: (attempt: number, previousError: unknown) => Promise<T>,
   options: { signal?: AbortSignal; delay?: (milliseconds: number) => Promise<void>; attempts?: number } = {},
 ): Promise<T> {
   const attempts = Math.max(1, Math.min(3, options.attempts ?? 3));
@@ -68,7 +245,7 @@ export async function withQuizBatchRetries<T>(
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (options.signal?.aborted) throw new DOMException("Generation cancelled.", "AbortError");
     try {
-      const result = await operation();
+      const result = await operation(attempt, lastError);
       if (Array.isArray(result) && result.length === 0) throw new Error("The AI returned no valid, unique questions for this batch.");
       return result;
     } catch (error) {

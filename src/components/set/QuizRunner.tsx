@@ -21,7 +21,7 @@ import { recordStudySessionCompletion } from "@/components/DailyStreak";
 import { updateLocalSetProgress } from "@/lib/local-store";
 import { extractQuizVisuals, extractQuizVisualsCached, loadCachedQuizVisuals } from "@/lib/extract";
 import { attachQuizVisuals, scoreQuizAnswer, serializeQuizAnswer } from "@/lib/quiz-results";
-import { createQuizProgressKey, normalizeQuizQuestionText, validateQuizBatch, withQuizBatchRetries, type GeneratedQuizQuestion } from "@/lib/quiz-generation";
+import { createQuizProgressKey, extractQuizQuestionArray, generateValidatedQuizBatch, normalizeQuizQuestionText, validateQuizBatch, withQuizBatchRetries, type GeneratedQuizQuestion } from "@/lib/quiz-generation";
 import type { StudySet } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { btnGhost, btnPrimary, Chips, ErrorBox, inputCls } from "./ui";
@@ -31,6 +31,7 @@ type Difficulty = "easy" | "medium" | "hard" | "mixed";
 type QType = "mc" | "tf" | "short";
 type Answer = number | string | null;
 type Graded = { correct: boolean; feedback?: string };
+type AttemptPersistence = "saving" | "saved" | "failed" | "not-signed-in";
 type Settings = {
   count: number;
   difficulty: Difficulty;
@@ -57,19 +58,19 @@ function prepare(qs: QuizQuestion[]): QuizQuestion[] {
 }
 
 type SavedQuizPart = { partIndex: number; questions: GeneratedQuizQuestion[] };
-function readSavedParts(key: string, sourceRevision: string): Map<number, GeneratedQuizQuestion[]> {
+function readSavedParts(key: string, sourceRevision: string, allowedTypes: QType[]): Map<number, GeneratedQuizQuestion[]> {
   try {
     const saved = JSON.parse(localStorage.getItem(key) ?? "null") as { sourceRevision?: string; parts?: SavedQuizPart[] } | null;
     if (saved?.sourceRevision !== sourceRevision || !Array.isArray(saved.parts)) return new Map();
-    return cleanSavedParts(saved.parts);
+    return cleanSavedParts(saved.parts, allowedTypes);
   } catch { return new Map(); }
 }
-function cleanSavedParts(parts: SavedQuizPart[]): Map<number, GeneratedQuizQuestion[]> {
+function cleanSavedParts(parts: SavedQuizPart[], allowedTypes?: QType[]): Map<number, GeneratedQuizQuestion[]> {
   const seen = new Set<string>();
   const result = new Map<number, GeneratedQuizQuestion[]>();
   for (const part of parts) {
       if (!Number.isInteger(part.partIndex) || !Array.isArray(part.questions)) continue;
-      const valid = validateQuizBatch(part.questions, seen);
+      const valid = validateQuizBatch(part.questions, seen).filter((question) => !allowedTypes || allowedTypes.includes(question.type));
       valid.forEach((question) => seen.add(normalizeQuizQuestionText(question.question)));
       result.set(part.partIndex, valid);
   }
@@ -79,11 +80,6 @@ function saveParts(key: string, sourceRevision: string, parts: Map<number, Gener
   try { localStorage.setItem(key, JSON.stringify({ sourceRevision, parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) })); return true; }
   catch { return false; }
 }
-function acceptedQuestions(raw: unknown[], existing: GeneratedQuizQuestion[], excluded: string[], cap: number): GeneratedQuizQuestion[] {
-  const seen = new Set([...excluded, ...existing.map((question) => question.question)].map(normalizeQuizQuestionText));
-  return validateQuizBatch(raw, seen).slice(0, cap);
-}
-
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
 /** TanStack server-function failures are not always native Error instances in the browser. */
@@ -175,6 +171,7 @@ export function QuizRunner({
   const [answers, setAnswers] = useState<Answer[]>([]);
   const [current, setCurrent] = useState(0);
   const [graded, setGraded] = useState<Graded[] | null>(null);
+  const [attemptPersistence, setAttemptPersistence] = useState<AttemptPersistence>("saving");
   const [loading, setLoading] = useState<null | "gen" | "grade">(null);
   const [error, setError] = useState<string | null>(null);
   const [streamedQuestions, setStreamedQuestions] = useState("");
@@ -253,6 +250,7 @@ export function QuizRunner({
     setLoading("gen");
     setError(null);
     setGraded(null);
+    setAttemptPersistence("saving");
     setGenerationSaved(false);
     try {
       const plan = !exam && settings.adaptive ? adaptivePlan(topics, settings.count) : [];
@@ -306,7 +304,7 @@ export function QuizRunner({
         const progressKey = createQuizProgressKey(user?.id ?? "guest", { kind, input, sourceRevisions });
         const saved = (() => { try { return JSON.parse(localStorage.getItem(progressKey) ?? "null") as { sourceRevisions?: Record<string, string>; sets?: { setId: string; parts: SavedQuizPart[] }[] } | null; } catch { return null; } })();
         const sameSources = saved?.sourceRevisions && JSON.stringify(saved.sourceRevisions) === JSON.stringify(sourceRevisions);
-        const generatedBySet = new Map<string, Map<number, GeneratedQuizQuestion[]>>((sameSources ? saved?.sets ?? [] : []).map(({ setId, parts }) => [setId, cleanSavedParts(parts)]));
+        const generatedBySet = new Map<string, Map<number, GeneratedQuizQuestion[]>>((sameSources ? saved?.sets ?? [] : []).map(({ setId, parts }) => [setId, cleanSavedParts(parts, input.types)]));
         const saveProgress = () => {
           try { localStorage.setItem(progressKey, JSON.stringify({ sourceRevisions, sets: [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) })) })); return true; } catch { return false; }
         };
@@ -325,15 +323,14 @@ export function QuizRunner({
             const parts = generatedBySet.get(prompt.setId) ?? new Map<number, GeneratedQuizQuestion[]>();
             const current = parts.get(prompt.partIndex) ?? [];
             const existing = [...parts.values()].flat();
-            const batch = await withQuizBatchRetries(async () => {
-              const raw = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
-                if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The generated exam batch was not valid JSON.");
-                return (value as { questions: unknown[] }).questions;
+            const batch = await generateValidatedQuizBatch(prompt.batchCount, existing, avoidBySet[prompt.setId] ?? [], async (feedback) => {
+              const messages = feedback ? [...prompt.messages, { role: "user" as const, content: feedback }] : prompt.messages;
+              return streamAiJson({ system: feedback ? `${prompt.system}\n\nThe previous response did not contain enough valid unique questions. Follow the correction in the next user message exactly.` : prompt.system, messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
+                const extracted = extractQuizQuestionArray(value);
+                if (extracted.formatError) throw new Error(extracted.formatError);
+                return extracted.questions;
               }});
-              const accepted = acceptedQuestions(raw, existing, avoidBySet[prompt.setId] ?? [], prompt.batchCount);
-              if (!accepted.length) throw new Error(`No valid, unique questions were returned for ${prompt.setName}.`);
-              return accepted;
-            }, { signal: controller.signal });
+            }, { signal: controller.signal, allowedTypes: input.types });
             parts.set(prompt.partIndex, [...current, ...batch]);
             generatedBySet.set(prompt.setId, parts);
             if (!saveProgress()) throw new Error("Browser storage is unavailable, so this completed batch could not be saved for resume. Keep this page open and retry.");
@@ -358,7 +355,7 @@ export function QuizRunner({
         if (!sourceRevision) throw new Error("Momentum couldn't verify the study material version. Refresh and retry.");
         const avoidQuestions = batchPlan.avoidQuestions ?? [];
         const progressKey = createQuizProgressKey(user?.id ?? "guest", { kind, input, sourceRevision });
-        const generatedByPart = readSavedParts(progressKey, sourceRevision);
+        const generatedByPart = readSavedParts(progressKey, sourceRevision, input.types);
         setGenerationProgress([...generatedByPart.values()].reduce((sum, part) => sum + part.length, 0));
         setGenerationSaved([...generatedByPart.values()].some((part) => part.length > 0));
         if (generatedByPart.size) {
@@ -376,15 +373,14 @@ export function QuizRunner({
               { type: "text" as const, text: `${prompt.messages[0]?.content ?? ""}\n\nThe images are attached in this exact order: ${quizImages.map((_, index) => `imageIndex ${index}`).join(", ")}. Use the matching imageIndex only for a question grounded in that image.` },
               ...quizImages.map((image) => ({ type: "image_url" as const, image_url: { url: image.data } })),
             ] }] : prompt.messages;
-            const batch = await withQuizBatchRetries(async () => {
-              const raw = await streamAiJson({ system: prompt.system, messages, task: quizImages.length ? "vision" : "fast", signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
-                if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The generated quiz batch was not valid JSON.");
-                return (value as { questions: unknown[] }).questions;
+            const batch = await generateValidatedQuizBatch(prompt.batchCount, existing, avoidQuestions, async (feedback) => {
+              const retryMessages = feedback ? [...messages, { role: "user" as const, content: feedback }] : messages;
+              return streamAiJson({ system: feedback ? `${prompt.system}\n\nThe previous response did not contain enough valid unique questions. Follow the correction in the next user message exactly.` : prompt.system, messages: retryMessages, task: quizImages.length ? "vision" : "fast", signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
+                const extracted = extractQuizQuestionArray(value);
+                if (extracted.formatError) throw new Error(extracted.formatError);
+                return extracted.questions;
               }});
-              const accepted = acceptedQuestions(raw, existing, avoidQuestions, prompt.batchCount);
-              if (!accepted.length) throw new Error("No valid, unique questions were returned in this batch.");
-              return accepted;
-            }, { signal: controller.signal });
+            }, { signal: controller.signal, allowedTypes: input.types });
             generatedByPart.set(prompt.partIndex, [...(generatedByPart.get(prompt.partIndex) ?? []), ...batch]);
             if (!saveParts(progressKey, sourceRevision, generatedByPart)) throw new Error("Browser storage is unavailable, so this completed batch could not be saved for resume. Keep this page open and retry.");
             setGenerationSaved(true);
@@ -470,10 +466,14 @@ export function QuizRunner({
       }
     }
     setGraded(results);
+    setAttemptPersistence("saving");
     setLoading(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
     const score = results.filter((r) => r.correct).length;
-    if (!user) return;
+    if (!user) {
+      setAttemptPersistence("not-signed-in");
+      return;
+    }
     const duration = Math.round((Date.now() - startedAt.current) / 1000);
     const savedKind = usedAdaptive ? "adaptive" : kind;
     const groups = new Map<string, number[]>();
@@ -495,13 +495,17 @@ export function QuizRunner({
         return serializeQuizAnswer(q, a, results[i]!);
       }),
     }));
-    const { error } = await supabase.from("quiz_attempts").insert(rows);
-    if (error) {
+    try {
+      const { error } = await supabase.from("quiz_attempts").insert(rows);
+      if (error) throw error;
+    } catch {
+      setAttemptPersistence("failed");
       toast.error(
         "Your answers are graded below, but we couldn't save this result to your progress. Check your connection and retake to record it.",
       );
       return;
     }
+    setAttemptPersistence("saved");
     try { window.localStorage.removeItem(draftKey); } catch { /* ignore */ }
     const ansText = (q: QuizQuestion, a: Answer) =>
       a == null || a === "" ? "" : q.type === "short" ? String(a) : (q.options[Number(a)] ?? "");
@@ -828,6 +832,7 @@ export function QuizRunner({
         questions={questions}
         answers={answers}
         graded={graded}
+        attemptPersistence={attemptPersistence}
         exam={exam}
         before={topics}
         setNames={
@@ -1042,6 +1047,7 @@ function Results({
   questions,
   answers,
   graded,
+  attemptPersistence,
   exam,
   before,
   setNames,
@@ -1055,6 +1061,7 @@ function Results({
   questions: QuizQuestion[];
   answers: Answer[];
   graded: Graded[];
+  attemptPersistence: AttemptPersistence;
   exam: boolean;
   before: TopicRow[];
   setNames?: Record<string, string> | undefined;
@@ -1100,8 +1107,10 @@ function Results({
             </p>
             <p className="text-sm text-soft">
               <span className="text-mint">{score} correct</span> ·{" "}
-              <span className="text-destructive">{questions.length - score} incorrect</span> · saved
-              to your progress
+              <span className="text-destructive">{questions.length - score} incorrect</span> ·{" "}
+              {attemptPersistence === "saved" ? "saved to your progress" :
+                attemptPersistence === "failed" ? "not saved to your progress" :
+                  attemptPersistence === "not-signed-in" ? "sign in to save this result" : "saving result…"}
             </p>
           </div>
           <div className="flex gap-2">
