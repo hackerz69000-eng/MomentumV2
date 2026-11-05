@@ -111,6 +111,7 @@ function configureMocks(kind: AssessmentKind, count: number, types: Question["ty
       const batchCount = Math.min(5, missing);
       return Promise.resolve({
         sourceRevision: "source-revision-a",
+        databaseSourceRevision: "00000000-0000-4000-8000-000000000001",
         avoidQuestions: [],
         prompts: batchCount ? [{ partIndex: 0, batchCount, system: `Generate exactly ${batchCount} questions.`, messages: [{ role: "user", content: "six-topic test source" }] }] : [],
       });
@@ -125,13 +126,14 @@ function configureMocks(kind: AssessmentKind, count: number, types: Question["ty
     let extras = data.count - base * data.setIds.length;
     const allocations = data.setIds.map((setId) => [setId, base + (extras-- > 0 ? 1 : 0)] as const);
     const sourceRevisions = Object.fromEntries(data.setIds.map((setId) => [setId, `revision-${setId}`]));
+    const databaseSourceRevisions = Object.fromEntries(data.setIds.map((setId, index) => [setId, `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`]));
     if (data.prepareOnly) {
       const prompts = allocations.flatMap(([setId, target]) => {
         const missing = Math.max(0, target - (perSet.get(setId)?.length ?? 0));
         const batchCount = Math.min(5, missing);
         return batchCount ? [{ setId, partIndex: 0, batchCount, system: `Generate exactly ${batchCount} questions.`, messages: [{ role: "user" as const, content: `material for ${setId}` }] }] : [];
       });
-      return Promise.resolve({ prompts, sourceRevisions, avoidQuestionsBySet: Object.fromEntries(data.setIds.map((setId) => [setId, []])) });
+      return Promise.resolve({ prompts, sourceRevisions, databaseSourceRevisions, avoidQuestionsBySet: Object.fromEntries(data.setIds.map((setId) => [setId, []])) });
     }
     finalizedQuestions = allocations.flatMap(([setId]) => (perSet.get(setId) ?? []).map((question) => ({ ...question, setId })));
     return Promise.resolve({ questions: finalizedQuestions });

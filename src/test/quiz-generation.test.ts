@@ -13,6 +13,7 @@ const lectureCards = readFileSync(resolve(process.cwd(), "src/lib/lecture.functi
 const readingCards = readFileSync(resolve(process.cwd(), "src/lib/reading.functions.ts"), "utf8");
 const flashcardComponent = readFileSync(resolve(process.cwd(), "src/components/set/Flashcards.tsx"), "utf8");
 const readingCompanion = readFileSync(resolve(process.cwd(), "src/components/set/ReadingCompanion.tsx"), "utf8");
+const questionRegistryMigration = readFileSync(resolve(process.cwd(), "supabase/migrations/20261106000000_generated_question_registry.sql"), "utf8");
 
 function question(index: number): GeneratedQuizQuestion {
   return { type: "mc", question: `Question ${index}?`, options: ["A", "B", "C", "D"], answer: 0, answerText: "A", explanation: "The material supports A.", topic: "Topic" };
@@ -55,6 +56,8 @@ describe("reliable quiz batches", () => {
     expect(isDuplicateQuestionText("WHAT causes osmosis?!", ["What causes osmosis?"])).toBe(true);
     expect(isDuplicateQuestionText("Explain the role of mitochondria in ATP production", ["Describe mitochondria's function in producing ATP."])).toBe(true);
     expect(isDuplicateQuestionText("Which organelle produces ATP?", ["Which organelle stores genetic information?"])).toBe(false);
+    expect(isDuplicateQuestionText("How does ATP affect glycolysis?", ["What is ATP?"])).toBe(false);
+    expect(isDuplicateQuestionText("What is ATP?", ["Define ATP"])).toBe(true);
     expect(uniqueQuestionTexts([
       { question: "Define osmosis" },
       { question: "What is osmosis?" },
@@ -112,6 +115,21 @@ describe("reliable quiz batches", () => {
     });
     expect(result).toHaveLength(1);
     expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps retry feedback focused on current questions and the newest history", async () => {
+    const history = Array.from({ length: 100 }, (_, index) => `Historical question ${index}`);
+    const current = question(900);
+    current.question = "Current batch question";
+    await generateValidatedQuizBatch(2, [current], history, async (feedback, attempt) => {
+      if (attempt === 1) {
+        expect(feedback).toContain("Current batch question");
+        expect(feedback).toContain("Historical question 0");
+        expect(feedback).not.toContain("Historical question 99");
+        return { questions: [question(901)] };
+      }
+      return { questions: [{ ...question(900), question: "Current batch question" }, question(902)] };
+    });
   });
 
   it("keeps valid questions from a partly invalid response and asks only for missing replacements", async () => {
@@ -196,11 +214,21 @@ describe("reliable quiz batches", () => {
     expect(studyFunctions).toMatch(/count: z\.number\(\)\.int\(\)\.min\(3\)\.max\(60\)/);
     expect(studyFunctions).toMatch(/already = validPriorParts\.get\(partIndex\)/);
     expect(studyFunctions).toMatch(/isDuplicateQuestionText\(question\.question/);
-    expect(quizRunner).toMatch(/saveParts\(progressKey, sourceRevision, generatedByPart\)/);
+    expect(quizRunner).toMatch(/saveParts\(progressKey, sourceRevision, generationId, generatedByPart\)/);
     expect(quizRunner).toMatch(/generateValidatedQuizBatch\(prompt\.batchCount/);
     expect(quizRunner).toMatch(/extractQuizQuestionArray\(value\)/);
     expect(quizRunner).toMatch(/generatedText, sourceRevision/);
-    expect(quizRunner).toMatch(/sourceRevisions, generatedBySet/);
+    expect(quizRunner).toMatch(/sourceRevisions, databaseSourceRevisions, generatedBySet/);
     expect(quizRunner).toMatch(/\[5, 10, 20, 30, 40, 50, 60\]/);
+  });
+
+  it("uses an atomic, user-scoped database reservation for finalized quizzes", () => {
+    expect(studyFunctions).toMatch(/reserve_assessment_questions/);
+    expect(studyFunctions).toMatch(/generated_assessment_questions/);
+    expect(quizRunner).toMatch(/generationId/);
+    expect(questionRegistryMigration).toMatch(/ENABLE ROW LEVEL SECURITY/);
+    expect(questionRegistryMigration).toMatch(/pg_advisory_xact_lock/);
+    expect(questionRegistryMigration).toMatch(/ON CONFLICT \(user_id, set_id, normalized_question\) DO NOTHING/);
+    expect(questionRegistryMigration).toMatch(/REVOKE INSERT, UPDATE, DELETE/);
   });
 });

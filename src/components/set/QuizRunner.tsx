@@ -58,15 +58,15 @@ function prepare(qs: QuizQuestion[]): QuizQuestion[] {
 }
 
 type SavedQuizPart = { partIndex: number; questions: GeneratedQuizQuestion[] };
-function readSavedParts(key: string, sourceRevision: string, allowedTypes: QType[]): Map<number, GeneratedQuizQuestion[]> {
+function readSavedParts(key: string, sourceRevision: string, allowedTypes: QType[], excluded: string[] = []): Map<number, GeneratedQuizQuestion[]> {
   try {
     const saved = JSON.parse(localStorage.getItem(key) ?? "null") as { sourceRevision?: string; parts?: SavedQuizPart[] } | null;
     if (saved?.sourceRevision !== sourceRevision || !Array.isArray(saved.parts)) return new Map();
-    return cleanSavedParts(saved.parts, allowedTypes);
+    return cleanSavedParts(saved.parts, allowedTypes, excluded);
   } catch { return new Map(); }
 }
-function cleanSavedParts(parts: SavedQuizPart[], allowedTypes?: QType[]): Map<number, GeneratedQuizQuestion[]> {
-  const seen = new Set<string>();
+function cleanSavedParts(parts: SavedQuizPart[], allowedTypes?: QType[], excluded: string[] = []): Map<number, GeneratedQuizQuestion[]> {
+  const seen = new Set(excluded.map(normalizeQuizQuestionText));
   const result = new Map<number, GeneratedQuizQuestion[]>();
   for (const part of parts) {
       if (!Number.isInteger(part.partIndex) || !Array.isArray(part.questions)) continue;
@@ -76,8 +76,15 @@ function cleanSavedParts(parts: SavedQuizPart[], allowedTypes?: QType[]): Map<nu
   }
   return result;
 }
-function saveParts(key: string, sourceRevision: string, parts: Map<number, GeneratedQuizQuestion[]>): boolean {
-  try { localStorage.setItem(key, JSON.stringify({ sourceRevision, parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) })); return true; }
+function savedGenerationId(key: string, revisionKey: "sourceRevision" | "sourceRevisions", revision: string | Record<string, string>): string | null {
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) ?? "null") as Record<string, unknown> | null;
+    if (!saved || JSON.stringify(saved[revisionKey]) !== JSON.stringify(revision) || typeof saved["generationId"] !== "string" || !/^[0-9a-f-]{36}$/i.test(saved["generationId"])) return null;
+    return saved["generationId"];
+  } catch { return null; }
+}
+function saveParts(key: string, sourceRevision: string, generationId: string, parts: Map<number, GeneratedQuizQuestion[]>): boolean {
+  try { localStorage.setItem(key, JSON.stringify({ sourceRevision, generationId, parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) })); return true; }
   catch { return false; }
 }
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -300,20 +307,28 @@ export function QuizRunner({
         let batchPlan = await genComp({ data: { ...input, prepareOnly: true } });
         if (!("prompts" in batchPlan)) throw new Error("Couldn't prepare the comprehensive exam.");
         const sourceRevisions = batchPlan.sourceRevisions ?? {};
-        const avoidBySet = batchPlan.avoidQuestionsBySet ?? {};
+        const databaseSourceRevisions = batchPlan.databaseSourceRevisions ?? {};
+        let avoidBySet = batchPlan.avoidQuestionsBySet ?? {};
         const progressKey = createQuizProgressKey(user?.id ?? "guest", { kind, input, sourceRevisions });
-        const saved = (() => { try { return JSON.parse(localStorage.getItem(progressKey) ?? "null") as { sourceRevisions?: Record<string, string>; sets?: { setId: string; parts: SavedQuizPart[] }[] } | null; } catch { return null; } })();
+        const saved = (() => { try { return JSON.parse(localStorage.getItem(progressKey) ?? "null") as { sourceRevisions?: Record<string, string>; generationId?: string; sets?: { setId: string; parts: SavedQuizPart[] }[] } | null; } catch { return null; } })();
         const sameSources = saved?.sourceRevisions && JSON.stringify(saved.sourceRevisions) === JSON.stringify(sourceRevisions);
+        const generationId = sameSources && saved?.generationId && /^[0-9a-f-]{36}$/i.test(saved.generationId) ? saved.generationId : crypto.randomUUID();
         const generatedBySet = new Map<string, Map<number, GeneratedQuizQuestion[]>>((sameSources ? saved?.sets ?? [] : []).map(({ setId, parts }) => [setId, cleanSavedParts(parts, input.types)]));
         const saveProgress = () => {
-          try { localStorage.setItem(progressKey, JSON.stringify({ sourceRevisions, sets: [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) })) })); return true; } catch { return false; }
+          try { localStorage.setItem(progressKey, JSON.stringify({ sourceRevisions, generationId, sets: [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) })) })); return true; } catch { return false; }
         };
         setGenerationProgress([...generatedBySet.values()].reduce((sum, parts) => sum + [...parts.values()].reduce((n, part) => n + part.length, 0), 0));
         setGenerationSaved([...generatedBySet.values()].some((parts) => [...parts.values()].some((part) => part.length > 0)));
-        if (generatedBySet.size) {
+        {
           const prior = [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, generatedText: JSON.stringify({ parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) }) }));
-          batchPlan = await genComp({ data: { ...input, prepareOnly: true, generatedBySet: prior } });
-          if (!("prompts" in batchPlan) || JSON.stringify(batchPlan.sourceRevisions) !== JSON.stringify(sourceRevisions)) throw new Error("Study material changed since the saved quiz progress. Start again to generate questions from the current material.");
+          batchPlan = await genComp({ data: { ...input, prepareOnly: true, generationId, databaseSourceRevisions, generatedBySet: prior } });
+          if (!("prompts" in batchPlan) || JSON.stringify(batchPlan.sourceRevisions) !== JSON.stringify(sourceRevisions) || JSON.stringify(batchPlan.databaseSourceRevisions) !== JSON.stringify(databaseSourceRevisions)) throw new Error("Study material changed since the saved quiz progress. Start again to generate questions from the current material.");
+          avoidBySet = batchPlan.avoidQuestionsBySet ?? {};
+          if (batchPlan.resumePartsBySet) {
+            generatedBySet.clear();
+            for (const [setId, parts] of Object.entries(batchPlan.resumePartsBySet)) generatedBySet.set(setId, cleanSavedParts(parts as SavedQuizPart[], input.types));
+            if (!saveProgress()) throw new Error("Browser storage is unavailable, so the validated resume state could not be saved. Keep this page open and retry.");
+          }
         }
         let rounds = 0;
         while (true) {
@@ -323,14 +338,19 @@ export function QuizRunner({
             const parts = generatedBySet.get(prompt.setId) ?? new Map<number, GeneratedQuizQuestion[]>();
             const current = parts.get(prompt.partIndex) ?? [];
             const existing = [...parts.values()].flat();
-            const batch = await generateValidatedQuizBatch(prompt.batchCount, existing, avoidBySet[prompt.setId] ?? [], async (feedback) => {
+            let batch: GeneratedQuizQuestion[];
+            try { batch = await generateValidatedQuizBatch(prompt.batchCount, existing, avoidBySet[prompt.setId] ?? [], async (feedback) => {
               const messages = feedback ? [...prompt.messages, { role: "user" as const, content: feedback }] : prompt.messages;
               return streamAiJson({ system: feedback ? `${prompt.system}\n\nThe previous response did not contain enough valid unique questions. Follow the correction in the next user message exactly.` : prompt.system, messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
                 const extracted = extractQuizQuestionArray(value);
                 if (extracted.formatError) throw new Error(extracted.formatError);
                 return extracted.questions;
               }});
-            }, { signal: controller.signal, allowedTypes: input.types });
+            }, { signal: controller.signal, allowedTypes: input.types }); }
+            catch (error) {
+              const completed = [...generatedBySet.values()].reduce((sum, parts) => sum + [...parts.values()].reduce((n, part) => n + part.length, 0), 0);
+              throw new Error(`Comprehensive exam generation is at ${completed} of ${input.count}. This batch needed ${prompt.batchCount} new valid questions but could not complete; saved batches are preserved. Retry to resume. ${readableGenerationError(error)}`);
+            }
             parts.set(prompt.partIndex, [...current, ...batch]);
             generatedBySet.set(prompt.setId, parts);
             if (!saveProgress()) throw new Error("Browser storage is unavailable, so this completed batch could not be saved for resume. Keep this page open and retry.");
@@ -338,12 +358,13 @@ export function QuizRunner({
             setGenerationProgress((value) => Math.min(settings.count, value + batch.length));
           }
           const prior = [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, generatedText: JSON.stringify({ parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) }) }));
-          batchPlan = await genComp({ data: { ...input, prepareOnly: true, generatedBySet: prior } });
+          batchPlan = await genComp({ data: { ...input, prepareOnly: true, generationId, databaseSourceRevisions, generatedBySet: prior } });
           if (!("prompts" in batchPlan)) throw new Error("Couldn't prepare the next comprehensive exam batch.");
-          if (JSON.stringify(batchPlan.sourceRevisions) !== JSON.stringify(sourceRevisions)) throw new Error("Study material changed during quiz generation. Your saved partial questions were kept, but they are outdated. Start again to use the new material.");
+          avoidBySet = batchPlan.avoidQuestionsBySet ?? {};
+          if (JSON.stringify(batchPlan.sourceRevisions) !== JSON.stringify(sourceRevisions) || JSON.stringify(batchPlan.databaseSourceRevisions) !== JSON.stringify(databaseSourceRevisions)) throw new Error("Study material changed during quiz generation. Your saved partial questions were kept, but they are outdated. Start again to use the new material.");
         }
         setGenerationPhase("finalize");
-        const generated = await genComp({ data: { ...input, sourceRevisions, generatedBySet: [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, generatedText: JSON.stringify({ parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) }) })) } });
+        const generated = await genComp({ data: { ...input, generationId, sourceRevisions, databaseSourceRevisions, generatedBySet: [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, generatedText: JSON.stringify({ parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) }) })) } });
         if (!("questions" in generated)) throw new Error("The comprehensive exam could not be finalized.");
         try { localStorage.removeItem(progressKey); } catch { /* Ignore unavailable storage. */ }
         res = { questions: generated.questions };
@@ -352,17 +373,27 @@ export function QuizRunner({
         let batchPlan = await gen({ data: { ...input, prepareOnly: true } });
         if (!("prompts" in batchPlan)) throw new Error("Couldn't prepare your quiz questions.");
         const sourceRevision = batchPlan.sourceRevision ?? "";
+        const databaseSourceRevision = batchPlan.databaseSourceRevision ?? "";
         if (!sourceRevision) throw new Error("Momentum couldn't verify the study material version. Refresh and retry.");
-        const avoidQuestions = batchPlan.avoidQuestions ?? [];
+        if (!databaseSourceRevision) throw new Error("Momentum couldn't verify the database source revision. Apply the study safety migration, refresh, and retry.");
+        let avoidQuestions = batchPlan.avoidQuestions ?? [];
         const progressKey = createQuizProgressKey(user?.id ?? "guest", { kind, input, sourceRevision });
+        const generationId = savedGenerationId(progressKey, "sourceRevision", sourceRevision) ?? crypto.randomUUID();
+        // Let the authoritative second prepare call sanitize history using the
+        // persisted generationId; the first call cannot yet exclude its own
+        // database reservations from a prior interrupted finalization.
         const generatedByPart = readSavedParts(progressKey, sourceRevision, input.types);
+        const canonicalPrior = JSON.stringify({ parts: [...generatedByPart.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) });
+        batchPlan = await gen({ data: { ...input, prepareOnly: true, generationId, sourceRevision, databaseSourceRevision, ...(generatedByPart.size ? { generatedText: canonicalPrior } : {}) } });
+        if (!("prompts" in batchPlan) || batchPlan.sourceRevision !== sourceRevision || batchPlan.databaseSourceRevision !== databaseSourceRevision) throw new Error("Study material changed since the saved quiz progress. Start again to generate questions from the current material.");
+        avoidQuestions = batchPlan.avoidQuestions ?? [];
+        if (batchPlan.resumeParts) {
+          generatedByPart.clear();
+          for (const part of batchPlan.resumeParts) generatedByPart.set(part.partIndex, part.questions);
+        }
         setGenerationProgress([...generatedByPart.values()].reduce((sum, part) => sum + part.length, 0));
         setGenerationSaved([...generatedByPart.values()].some((part) => part.length > 0));
-        if (generatedByPart.size) {
-          const priorText = JSON.stringify({ parts: [...generatedByPart.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) });
-          batchPlan = await gen({ data: { ...input, prepareOnly: true, sourceRevision, generatedText: priorText } });
-          if (!("prompts" in batchPlan) || batchPlan.sourceRevision !== sourceRevision) throw new Error("Study material changed since the saved quiz progress. Start again to generate questions from the current material.");
-        }
+        if (!saveParts(progressKey, sourceRevision, generationId, generatedByPart)) throw new Error("Browser storage is unavailable, so this generation could not be safely resumed. Keep this page open and retry.");
         let rounds = 0;
         while (true) {
           if (++rounds > 30) throw new Error(`Generated ${[...generatedByPart.values()].reduce((sum, part) => sum + part.length, 0)} of ${input.count} valid questions. The remaining questions could not be generated reliably. Your completed batches are saved; retry to resume, or reduce the count if the material is limited.`);
@@ -373,23 +404,29 @@ export function QuizRunner({
               { type: "text" as const, text: `${prompt.messages[0]?.content ?? ""}\n\nThe images are attached in this exact order: ${quizImages.map((_, index) => `imageIndex ${index}`).join(", ")}. Use the matching imageIndex only for a question grounded in that image.` },
               ...quizImages.map((image) => ({ type: "image_url" as const, image_url: { url: image.data } })),
             ] }] : prompt.messages;
-            const batch = await generateValidatedQuizBatch(prompt.batchCount, existing, avoidQuestions, async (feedback) => {
+            let batch: GeneratedQuizQuestion[];
+            try { batch = await generateValidatedQuizBatch(prompt.batchCount, existing, avoidQuestions, async (feedback) => {
               const retryMessages = feedback ? [...messages, { role: "user" as const, content: feedback }] : messages;
               return streamAiJson({ system: feedback ? `${prompt.system}\n\nThe previous response did not contain enough valid unique questions. Follow the correction in the next user message exactly.` : prompt.system, messages: retryMessages, task: quizImages.length ? "vision" : "fast", signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
                 const extracted = extractQuizQuestionArray(value);
                 if (extracted.formatError) throw new Error(extracted.formatError);
                 return extracted.questions;
               }});
-            }, { signal: controller.signal, allowedTypes: input.types });
+            }, { signal: controller.signal, allowedTypes: input.types }); }
+            catch (error) {
+              const completed = [...generatedByPart.values()].reduce((sum, part) => sum + part.length, 0);
+              throw new Error(`Quiz generation is at ${completed} of ${input.count}. This batch needed ${prompt.batchCount} new valid questions but could not complete; saved batches are preserved. Retry to resume. ${readableGenerationError(error)}`);
+            }
             generatedByPart.set(prompt.partIndex, [...(generatedByPart.get(prompt.partIndex) ?? []), ...batch]);
-            if (!saveParts(progressKey, sourceRevision, generatedByPart)) throw new Error("Browser storage is unavailable, so this completed batch could not be saved for resume. Keep this page open and retry.");
+            if (!saveParts(progressKey, sourceRevision, generationId, generatedByPart)) throw new Error("Browser storage is unavailable, so this completed batch could not be saved for resume. Keep this page open and retry.");
             setGenerationSaved(true);
             setGenerationProgress([...generatedByPart.values()].reduce((sum, part) => sum + part.length, 0));
           }
           const priorText = JSON.stringify({ parts: [...generatedByPart.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) });
-          batchPlan = await gen({ data: { ...input, prepareOnly: true, sourceRevision, generatedText: priorText } });
+          batchPlan = await gen({ data: { ...input, prepareOnly: true, generationId, sourceRevision, databaseSourceRevision, generatedText: priorText } });
           if (!("prompts" in batchPlan)) throw new Error("Couldn't prepare the next question batch.");
-          if (batchPlan.sourceRevision !== sourceRevision) throw new Error("Study material changed during quiz generation. Your saved partial questions were kept, but they are outdated. Start again to use the new material.");
+          avoidQuestions = batchPlan.avoidQuestions ?? [];
+          if (batchPlan.sourceRevision !== sourceRevision || batchPlan.databaseSourceRevision !== databaseSourceRevision) throw new Error("Study material changed during quiz generation. Your saved partial questions were kept, but they are outdated. Start again to use the new material.");
         }
         const generatedQuestions = [...generatedByPart.values()].flat();
         if (generatedQuestions.length !== input.count) throw new Error(`Generated ${generatedQuestions.length} of ${input.count} valid questions. Your completed batches are saved; retry to resume, or reduce the count if the material is limited.`);
@@ -422,7 +459,7 @@ export function QuizRunner({
         }
         const generatedText = JSON.stringify({ parts: [{ partIndex: 0, questions: finalQuestions }] });
         setGenerationPhase("finalize");
-        const generated = await gen({ data: { ...input, generatedText, sourceRevision } });
+        const generated = await gen({ data: { ...input, generationId, generatedText, sourceRevision, databaseSourceRevision } });
         if (!("questions" in generated)) throw new Error("The quiz questions could not be finalized.");
         try { localStorage.removeItem(progressKey); } catch { /* Ignore unavailable storage. */ }
         res = { questions: attachQuizVisuals(generated.questions, quizImages) };

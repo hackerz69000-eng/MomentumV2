@@ -8,7 +8,7 @@ import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server
 import type { Json } from "@/integrations/supabase/types";
 import { assertGenerationClaimed, assertGenerationSourceRevision } from "./study-generation-guards";
 import { studySourceVersion } from "./study-source-version";
-import { extractNumberedQuestionSection, inspectQuizBatch, isDuplicateQuestionText, normalizeQuizQuestionText, quizBatchSize, sanitizeQuizResumeParts, uniqueQuestionTexts } from "./quiz-generation";
+import { extractNumberedQuestionSection, inspectQuizBatch, isDuplicateQuestionText, normalizeQuizQuestionText, questionReservationKey, quizBatchSize, sanitizeQuizResumeParts, uniqueQuestionTexts } from "./quiz-generation";
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -62,7 +62,7 @@ Prioritize:
 
 Avoid trivial wording, vague prompts, duplicate questions, questions whose answer is obvious from the question, and generic study advice. Answers should be concise but complete (normally under 60 words). Each card's topic must match the section/topic it came from.`;
 
-async function recentQuestions(supabase: any, setId: string): Promise<string[]> {
+async function recentQuestions(supabase: any, setId: string, generationId?: string): Promise<string[]> {
   const qs: string[] = [];
   const pageSize = 500;
   for (let offset = 0; ; offset += pageSize) {
@@ -72,7 +72,24 @@ async function recentQuestions(supabase: any, setId: string): Promise<string[]> 
       for (const result of (attempt.results as AttemptResult[] | null) ?? []) if (result.q) qs.push(result.q);
     if ((data?.length ?? 0) < pageSize) break;
   }
+  for (let offset = 0; ; offset += pageSize) {
+    const registry = await supabase.from("generated_assessment_questions").select("question_text,generation_id")
+      .eq("set_id", setId).order("created_at", { ascending: false }).range(offset, offset + pageSize - 1);
+    if (registry.error) throw new Error("Couldn't check earlier questions for duplicates. Apply the generated-question registry migration, then retry.");
+    for (const row of registry.data ?? []) if (row.generation_id !== generationId && row.question_text) qs.push(row.question_text);
+    if ((registry.data?.length ?? 0) < pageSize) break;
+  }
   return [...new Set(qs)];
+}
+
+async function reserveAssessmentQuestions(supabase: any, generationId: string, sourceRevisions: Record<string, string>, questions: { setId: string; question: string }[]): Promise<void> {
+  const { data, error } = await supabase.rpc("reserve_assessment_questions", {
+    p_generation_id: generationId,
+    p_source_revisions: sourceRevisions,
+    p_questions: questions.map(({ setId, question }) => ({ set_id: setId, question, question_key: questionReservationKey(question) })),
+  });
+  if (error) throw new Error("Could not safely finalize this assessment. Apply the generated-question registry migration and retry; your generated progress is preserved.");
+  if (data !== true) throw new Error("Another tab or device already finalized a question from this assessment. Your generated progress is preserved; retry to replace the conflicting question.");
 }
 
 const norm = normalizeQuizQuestionText;
@@ -460,6 +477,8 @@ export const generateQuiz = createServerFn({ method: "POST" })
           .optional(),
         lectureId: lectureIdField,
         includeImages: z.boolean().optional(),
+        generationId: z.string().uuid().optional(),
+        databaseSourceRevision: z.string().uuid().optional(),
         prepareOnly: z.boolean().optional(),
         generatedText: z.string().min(20).max(100000).optional(),
         sourceRevision: z.string().min(1).max(128).optional(),
@@ -468,7 +487,7 @@ export const generateQuiz = createServerFn({ method: "POST" })
   )
   .handler(async ({ data, context }) => {
     const set = await loadSet(context.supabase, data.setId, data.lectureId);
-    const avoid = await recentQuestions(context.supabase, set.id);
+    const avoid = await recentQuestions(context.supabase, set.id, data.generationId);
     const retest = data.plan?.length && !data.lectureId
       ? mistakeLines(await openMistakes(context.supabase, set.id, 8)) : [];
     const sourceParts = splitTextIntoChunks(set.material_text, 22000);
@@ -492,7 +511,7 @@ export const generateQuiz = createServerFn({ method: "POST" })
       data.types,
     ) as Map<number, QuizQuestion[]>;
     const validPrior = [...validPriorParts.values()].flat();
-    const effectiveAvoid = [...avoid, ...validPrior.map((question) => question.question)];
+    const effectiveAvoid = [...validPrior.map((question) => question.question), ...avoid];
     const batchSize = quizBatchSize(process.env["QUIZ_GENERATION_BATCH_SIZE"]);
     const typeDesc = data.types.map((type) => type === "mc" ? '"mc" (multiple choice, 4 options)' : type === "tf" ? '"tf" (true/false, options ["True","False"])' : '"short" (short answer, 1-2 sentence expected answer)').join(", ");
     const planText = data.plan?.length ? `\nADAPTIVE TOPIC PLAN — write this many questions per topic (use these exact topic names): ${data.plan.map((item) => `${item.topic}: ${item.count}`).join("; ")}. If a topic isn't in the material, use the closest topic.` : "";
@@ -505,8 +524,9 @@ export const generateQuiz = createServerFn({ method: "POST" })
         const system = `You write ${data.exam ? "realistic practice exams" : "quizzes"} from study material. Return ONLY JSON: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"concise explanation of why the answer is right and the concept tested","topic":"short topic name (2-4 words)"}]}. Generate exactly ${batchCount} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}${data.difficulty === "mixed" ? " (blend easy, medium and hard)" : ""}. For mc/tf, answer is the zero-based correct option. For short, options must be [] and answer -1, with the model answer in answerText. Only use this source part. Vary the concepts tested. ${data.questionGuidance?.trim() ? `Student guidance: ${data.questionGuidance.trim().slice(0, 2000)}.` : ""}${imageRules}${QUALITY_RULES}${effectiveAvoid.length ? `\nDo not repeat recent or already generated questions:\n- ${effectiveAvoid.slice(0, 80).join("\n- ")}` : ""}${planText}${retest.length ? `\nMistake Bank concepts to retest with fresh wording:\n- ${retest.join("\n- ")}` : ""}${ci(set)}`;
         return [{ partIndex, batchCount, system, messages: [{ role: "user" as const, content: `STUDY SET: ${set.name}\nMATERIAL PART ${partIndex + 1}/${sourceParts.length}:\n${part}` }] }];
       });
-      return { prompts, complete: prompts.length === 0, sourceRevision: await studySourceVersion(set), avoidQuestions: avoid };
+      return { prompts, complete: prompts.length === 0, sourceRevision: await studySourceVersion(set), databaseSourceRevision: set.generation_source_revision, avoidQuestions: avoid, resumeParts: [...validPriorParts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) };
     }
+    if (!data.generationId || !data.sourceRevision || !data.databaseSourceRevision) throw new Error("Assessment version could not be verified. Refresh the page and retry.");
     if (data.sourceRevision) assertGenerationSourceRevision(data.sourceRevision, await studySourceVersion(set));
     const allowedTypes = new Set(data.types);
     const recent = avoid;
@@ -516,6 +536,7 @@ export const generateQuiz = createServerFn({ method: "POST" })
       return true;
     }).slice(0, data.count);
     if (questions.length !== data.count) throw new Error(`Momentum generated ${questions.length} of ${data.count} requested questions. Your material is preserved; retry generation to fill the missing questions.`);
+    if (data.generationId) await reserveAssessmentQuestions(context.supabase, data.generationId, { [set.id]: data.databaseSourceRevision! }, questions.map((question) => ({ setId: set.id, question: question.question })));
     return { questions };
   });
 
@@ -551,6 +572,8 @@ export const generateComprehensive = createServerFn({ method: "POST" })
         prepareOnly: z.boolean().optional(),
         generatedBySet: z.array(z.object({ setId: z.string().min(1).max(200), generatedText: z.string().min(20).max(100000) })).max(10).optional(),
         sourceRevisions: z.record(z.string(), z.string().min(1).max(128)).optional(),
+        generationId: z.string().uuid().optional(),
+        databaseSourceRevisions: z.record(z.string(), z.string().uuid()).optional(),
       })
       .parse(d),
   )
@@ -565,12 +588,14 @@ export const generateComprehensive = createServerFn({ method: "POST" })
     });
     const preparedPrompts: { setId: string; setName: string; partIndex: number; system: string; messages: { role: "user"; content: string }[]; batchCount: number }[] = [];
     const sourceRevisions = Object.fromEntries(await Promise.all(sets.map(async (set) => [set.id, await studySourceVersion(set)] as const)));
+    const databaseSourceRevisions = Object.fromEntries(sets.map((set) => [set.id, set.generation_source_revision as string]));
     const avoidQuestionsBySet: Record<string, string[]> = {};
+    const resumePartsBySet: Record<string, { partIndex: number; questions: QuizQuestion[] }[]> = {};
     if (data.prepareOnly) {
       const currentQuizSeen = new Set<string>();
       for (const { set, count } of allocations) {
         if (count < 1) continue;
-        const avoid = await recentQuestions(context.supabase, set.id);
+        const avoid = await recentQuestions(context.supabase, set.id, data.generationId);
         const sourceParts = splitTextIntoChunks(set.material_text, 22000);
         if (!sourceParts.length) throw new Error(`Study set “${set.name}” has no readable source material.`);
         let allocatedForSet = 0;
@@ -593,9 +618,10 @@ export const generateComprehensive = createServerFn({ method: "POST" })
           data.types,
         ) as Map<number, QuizQuestion[]>;
         const validPrior = [...validPriorParts.values()].flat();
+        resumePartsBySet[set.id] = [...validPriorParts.entries()].map(([partIndex, questions]) => ({ partIndex, questions }));
         validPrior.forEach((question) => currentQuizSeen.add(norm(question.question)));
         avoidQuestionsBySet[set.id] = [...avoid, ...[...currentQuizSeen].map((key) => key)];
-        const effectiveAvoid = [...avoid, ...validPrior.map((question) => question.question), ...[...currentQuizSeen]];
+        const effectiveAvoid = [...validPrior.map((question) => question.question), ...[...currentQuizSeen], ...avoid];
         const typeDesc = data.types.map((type) => type === "mc" ? '"mc" (multiple choice, 4 options)' : type === "tf" ? '"tf" (true/false, options ["True","False"])' : '"short" (short answer, 1-2 sentence expected answer)').join(", ");
         for (let partIndex = 0; partIndex < sourceParts.length; partIndex += 1) {
           const already = validPriorParts.get(partIndex) ?? [];
@@ -605,12 +631,13 @@ export const generateComprehensive = createServerFn({ method: "POST" })
           preparedPrompts.push({ setId: set.id, setName: set.name, partIndex, system, messages: [{ role: "user", content: `STUDY SET: ${set.name}\nMATERIAL PART ${partIndex + 1}/${sourceParts.length}:\n${sourceParts[partIndex]}` }], batchCount });
         }
       }
-      return { prompts: preparedPrompts, sourceRevisions, avoidQuestionsBySet };
+      return { prompts: preparedPrompts, sourceRevisions, databaseSourceRevisions, avoidQuestionsBySet, resumePartsBySet };
     }
     for (const set of sets) {
       const expected = data.sourceRevisions?.[set.id];
       if (expected) assertGenerationSourceRevision(expected, await studySourceVersion(set));
     }
+    if (!data.prepareOnly && (!data.generationId || !data.sourceRevisions || !data.databaseSourceRevisions)) throw new Error("Assessment version could not be verified. Refresh the page and retry.");
     const generatedMap = new Map((data.generatedBySet ?? []).map((item) => [item.setId, item.generatedText]));
     const questions: QuizQuestion[] = [];
     const currentQuizSeen = new Set<string>();
@@ -618,7 +645,7 @@ export const generateComprehensive = createServerFn({ method: "POST" })
       if (count < 1) continue;
       const generatedText = generatedMap.get(set.id);
       const generated = generatedText ? parseQuestionParts(generatedText) : [];
-      const avoid = await recentQuestions(context.supabase, set.id);
+      const avoid = await recentQuestions(context.supabase, set.id, data.generationId);
       const recent = [...avoid];
       const allowedTypes = new Set(data.types);
       const unique = generated.filter((question) => {
@@ -632,6 +659,7 @@ export const generateComprehensive = createServerFn({ method: "POST" })
       questions.push(...unique.map((question) => ({ ...question, setId: set.id })));
     }
     if (questions.length !== data.count) throw new Error(`Momentum generated ${questions.length} of ${data.count} requested questions. Your material is preserved.`);
+    if (data.generationId) await reserveAssessmentQuestions(context.supabase, data.generationId, data.databaseSourceRevisions ?? {}, questions.map((question) => ({ setId: question.setId!, question: question.question })));
     return { questions };
   });
 

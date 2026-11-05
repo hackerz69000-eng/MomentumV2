@@ -10,12 +10,12 @@ export type GeneratedQuizQuestion = {
 };
 
 export function normalizeQuizQuestionText(text: string): string {
-  return text.normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N} ]+/gu, " ").replace(/\s+/g, " ").trim();
+  return text.normalize("NFKC").toLocaleLowerCase().replace(/'s\b/g, "").replace(/[^\p{L}\p{N} ]+/gu, " ").replace(/\s+/g, " ").trim();
 }
 
-const QUESTION_FILLER = new Set("a an the is are was were be been being do does did can could would should what which who whom whose when where why how tell explain describe identify name select choose determine compare contrast about from into with for of in on at by as that this these those following according based upon please question following".split(" "));
+const QUESTION_FILLER = new Set("a an the is are was were be been being do does did can could would should what which who whom whose when where why how tell explain describe identify name select choose determine compare contrast about from into with for of in on at by as that this these those following according based upon please question following s".split(" "));
 const QUESTION_SYNONYMS: Record<string, string> = {
-  define: "meaning", meaning: "meaning", definition: "meaning",
+  define: "definition", meaning: "definition", definition: "definition",
   cause: "cause", causes: "cause", caused: "cause", reason: "cause", reasons: "cause",
   effect: "effect", effects: "effect", consequence: "effect", consequences: "effect",
   produce: "produce", produces: "produce", producing: "produce", production: "produce", make: "produce", makes: "produce", generate: "produce", generates: "produce",
@@ -32,35 +32,54 @@ function questionTokens(text: string): string[] {
   });
 }
 
+function questionIntent(text: string): string {
+  const normalized = normalizeQuizQuestionText(text);
+  if (/^(define|definition|meaning)\b/.test(normalized) || /^what is\b/.test(normalized) || /\bmean\s+by\b/.test(normalized)) return "definition";
+  if (/^(compare|contrast)\b/.test(normalized) || /\b(difference|differences) between\b/.test(normalized)) return "comparison";
+  if (/\b(cause|causes|caused|reason|reasons|why)\b/.test(normalized)) return "cause";
+  if (/\b(effect|effects|affect|affects|consequence|consequences)\b/.test(normalized)) return "effect";
+  if (/\b(function|functions|role|purpose)\b/.test(normalized)) return "function";
+  if (/\b(process|processes|mechanism|mechanisms|how)\b/.test(normalized)) return "process";
+  return "general";
+}
+
+function questionSignature(text: string): string {
+  const intent = questionIntent(text);
+  const actionWords = new Set(Object.keys(QUESTION_SYNONYMS));
+  const tokens = questionTokens(text).filter((token) => !actionWords.has(token));
+  return `${intent}:${[...new Set(tokens)].sort().join(" ")}`;
+}
+
+/** Stable database key for case/punctuation/intent paraphrase collisions. */
+export function questionReservationKey(text: string): string {
+  return questionSignature(text);
+}
+
 /**
- * Conservative lexical/semantic-near-duplicate check shared by assessment flows.
- * It catches punctuation/case variants, reordered choices, and close paraphrases
- * without treating a shared topic alone as a duplicate.
+ * Conservative wording duplicate check shared by assessment flows.
+ * It catches punctuation/case variants, common intent paraphrases and close
+ * wording while requiring several shared content terms for a near-match.
  */
 export function isDuplicateQuestionText(candidate: string, seen: Iterable<string>): boolean {
   const normalized = normalizeQuizQuestionText(candidate);
   if (!normalized) return false;
-  // Generic numbered test labels carry no semantic signal beyond their ID.
-  if (/^study question \d+ about topic \d+$/.test(normalized)) {
-    return [...seen].some((previous) => normalizeQuizQuestionText(previous) === normalized);
-  }
-  const tokens = questionTokens(candidate);
-  const uniqueTokens = new Set(tokens);
   for (const previous of seen) {
     const priorNormalized = normalizeQuizQuestionText(previous);
     if (!priorNormalized) continue;
     if (normalized === priorNormalized) return true;
-    const priorTokens = questionTokens(previous);
-    const priorUnique = new Set(priorTokens);
-    if (!uniqueTokens.size || !priorUnique.size) continue;
-    const intersection = [...uniqueTokens].filter((token) => priorUnique.has(token)).length;
-    const union = new Set([...uniqueTokens, ...priorUnique]).size;
+    const candidateTokens = new Set(questionTokens(candidate));
+    const priorUnique = new Set(questionTokens(previous));
+    // A signature match means both the intent and all remaining content terms
+    // match. This preserves definition paraphrase detection without rejecting
+    // every question that merely mentions the same short concept.
+    if (questionSignature(candidate) === questionSignature(previous)) return true;
+    if (candidateTokens.size < 4 || priorUnique.size < 4) continue;
+    const intersection = [...candidateTokens].filter((token) => priorUnique.has(token)).length;
+    const union = new Set([...candidateTokens, ...priorUnique]).size;
     const jaccard = intersection / union;
-    const containment = intersection / Math.min(uniqueTokens.size, priorUnique.size);
-    // Very short equivalent prompts (e.g. "Define osmosis" / "Meaning of osmosis").
-    if (Math.min(uniqueTokens.size, priorUnique.size) <= 3 && containment === 1) return true;
-    // Similar wording/fact focus, while allowing different aspects of a topic.
-    if (jaccard >= 0.78 || (containment >= 0.9 && jaccard >= 0.68 && intersection >= 4)) return true;
+    const containment = intersection / Math.min(candidateTokens.size, priorUnique.size);
+    if (jaccard >= 0.82 && intersection >= 4) return true;
+    if (containment >= 0.92 && intersection >= 5) return true;
   }
   return false;
 }
@@ -264,11 +283,14 @@ export async function generateValidatedQuizBatch(
   for (let attempt = 0; attempt < maxAttempts && accepted.length < expectedCount; attempt += 1) {
     if (options.signal?.aborted) throw new DOMException("Generation cancelled.", "AbortError");
     const missing = expectedCount - accepted.length;
+    // Prioritize questions from this assessment/retry, then the most recent
+    // history (the server returns history newest first). Keeping the tail used
+    // to omit the most recent history and could omit current retry candidates.
     const usedQuestions = [...new Set([
-      ...excludedQuestions,
       ...existingQuestions.map((question) => question.question),
       ...accepted.map((question) => question.question),
-    ])].slice(-80);
+      ...excludedQuestions,
+    ])].slice(0, 80);
     const avoidList = usedQuestions.length ? ` Already-used questions that must not be repeated:\n- ${usedQuestions.join("\n- ")}` : "";
     const feedback = attempt === 0 ? null : lastValidation.formatError
       ? `The previous reply could not be parsed: ${lastValidation.formatError}${lastError instanceof Error ? ` (${lastError.message})` : ""}. Return exactly ${missing} replacement question(s) as one JSON object with a top-level "questions" array. Each item must use type "mc", "tf", or "short"; keys "question", "options", "answer", "answerText", "explanation", and "topic"; obey the requested answer-index rules; include every required field; do not add prose or code fences.${avoidList}`

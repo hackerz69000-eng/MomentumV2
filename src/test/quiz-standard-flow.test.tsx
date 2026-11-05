@@ -48,7 +48,7 @@ describe("standard quiz generation when image questions are off", () => {
     }));
     mocks.from.mockImplementation(() => { throw new Error("The standard quiz path must not read uploaded image files."); });
     mocks.generateQuiz.mockImplementation(({ data }: { data: { prepareOnly?: boolean; generatedText?: string } }) => {
-      if (data.prepareOnly) return Promise.resolve({ sourceRevision: "source-version-1", avoidQuestions: [], prompts: data.generatedText ? [] : [{ partIndex: 0, batchCount: 3, system: "quiz", messages: [{ role: "user", content: "lecture text" }] }] });
+      if (data.prepareOnly) return Promise.resolve({ sourceRevision: "source-version-1", databaseSourceRevision: "00000000-0000-4000-8000-000000000001", avoidQuestions: [], prompts: data.generatedText ? [] : [{ partIndex: 0, batchCount: 3, system: "quiz", messages: [{ role: "user", content: "lecture text" }] }] });
       return Promise.resolve({ questions });
     });
     mocks.prepareQuizReviewStream.mockResolvedValue({ system: "review", messages: [{ role: "user", content: "review these" }] });
@@ -80,7 +80,7 @@ describe("standard quiz generation when image questions are off", () => {
     mocks.createSignedUrl.mockResolvedValue({ data: { signedUrl: "https://storage.test/cell.png" }, error: null });
     mocks.extractQuizVisuals.mockResolvedValue([{ data: "data:image/jpeg;base64,figure", name: "cell.png", kind: "image", sourceIndex: 0 }]);
     mocks.generateQuiz.mockImplementation(({ data }: { data: { prepareOnly?: boolean; generatedText?: string } }) => {
-      if (data.prepareOnly) return Promise.resolve({ sourceRevision: "source-version-1", avoidQuestions: [], prompts: data.generatedText ? [] : [{ partIndex: 0, batchCount: 3, system: "vision-quiz", messages: [{ role: "user", content: "lecture text" }] }] });
+      if (data.prepareOnly) return Promise.resolve({ sourceRevision: "source-version-1", databaseSourceRevision: "00000000-0000-4000-8000-000000000001", avoidQuestions: [], prompts: data.generatedText ? [] : [{ partIndex: 0, batchCount: 3, system: "vision-quiz", messages: [{ role: "user", content: "lecture text" }] }] });
       return Promise.resolve({ questions: Array.from({ length: 3 }, (_, index) => ({ ...question, question: `${question.question} ${index + 1}` })) });
     });
     mocks.streamAiJson.mockResolvedValue([question, { ...question, question: "Question 2" }, { ...question, question: "Question 3" }]);
@@ -110,7 +110,7 @@ describe("exam generation entry points", () => {
     const questions = makeQuestions(3);
     mocks.from.mockImplementation(() => { throw new Error("Practice Exams without visual questions must not query image storage."); });
     mocks.generateQuiz.mockImplementation(({ data }: { data: { prepareOnly?: boolean; exam?: boolean; generatedText?: string } }) => {
-      if (data.prepareOnly) return Promise.resolve({ sourceRevision: "source-version-1", avoidQuestions: [], prompts: data.generatedText ? [] : [{ partIndex: 0, batchCount: 3, system: "exam", messages: [{ role: "user", content: "lecture text" }] }] });
+      if (data.prepareOnly) return Promise.resolve({ sourceRevision: "source-version-1", databaseSourceRevision: "00000000-0000-4000-8000-000000000001", avoidQuestions: [], prompts: data.generatedText ? [] : [{ partIndex: 0, batchCount: 3, system: "exam", messages: [{ role: "user", content: "lecture text" }] }] });
       return Promise.resolve({ questions });
     });
     mocks.streamAiJson.mockResolvedValue(questions);
@@ -128,11 +128,11 @@ describe("exam generation entry points", () => {
     mocks.from.mockImplementation(() => { throw new Error("Comprehensive Exams do not load image questions."); });
     mocks.generateComprehensive.mockImplementation(({ data }: { data: { prepareOnly?: boolean; count: number; generatedBySet?: { setId: string; generatedText: string }[] } }) => {
       if (!data.prepareOnly) return Promise.resolve({ questions });
-      if (data.generatedBySet?.length) return Promise.resolve({ prompts: [], sourceRevisions: { "set-a": "rev-a", "set-b": "rev-b" }, avoidQuestionsBySet: {} });
+      if (data.generatedBySet?.length) return Promise.resolve({ prompts: [], sourceRevisions: { "set-a": "rev-a", "set-b": "rev-b" }, databaseSourceRevisions: { "set-a": "00000000-0000-4000-8000-000000000001", "set-b": "00000000-0000-4000-8000-000000000002" }, avoidQuestionsBySet: {} });
       return Promise.resolve({ prompts: [
         { setId: "set-a", partIndex: 0, batchCount: 3, system: "comprehensive", messages: [{ role: "user", content: "set A material" }] },
         { setId: "set-b", partIndex: 0, batchCount: 2, system: "comprehensive", messages: [{ role: "user", content: "set B material" }] },
-      ], sourceRevisions: { "set-a": "rev-a", "set-b": "rev-b" }, avoidQuestionsBySet: { "set-a": [], "set-b": [] } });
+      ], sourceRevisions: { "set-a": "rev-a", "set-b": "rev-b" }, databaseSourceRevisions: { "set-a": "00000000-0000-4000-8000-000000000001", "set-b": "00000000-0000-4000-8000-000000000002" }, avoidQuestionsBySet: { "set-a": [], "set-b": [] } });
     });
     mocks.streamAiJson.mockResolvedValueOnce(questions.slice(0, 3)).mockResolvedValueOnce(questions.slice(3));
 
