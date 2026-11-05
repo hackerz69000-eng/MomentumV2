@@ -11,6 +11,7 @@ import { btnGhost, btnPrimary, inputCls } from "./ui";
 import { ACCEPT, MAX_BYTES, extractFileCached, fileKind, storeOriginal } from "@/lib/extract";
 import { ocrFile } from "@/lib/study.functions";
 import { useAuth } from "@/hooks/use-auth";
+import { extractNumberedQuestionSection, uniqueQuestionTexts } from "@/lib/quiz-generation";
 
 type DraftCard = { q: string; a: string; t?: string };
 type SourceOption = { key: string; title: string; kind: "reading" | "lecture"; linked: boolean };
@@ -136,9 +137,18 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
   const makeSummary = async () => {
     const result = await run("summary", async () => {
       const prompt = await summaryPrepareFn({ data: { setId: set.id, sourceKey: selectedSourceKey } });
-      setSummary("");
-      const summaryText = await streamAiText({ system: prompt.system, messages: prompt.messages, ...(generationController.current ? { signal: generationController.current.signal } : {}), onDelta: (chunk) => setSummary((old) => old + chunk) });
-      return { summary: summaryText };
+      let lastIssue = "The practice questions could not be checked for uniqueness.";
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        let streamed = "";
+        const retryContext = attempt ? `\n\nRETRY: The last guide included repeated or unnumbered practice questions. Return a complete corrected guide with 5-7 numbered understanding questions that are each genuinely different. Do not repeat these questions:\n${(prompt.avoidQuestions ?? []).join("\n")}` : "";
+        const messages = attempt ? [...prompt.messages, { role: "user" as const, content: retryContext }] : prompt.messages;
+        const summaryText = await streamAiText({ system: prompt.system, messages, ...(generationController.current ? { signal: generationController.current.signal } : {}), onDelta: (chunk) => { streamed += chunk; } });
+        const questions = extractNumberedQuestionSection(summaryText, "Check your understanding");
+        const unique = uniqueQuestionTexts(questions.map((question) => ({ question })), prompt.avoidQuestions ?? []);
+        if (questions.length >= 5 && unique.length === questions.length) { setSummary(summaryText || streamed); return { summary: summaryText || streamed }; }
+        lastIssue = questions.length < 5 ? "The guide did not contain the expected numbered practice questions." : "Some practice questions repeat earlier questions or another question in this guide.";
+      }
+      throw new Error(`${lastIssue} The guide wasn't accepted; retry generation or use broader material.`);
     });
     if (result) { setSummary(result.summary); setSummarySourceKey(sourceKey); setActiveSummarySection(0); setExpandedSummarySections([]); setCompletedSections([]); setShowAnswerKey(false); }
   };
@@ -160,7 +170,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
       setCardsStreamText("");
       const generated = await streamAiJson({ system: prompt.system, messages: prompt.messages, ...(generationController.current ? { signal: generationController.current.signal } : {}), onDelta: (chunk) => setCardsStreamText((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The generated flashcards were not valid.");
-        return (value as { cards: unknown[] }).cards.filter((card): card is DraftCard => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "" })).slice(0, 15);
+        return uniqueQuestionTexts((value as { cards: unknown[] }).cards.filter((card): card is DraftCard => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "", question: card.q.trim() })).slice(0, 15)).map(({ question, ...card }) => ({ ...card, q: question }));
       }});
       if (!generated.length) throw new Error("No flashcards could be generated from these sources.");
       return { cards: generated };

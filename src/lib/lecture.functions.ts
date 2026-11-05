@@ -5,6 +5,7 @@ import { clip } from "./ai.server";
 import { loadSet, ci } from "./set-helpers.server";
 import { assertGenerationClaimed, assertGenerationSourceRevision } from "./study-generation-guards";
 import { studySourceVersion } from "./study-source-version";
+import { uniqueQuestionTexts } from "./quiz-generation";
 
 const LECTURE_NOTES = `You turn a lecture transcript into organized, easy-to-study lecture notes in Markdown. Never write one big summary paragraph.
 Start with "# <short lecture title>". Then use exactly these "## " sections in this order (omit a section only if the lecture truly has nothing for it, and say "Nothing noted." instead of inventing):
@@ -114,7 +115,9 @@ export const saveLectureCardsStream = createServerFn({ method: "POST" })
       if (lec.updated_at !== data.lectureUpdatedAt) throw new Error("The lecture changed while Momentum was generating. The outdated result was not saved. Retry generation.");
       const source = { ...set, name: `${set.name} — ${lec.title}`, material_text: `LECTURE TRANSCRIPT: ${lec.title}\n\n${lec.transcript}` };
       if (await studySourceVersion(source) !== data.generationKey) throw new Error("The lecture changed while Momentum was generating. The outdated result was not saved. Retry generation.");
-      const cards = data.cards.filter((card, index, all) => all.findIndex((other) => other.q.trim().toLowerCase() === card.q.trim().toLowerCase()) === index);
+      const { data: existingCards, error: existingError } = await context.supabase.from("flashcards").select("question").eq("set_id", set.id);
+      if (existingError) throw new Error("Couldn't check existing flashcards for duplicates.");
+      const cards = uniqueQuestionTexts(data.cards.map((card) => ({ ...card, question: card.q.trim() })), (existingCards ?? []).map((card) => card.question ?? "")).map(({ question: _question, ...card }) => card);
       if (!cards.length) throw new Error("No valid flashcards were provided.");
       const { data: saved, error } = await context.supabase.rpc("commit_study_set_generation", {
         p_set_id: set.id, p_lock_token: data.lockToken, p_generation_key: data.generationKey,

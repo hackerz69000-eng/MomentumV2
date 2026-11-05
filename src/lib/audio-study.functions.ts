@@ -1,6 +1,42 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { isDuplicateQuestionText } from "./quiz-generation";
+import { assertGenerationClaimed } from "./study-generation-guards";
+
+function questionsFromAttempts(rows: { results: unknown }[] | null | undefined): string[] {
+  return (rows ?? []).flatMap((attempt) => Array.isArray(attempt.results)
+    ? attempt.results.flatMap((result) => result && typeof result === "object" && "q" in result && typeof result.q === "string" ? [result.q] : [])
+    : []);
+}
+
+async function savedQuestionsForSet(supabase: any, setId: string): Promise<string[]> {
+  const found: string[] = [];
+  const pageSize = 500;
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await supabase.from("quiz_attempts").select("results").eq("set_id", setId).order("created_at", { ascending: false }).range(offset, offset + pageSize - 1);
+    if (error) throw new Error("Couldn't check earlier questions for duplicates.");
+    found.push(...questionsFromAttempts(data));
+    if ((data?.length ?? 0) < pageSize) break;
+  }
+  return [...new Set(found)];
+}
+
+async function savedAudioQuestionsForSet(supabase: any, userId: string, setId: string): Promise<string[]> {
+  const { data: sessions, error: sessionError } = await supabase.from("audio_study_sessions").select("id").eq("user_id", userId).eq("set_id", setId);
+  if (sessionError) throw new Error("Couldn't check earlier Audio Study questions for duplicates.");
+  const sessionIds = (sessions ?? []).map((session: { id: string }) => session.id);
+  if (!sessionIds.length) return [];
+  const found: string[] = [];
+  const pageSize = 500;
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await supabase.from("audio_study_events").select("content").in("session_id", sessionIds).eq("kind", "quiz_question").range(offset, offset + pageSize - 1);
+    if (error) throw new Error("Couldn't check earlier Audio Study questions for duplicates.");
+    found.push(...(data ?? []).map((row: { content: string }) => row.content));
+    if ((data?.length ?? 0) < pageSize) break;
+  }
+  return [...new Set(found)];
+}
 import { clip } from "./ai.server";
 import { ci, loadSet, openMistakes } from "./set-helpers.server";
 import { setStats, type Attempt, type Flashcard } from "./stats";
@@ -227,22 +263,43 @@ export const prepareAudioStudyQuizStream = createServerFn({ method: "POST" })
     const sections = (session.sections as AudioSection[] | null) ?? [];
     const section = sections[Math.min(data.sectionIndex, Math.max(0, sections.length - 1))];
     if (!section) throw new Error("Play part of the lesson before asking for a quiz.");
+    const [savedAudioQuestions, savedAttemptQuestions] = await Promise.all([
+      savedAudioQuestionsForSet(context.supabase, context.userId, set.id),
+      savedQuestionsForSet(context.supabase, set.id),
+    ]);
+    const previousQuestions = [
+      ...savedAudioQuestions,
+      ...savedAttemptQuestions,
+    ].filter(Boolean);
     return {
       system: `Write ONE active-recall question about the lesson section below. It must be answerable from the source material with one clear expected answer. Return ONLY JSON: {"question":"","topic":"","model":""}. No multiple choice, no yes/no, no trick question.${ci(set)}\nSOURCE MATERIAL:\n${clip(set.material_text, 30000)}`,
       messages: [{ role: "user" as const, content: `CURRENT LESSON SECTION:\n${section.title}\n${section.narration}` }],
       sessionId: session.id,
       sectionIndex: data.sectionIndex,
       defaultTopic: section.topic,
+      avoidQuestions: previousQuestions,
     };
   });
 
 export const saveAudioStudyQuizStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ sessionId: z.string().uuid(), sectionIndex: z.number().int().min(0).max(20), question: z.string().min(1).max(1000), topic: z.string().max(80), model: z.string().min(1).max(3000) }).parse(d))
+  .inputValidator((d: unknown) => z.object({ sessionId: z.string().uuid(), sectionIndex: z.number().int().min(0).max(20), question: z.string().min(1).max(1000), topic: z.string().max(80), model: z.string().min(1).max(3000), lockToken: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }) => {
     const { data: session, error } = await context.supabase.from("audio_study_sessions").select("id,set_id").eq("id", data.sessionId).eq("user_id", context.userId).single();
     if (error || !session) throw new Error("This audio session couldn't be found.");
-    const { error: saveError } = await context.supabase.from("audio_study_events").insert({ user_id: context.userId, session_id: session.id, kind: "quiz_question", content: data.question, context: { sectionIndex: data.sectionIndex, topic: data.topic, model: data.model } });
-    if (saveError) throw new Error("The quiz question was created but couldn't be saved.");
-    return { question: data.question, topic: data.topic, model: data.model };
+    const { data: claimed, error: claimError } = await context.supabase.rpc("claim_study_set_generation", { p_set_id: session.set_id, p_lock_token: data.lockToken });
+    assertGenerationClaimed(claimed, claimError);
+    try {
+      const [audioQuestions, savedAttemptQuestions] = await Promise.all([
+        savedAudioQuestionsForSet(context.supabase, context.userId, session.set_id),
+        savedQuestionsForSet(context.supabase, session.set_id),
+      ]);
+      const prior = [...audioQuestions, ...savedAttemptQuestions].filter(Boolean);
+      if (isDuplicateQuestionText(data.question, prior)) throw new Error("This question is too similar to one already used for this study material. Generate a different question.");
+      const { error: saveError } = await context.supabase.from("audio_study_events").insert({ user_id: context.userId, session_id: session.id, kind: "quiz_question", content: data.question, context: { sectionIndex: data.sectionIndex, topic: data.topic, model: data.model } });
+      if (saveError) throw new Error("The quiz question was created but couldn't be saved.");
+      return { question: data.question, topic: data.topic, model: data.model };
+    } finally {
+      await context.supabase.rpc("release_study_set_generation", { p_set_id: session.set_id, p_lock_token: data.lockToken, p_error: "", p_mark_set_error: false });
+    }
   });

@@ -18,6 +18,7 @@ import { nextStatus, recordResults, MASTERED_AFTER } from "@/lib/mistakes";
 import { logActivity } from "@/lib/log-activity";
 import type { Mistake } from "@/lib/stats";
 import { cn } from "@/lib/utils";
+import { generateValidatedQuizBatch } from "@/lib/quiz-generation";
 import { btnGhost, btnPrimary, Chips, inputCls, Stat } from "./ui";
 
 type Filter = "open" | "review" | "improving" | "mastered" | "all";
@@ -245,26 +246,14 @@ function MistakeCard({ m, setId, startOpen }: { m: Mistake; setId: string; start
     setMode("similar");
     try {
       const prompt = await similarFn({ data: { mistakeId: m.id, count: 3 } });
-      const questions = await streamAiJson({ system: prompt.system, messages: prompt.messages, validate: (value) => {
-        if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The generated questions were not valid.");
-        const rows = (value as { questions: unknown[] }).questions;
-        if (rows.length !== 3) throw new Error("The AI did not generate all three requested questions.");
-        return rows.map((row) => {
-          if (!row || typeof row !== "object") throw new Error("A generated question was malformed.");
-          const q = row as Record<string, unknown>;
-          const type = q["type"];
-          const options = Array.isArray(q["options"]) ? q["options"].map(String) : [];
-          const answer = Number(q["answer"]);
-          const question = String(q["question"] ?? "").trim();
-          const answerText = String(q["answerText"] ?? "").trim();
-          const explanation = String(q["explanation"] ?? "").trim();
-          if (!question || !explanation || (type !== "mc" && type !== "tf" && type !== "short") ||
-            (type === "mc" && (options.length !== 4 || !Number.isInteger(answer) || answer < 0 || answer > 3)) ||
-            (type === "tf" && (options.length !== 2 || !Number.isInteger(answer) || answer < 0 || answer > 1)) ||
-            (type === "short" && (!answerText || options.length))) throw new Error("A generated question failed validation.");
-          return { type, question, options: type === "short" ? [] : options, answer: type === "short" ? -1 : answer, answerText: type === "short" ? answerText : options[answer], explanation, topic: String(q["topic"] ?? "General") } as QuizQuestion;
+      const questions = await generateValidatedQuizBatch(3, [], prompt.avoidQuestions ?? [], async (feedback) => {
+        const raw = await streamAiJson({
+          system: feedback ? `${prompt.system}\n\n${feedback}` : prompt.system,
+          messages: prompt.messages,
+          validate: (value) => value,
         });
-      }});
+        return raw;
+      });
       setSimilar(questions);
 
     } catch (e) {

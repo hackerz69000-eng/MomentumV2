@@ -2,10 +2,17 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { assertGenerationSourceRevision } from "@/lib/study-generation-guards";
-import { generateValidatedQuizBatch, inspectQuizBatch, normalizeQuizQuestionText, quizBatchSize, sanitizeQuizResumeParts, validateQuizBatch, withQuizBatchRetries, type GeneratedQuizQuestion } from "@/lib/quiz-generation";
+import { extractNumberedQuestionSection, generateValidatedQuizBatch, inspectQuizBatch, isDuplicateQuestionText, normalizeQuizQuestionText, quizBatchSize, sanitizeQuizResumeParts, uniqueQuestionTexts, validateQuizBatch, withQuizBatchRetries, type GeneratedQuizQuestion } from "@/lib/quiz-generation";
 
 const studyFunctions = readFileSync(resolve(process.cwd(), "src/lib/study.functions.ts"), "utf8");
 const quizRunner = readFileSync(resolve(process.cwd(), "src/components/set/QuizRunner.tsx"), "utf8");
+const activeRecall = readFileSync(resolve(process.cwd(), "src/components/set/ActiveRecall.tsx"), "utf8");
+const mistakeBank = readFileSync(resolve(process.cwd(), "src/components/set/MistakeBank.tsx"), "utf8");
+const audioStudy = readFileSync(resolve(process.cwd(), "src/lib/audio-study.functions.ts"), "utf8");
+const lectureCards = readFileSync(resolve(process.cwd(), "src/lib/lecture.functions.ts"), "utf8");
+const readingCards = readFileSync(resolve(process.cwd(), "src/lib/reading.functions.ts"), "utf8");
+const flashcardComponent = readFileSync(resolve(process.cwd(), "src/components/set/Flashcards.tsx"), "utf8");
+const readingCompanion = readFileSync(resolve(process.cwd(), "src/components/set/ReadingCompanion.tsx"), "utf8");
 
 function question(index: number): GeneratedQuizQuestion {
   return { type: "mc", question: `Question ${index}?`, options: ["A", "B", "C", "D"], answer: 0, answerText: "A", explanation: "The material supports A.", topic: "Topic" };
@@ -41,6 +48,46 @@ describe("reliable quiz batches", () => {
     ]);
     expect(result).toHaveLength(1);
     expect(normalizeQuizQuestionText("Question 1?! ")).toBe("question 1");
+  });
+
+  it("catches punctuation, choice-order, and close-paraphrase duplicates but allows distinct aspects of one topic", () => {
+    expect(uniqueQuestionTexts(Array.from({ length: 20 }, (_, index) => ({ question: `Study question ${index + 1} about Topic ${((index) % 6) + 1}?` })))).toHaveLength(20);
+    expect(isDuplicateQuestionText("WHAT causes osmosis?!", ["What causes osmosis?"])).toBe(true);
+    expect(isDuplicateQuestionText("Explain the role of mitochondria in ATP production", ["Describe mitochondria's function in producing ATP."])).toBe(true);
+    expect(isDuplicateQuestionText("Which organelle produces ATP?", ["Which organelle stores genetic information?"])).toBe(false);
+    expect(uniqueQuestionTexts([
+      { question: "Define osmosis" },
+      { question: "What is osmosis?" },
+      { question: "How does temperature affect osmosis?" },
+    ])).toHaveLength(2);
+  });
+
+  it("rejects paraphrased duplicates across earlier batches and recovered progress", () => {
+    const prior = [question(1)];
+    prior[0]!.question = "What causes osmosis across a membrane?";
+    const recovered = validateQuizBatch([
+      { ...question(2), question: "Explain what causes osmosis across membranes." },
+      { ...question(3), question: "How does temperature affect osmosis?" },
+    ], prior.map((item) => item.question));
+    expect(recovered.map((item) => item.question)).toEqual(["How does temperature affect osmosis?"]);
+  });
+
+  it("wires all current structured question generators through the shared uniqueness guard", () => {
+    expect(quizRunner).toMatch(/generateValidatedQuizBatch/);
+    expect(activeRecall).toMatch(/uniqueQuestionTexts/);
+    expect(mistakeBank).toMatch(/generateValidatedQuizBatch/);
+    expect(audioStudy).toMatch(/isDuplicateQuestionText/);
+    expect(lectureCards).toMatch(/uniqueQuestionTexts/);
+    expect(readingCards).toMatch(/uniqueQuestionTexts/);
+    expect(flashcardComponent).toMatch(/uniqueQuestionTexts/);
+    expect(readingCompanion).toMatch(/uniqueQuestionTexts/);
+    expect(studyFunctions).toMatch(/extractGuidePracticeQuestions/);
+    expect(studyFunctions).toMatch(/uniqueQuestionTexts\(practiceQuestions/);
+    expect(studyFunctions).toMatch(/isDuplicateQuestionText\(question\.question/);
+  });
+
+  it("extracts questions only from the named Markdown practice section", () => {
+    expect(extractNumberedQuestionSection("## Overview\n1. not a question\n## Check your understanding\n1. What causes X?\n2. How does Y work?\n## Answer key\n1. Answer", "Check your understanding")).toEqual(["What causes X?", "How does Y work?"]);
   });
 
   it("accepts equivalent JSON wrappers and provider field names only after strict normalization", () => {
@@ -148,7 +195,7 @@ describe("reliable quiz batches", () => {
     expect(studyFunctions).toMatch(/quizBatchSize\(process\.env\["QUIZ_GENERATION_BATCH_SIZE"\]\)/);
     expect(studyFunctions).toMatch(/count: z\.number\(\)\.int\(\)\.min\(3\)\.max\(60\)/);
     expect(studyFunctions).toMatch(/already = validPriorParts\.get\(partIndex\)/);
-    expect(studyFunctions).toMatch(/currentQuizSeen\.has\(key\)/);
+    expect(studyFunctions).toMatch(/isDuplicateQuestionText\(question\.question/);
     expect(quizRunner).toMatch(/saveParts\(progressKey, sourceRevision, generatedByPart\)/);
     expect(quizRunner).toMatch(/generateValidatedQuizBatch\(prompt\.batchCount/);
     expect(quizRunner).toMatch(/extractQuizQuestionArray\(value\)/);

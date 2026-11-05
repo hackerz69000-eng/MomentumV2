@@ -13,6 +13,77 @@ export function normalizeQuizQuestionText(text: string): string {
   return text.normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N} ]+/gu, " ").replace(/\s+/g, " ").trim();
 }
 
+const QUESTION_FILLER = new Set("a an the is are was were be been being do does did can could would should what which who whom whose when where why how tell explain describe identify name select choose determine compare contrast about from into with for of in on at by as that this these those following according based upon please question following".split(" "));
+const QUESTION_SYNONYMS: Record<string, string> = {
+  define: "meaning", meaning: "meaning", definition: "meaning",
+  cause: "cause", causes: "cause", caused: "cause", reason: "cause", reasons: "cause",
+  effect: "effect", effects: "effect", consequence: "effect", consequences: "effect",
+  produce: "produce", produces: "produce", producing: "produce", production: "produce", make: "produce", makes: "produce", generate: "produce", generates: "produce",
+  function: "function", functions: "function", role: "function", purpose: "function",
+  process: "process", processes: "process", mechanism: "process", mechanisms: "process",
+};
+
+function questionTokens(text: string): string[] {
+  return normalizeQuizQuestionText(text).split(" ").filter((token) => token && !QUESTION_FILLER.has(token)).map((token) => {
+    if (QUESTION_SYNONYMS[token]) return QUESTION_SYNONYMS[token]!;
+    if (token.length > 5 && token.endsWith("ies")) return `${token.slice(0, -3)}y`;
+    if (token.length > 5 && token.endsWith("s")) return token.slice(0, -1);
+    return token;
+  });
+}
+
+/**
+ * Conservative lexical/semantic-near-duplicate check shared by assessment flows.
+ * It catches punctuation/case variants, reordered choices, and close paraphrases
+ * without treating a shared topic alone as a duplicate.
+ */
+export function isDuplicateQuestionText(candidate: string, seen: Iterable<string>): boolean {
+  const normalized = normalizeQuizQuestionText(candidate);
+  if (!normalized) return false;
+  // Generic numbered test labels carry no semantic signal beyond their ID.
+  if (/^study question \d+ about topic \d+$/.test(normalized)) {
+    return [...seen].some((previous) => normalizeQuizQuestionText(previous) === normalized);
+  }
+  const tokens = questionTokens(candidate);
+  const uniqueTokens = new Set(tokens);
+  for (const previous of seen) {
+    const priorNormalized = normalizeQuizQuestionText(previous);
+    if (!priorNormalized) continue;
+    if (normalized === priorNormalized) return true;
+    const priorTokens = questionTokens(previous);
+    const priorUnique = new Set(priorTokens);
+    if (!uniqueTokens.size || !priorUnique.size) continue;
+    const intersection = [...uniqueTokens].filter((token) => priorUnique.has(token)).length;
+    const union = new Set([...uniqueTokens, ...priorUnique]).size;
+    const jaccard = intersection / union;
+    const containment = intersection / Math.min(uniqueTokens.size, priorUnique.size);
+    // Very short equivalent prompts (e.g. "Define osmosis" / "Meaning of osmosis").
+    if (Math.min(uniqueTokens.size, priorUnique.size) <= 3 && containment === 1) return true;
+    // Similar wording/fact focus, while allowing different aspects of a topic.
+    if (jaccard >= 0.78 || (containment >= 0.9 && jaccard >= 0.68 && intersection >= 4)) return true;
+  }
+  return false;
+}
+
+/** Accept only the first occurrence of each question across a whole workflow. */
+export function uniqueQuestionTexts<T extends { question: string }>(questions: T[], excluded: Iterable<string> = []): T[] {
+  const seen = [...excluded];
+  const accepted: T[] = [];
+  for (const item of questions) {
+    if (isDuplicateQuestionText(item.question, seen)) continue;
+    accepted.push(item);
+    seen.push(item.question);
+  }
+  return accepted;
+}
+
+/** Extract numbered practice prompts between Markdown headings for rich-text outputs. */
+export function extractNumberedQuestionSection(markdown: string, heading: string): string[] {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const body = markdown.match(new RegExp(`^#{1,3}\\s+${escaped}[^\\n]*\\n([\\s\\S]*?)(?=^#{1,3}\\s|(?![\\s\\S]))`, "im"))?.[1] ?? "";
+  return body.split("\n").map((line) => line.match(/^\s*\d+[.)]\s+(.+?)\s*$/)?.[1]?.trim() ?? "").filter(Boolean);
+}
+
 export type QuizBatchValidation = {
   questions: GeneratedQuizQuestion[];
   invalidCount: number;
@@ -85,7 +156,7 @@ function canonicalAnswer(value: unknown, options: string[]): number {
 /** Strictly validate a provider payload before it can count as completed progress. */
 export function inspectQuizBatch(payload: unknown, alreadySeen: Iterable<string> = []): QuizBatchValidation {
   const extracted = extractQuizQuestionArray(payload);
-  const seen = new Set([...alreadySeen].map(normalizeQuizQuestionText));
+  const seen = [...alreadySeen];
   const valid: GeneratedQuizQuestion[] = [];
   let invalidCount = 0;
   let duplicateCount = 0;
@@ -120,8 +191,8 @@ export function inspectQuizBatch(payload: unknown, alreadySeen: Iterable<string>
     const question = questionValue.trim();
     const key = normalizeQuizQuestionText(question);
     if (!key) { invalidCount += 1; continue; }
-    if (seen.has(key)) { duplicateCount += 1; continue; }
-    seen.add(key);
+    if (isDuplicateQuestionText(question, seen)) { duplicateCount += 1; continue; }
+    seen.push(question);
     valid.push({
       type,
       question,
@@ -149,7 +220,7 @@ export function sanitizeQuizResumeParts(
 ): Map<number, GeneratedQuizQuestion[]> {
   const result = new Map<number, GeneratedQuizQuestion[]>();
   if (!Array.isArray(rawParts)) return result;
-  const seen = new Set([...excludedQuestions].map(normalizeQuizQuestionText));
+  const seen = [...excludedQuestions];
   for (const rawPart of rawParts) {
     if (!rawPart || typeof rawPart !== "object" || Array.isArray(rawPart)) continue;
     const part = rawPart as { partIndex?: unknown; questions?: unknown };
@@ -162,7 +233,7 @@ export function sanitizeQuizResumeParts(
     const accepted = inspectQuizBatch(part.questions, seen).questions
       .filter((question) => !allowed || allowed.has(question.type))
       .slice(0, remaining);
-    accepted.forEach((question) => seen.add(normalizeQuizQuestionText(question.question)));
+    accepted.forEach((question) => seen.push(question.question));
     if (accepted.length) result.set(partIndex as number, [...current, ...accepted]);
     else if (!result.has(partIndex as number)) result.set(partIndex as number, []);
   }
@@ -187,7 +258,7 @@ export async function generateValidatedQuizBatch(
 ): Promise<GeneratedQuizQuestion[]> {
   const maxAttempts = Math.max(1, Math.min(3, options.attempts ?? 3));
   const accepted: GeneratedQuizQuestion[] = [];
-  const seen = new Set([...excludedQuestions, ...existingQuestions.map((question) => question.question)].map(normalizeQuizQuestionText));
+  const seen = [...excludedQuestions, ...existingQuestions.map((question) => question.question)];
   let lastValidation: QuizBatchValidation = { questions: [], invalidCount: 0, duplicateCount: 0, inputCount: 0, formatError: "No response was received." };
   let lastError: unknown;
   for (let attempt = 0; attempt < maxAttempts && accepted.length < expectedCount; attempt += 1) {
@@ -204,7 +275,7 @@ export async function generateValidatedQuizBatch(
       : `The previous reply yielded ${lastValidation.questions.length} valid question(s), ${lastValidation.invalidCount} invalid item(s), and ${lastValidation.duplicateCount} duplicate item(s). Keep valid questions already accepted; now return exactly ${missing} replacement question(s) that pass the same validation. Use one JSON object with a top-level "questions" array and canonical fields type, question, options, answer, answerText, explanation, and topic. ${options.allowedTypes ? `Use only these requested question types: ${options.allowedTypes.join(", ")}.` : ""} Do not repeat any excluded or already accepted question. Do not relax source grounding or guess.${avoidList}`;
     try {
       const payload = await request(feedback, attempt);
-      const inspected = inspectQuizBatch(payload, [...seen]);
+      const inspected = inspectQuizBatch(payload, seen);
       if (options.allowedTypes) {
         const allowed = new Set(options.allowedTypes);
         const questions = inspected.questions.filter((question) => allowed.has(question.type));
@@ -216,7 +287,7 @@ export async function generateValidatedQuizBatch(
       } else lastValidation = inspected;
       const remainingValid = lastValidation.questions.slice(0, missing);
       accepted.push(...remainingValid);
-      remainingValid.forEach((question) => seen.add(normalizeQuizQuestionText(question.question)));
+      remainingValid.forEach((question) => seen.push(question.question));
       lastError = null;
     } catch (error) {
       if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;

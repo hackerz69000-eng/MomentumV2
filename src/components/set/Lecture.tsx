@@ -34,6 +34,7 @@ import { cn } from "@/lib/utils";
 import { trashRow } from "@/lib/trash";
 import { SaveStatus } from "@/components/SaveStatus";
 import { btnGhost, btnPrimary, ErrorBox, inputCls } from "./ui";
+import { uniqueQuestionTexts } from "@/lib/quiz-generation";
 import { QuizRunner } from "./QuizRunner";
 import { ActiveRecall } from "./ActiveRecall";
 
@@ -749,7 +750,7 @@ function LectureDetail({
                         stopHeartbeat = startStudyGenerationHeartbeat(set.id, lockToken, () => controller?.abort());
                         const cards = await streamAiJson({ system: prompt.system, messages: prompt.messages, ...(controller ? { signal: controller.signal } : {}), onDelta: (chunk) => setStreamingText((old) => old + chunk), validate: (value) => {
                           if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The lecture flashcards were not valid.");
-                          return (value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "" })).slice(0, 25);
+                          return uniqueQuestionTexts((value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "", question: card.q.trim() })).slice(0, 25)).map(({ question, ...card }) => ({ ...card, q: question }));
                         }});
                         const saved = await cardsSaveFn({ data: { lectureId: lecture.id, cards, lockToken, generationKey: prompt.generationKey, sourceRevision: prompt.sourceRevision, lectureUpdatedAt: prompt.lectureUpdatedAt } });
                         setStreamingText("");

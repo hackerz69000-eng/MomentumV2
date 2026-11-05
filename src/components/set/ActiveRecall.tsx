@@ -19,6 +19,7 @@ import { recordStudySessionCompletion } from "@/components/DailyStreak";
 import { ExplainWhy } from "./ExplainWhy";
 import type { TopicRow } from "@/lib/stats";
 import { cn } from "@/lib/utils";
+import { uniqueQuestionTexts } from "@/lib/quiz-generation";
 import { btnGhost, btnPrimary, Chips, ErrorBox, inputCls } from "./ui";
 
 const GRADE: Record<RecallGrade, { l: string; tone: string; score: number }> = {
@@ -137,13 +138,36 @@ export function ActiveRecall({
     try {
       const prompt = await genPrepare({ data: { setId, count: Math.max(1, count), focus: weak, lectureId, ...(preset?.difficulty ? { difficulty: preset.difficulty } : {}) } });
       setStreamedQuestions("");
-      const questions = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk), validate: (value) => {
-        if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The Active Recall questions were not valid.");
-        const seen = new Set<string>();
-        const parsed = (value as { questions: unknown[] }).questions.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ question: String(item["question"] ?? "").trim(), topic: String(item["topic"] ?? "General").slice(0, 60) })).filter((item) => { const key = item.question.toLowerCase().replace(/\s+/g, " "); if (!key || seen.has(key)) return false; seen.add(key); return true; }).slice(0, count);
-        if (!parsed.length) throw new Error("Could not generate questions. Please try again.");
-        return parsed as RecallQuestion[];
-      }});
+      let questions: RecallQuestion[] = [];
+      let issue = "";
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const completedBeforeAttempt = [...questions];
+        let partial: RecallQuestion[] = [];
+        setStreamedQuestions("");
+        try {
+          const replacements = await streamAiJson({
+            system: `${prompt.system}${attempt ? `\n\nRETRY: The previous batch contained repeated or invalid questions. Generate replacements for every missing slot. Do not restate any question already requested.` : ""}`,
+            messages: attempt ? [...prompt.messages, { role: "user" as const, content: `Previously used questions (do not repeat):\n${[...(prompt.avoidQuestions ?? []), ...questions.map((item) => item.question)].join("\n") || "None"}\nReturn exactly ${count - questions.length} genuinely different replacement questions.` }] : prompt.messages,
+            signal: controller.signal,
+            onDelta: (chunk) => setStreamedQuestions((old) => old + chunk),
+            validate: (value) => {
+              if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The Active Recall questions were not valid.");
+              const parsed = (value as { questions: unknown[] }).questions.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ question: String(item["question"] ?? "").trim(), topic: String(item["topic"] ?? "General").slice(0, 60) })).filter((item) => !!item.question);
+              const missing = count - completedBeforeAttempt.length;
+              const distinct = uniqueQuestionTexts(parsed, [...(prompt.avoidQuestions ?? []), ...completedBeforeAttempt.map((item) => item.question)]).slice(0, missing);
+              partial = distinct as RecallQuestion[];
+              if (distinct.length !== missing) throw new Error(`Only ${distinct.length} new unique Active Recall question(s) were returned; ${missing} are needed.`);
+              return distinct as RecallQuestion[];
+            },
+          });
+          questions = [...completedBeforeAttempt, ...replacements];
+          break;
+        } catch (error) {
+          if (partial.length) questions = [...completedBeforeAttempt, ...partial];
+          issue = error instanceof Error ? error.message : "The question batch was invalid.";
+          if (attempt === 2) throw new Error(`${issue} The source may not support enough distinct questions; try a smaller count or broader material.`);
+        }
+      }
       const r = { questions };
       setQs(r.questions);
       setI(0);

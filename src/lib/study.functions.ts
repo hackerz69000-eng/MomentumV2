@@ -8,7 +8,7 @@ import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server
 import type { Json } from "@/integrations/supabase/types";
 import { assertGenerationClaimed, assertGenerationSourceRevision } from "./study-generation-guards";
 import { studySourceVersion } from "./study-source-version";
-import { inspectQuizBatch, normalizeQuizQuestionText, quizBatchSize, sanitizeQuizResumeParts } from "./quiz-generation";
+import { extractNumberedQuestionSection, inspectQuizBatch, isDuplicateQuestionText, normalizeQuizQuestionText, quizBatchSize, sanitizeQuizResumeParts, uniqueQuestionTexts } from "./quiz-generation";
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -63,19 +63,23 @@ Prioritize:
 Avoid trivial wording, vague prompts, duplicate questions, questions whose answer is obvious from the question, and generic study advice. Answers should be concise but complete (normally under 60 words). Each card's topic must match the section/topic it came from.`;
 
 async function recentQuestions(supabase: any, setId: string): Promise<string[]> {
-  const { data } = await supabase
-    .from("quiz_attempts")
-    .select("results")
-    .eq("set_id", setId)
-    .order("created_at", { ascending: false })
-    .limit(15);
   const qs: string[] = [];
-  for (const a of data ?? [])
-    for (const r of (a.results as AttemptResult[] | null) ?? []) if (r.q) qs.push(r.q);
-  return [...new Set(qs)].slice(0, 40);
+  const pageSize = 500;
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await supabase.from("quiz_attempts").select("results").eq("set_id", setId).order("created_at", { ascending: false }).range(offset, offset + pageSize - 1);
+    if (error) throw new Error("Couldn't check earlier questions for duplicates.");
+    for (const attempt of data ?? [])
+      for (const result of (attempt.results as AttemptResult[] | null) ?? []) if (result.q) qs.push(result.q);
+    if ((data?.length ?? 0) < pageSize) break;
+  }
+  return [...new Set(qs)];
 }
 
 const norm = normalizeQuizQuestionText;
+
+function extractGuidePracticeQuestions(guide: string): string[] {
+  return extractNumberedQuestionSection(guide, "Practice Questions");
+}
 
 function splitPrimaryAndOptionalReadings(material: string): { lecture: string; readings: string | null } {
   const marker = "=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===";
@@ -367,7 +371,7 @@ export const saveRegenerateCardsStream = createServerFn({ method: "POST" })
     try {
       const set = await loadSet(sb, data.setId);
       assertGenerationSourceRevision(data.sourceRevision, set.generation_source_revision ?? "");
-      const cards = data.cards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "" })).filter((card) => card.q && card.a);
+      const cards = uniqueQuestionTexts(data.cards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "", question: card.q.trim() }))).map(({ question: _question, ...card }) => card).filter((card) => card.q && card.a);
       if (!cards.length) throw new Error("No useful flashcards could be generated from the supplied study material.");
       const { data: saved, error } = await sb.rpc("commit_study_set_generation", {
         p_set_id: set.id, p_lock_token: data.lockToken, p_generation_key: data.generationKey,
@@ -505,7 +509,12 @@ export const generateQuiz = createServerFn({ method: "POST" })
     }
     if (data.sourceRevision) assertGenerationSourceRevision(data.sourceRevision, await studySourceVersion(set));
     const allowedTypes = new Set(data.types);
-    const questions = parseQuestionParts(data.generatedText ?? "").filter((question) => allowedTypes.has(question.type) && !new Set(avoid.map(norm)).has(norm(question.question))).slice(0, data.count);
+    const recent = avoid;
+    const questions = parseQuestionParts(data.generatedText ?? "").filter((question) => {
+      if (!allowedTypes.has(question.type) || isDuplicateQuestionText(question.question, recent)) return false;
+      recent.push(question.question);
+      return true;
+    }).slice(0, data.count);
     if (questions.length !== data.count) throw new Error(`Momentum generated ${questions.length} of ${data.count} requested questions. Your material is preserved; retry generation to fill the missing questions.`);
     return { questions };
   });
@@ -610,11 +619,12 @@ export const generateComprehensive = createServerFn({ method: "POST" })
       const generatedText = generatedMap.get(set.id);
       const generated = generatedText ? parseQuestionParts(generatedText) : [];
       const avoid = await recentQuestions(context.supabase, set.id);
-      const recent = new Set(avoid.map(norm));
+      const recent = [...avoid];
       const allowedTypes = new Set(data.types);
       const unique = generated.filter((question) => {
         const key = norm(question.question);
-        if (!allowedTypes.has(question.type) || recent.has(key) || currentQuizSeen.has(key)) return false;
+        if (!allowedTypes.has(question.type) || isDuplicateQuestionText(question.question, [...recent, ...currentQuizSeen])) return false;
+        recent.push(question.question);
         currentQuizSeen.add(key);
         return true;
       }).slice(0, count);
@@ -638,6 +648,7 @@ export const prepareRecallQuestionsStream = createServerFn({ method: "POST" })
     return {
       system: `You write active-recall questions: open questions a student must answer from memory in 1-4 sentences (explain, define, compare, why/how). No multiple choice, no yes/no. Return ONLY JSON: {"questions":[{"question":"...","topic":"short topic name (2-4 words)"}]}. Exactly ${data.count} questions, all different from each other. Every question must be answerable from the material alone, with one clear expected answer; don't ask about anything not in the material.${data.difficulty ? ` Difficulty: ${data.difficulty}.` : ""}${avoid.length ? ` Do not repeat these recent questions: ${avoid.slice(0, 30).join(" | ")}.` : ""}${ci(set)}${data.focus.length ? ` Prioritize these weak topics (about half the questions), using these exact topic names: ${data.focus.join(", ")}.` : ""}${retest.length ? ` Mistake Bank — the student repeatedly missed these concepts; re-test 1-3 of them with fresh wording: ${retest.join(" | ")}.` : ""}`,
       messages: [{ role: "user" as const, content: `MATERIAL:\n${clip(set.material_text)}` }],
+      avoidQuestions: avoid,
     };
   });
 
@@ -723,6 +734,12 @@ export const generateGuide = createServerFn({ method: "POST" })
     if (data.prepareOnly) return { system, messages };
     if (!data.generatedGuide) throw new Error("The study guide must be browser-streamed before it can be saved.");
     const guide = data.generatedGuide;
+    const practiceQuestions = extractGuidePracticeQuestions(guide);
+    if (practiceQuestions.length) {
+      const previous = (await Promise.all([set.id, ...includedSets.map((source) => source.id)].map((id) => recentQuestions(sb, id)))).flat();
+      const unique = uniqueQuestionTexts(practiceQuestions.map((question) => ({ question })), previous);
+      if (unique.length !== practiceQuestions.length) throw new Error(`The study guide contained ${practiceQuestions.length - unique.length} repeated practice question(s). The guide was not saved; retry generation or use other material.`);
+    }
     const at = new Date().toISOString();
     const { error: saveError } = await sb.from("study_sets").update({ study_guide: guide, study_guide_at: at }).eq("id", set.id);
     if (saveError) throw new Error("The study guide was generated but couldn't be saved. Please try again.");
@@ -1110,10 +1127,12 @@ export const prepareSimilarQuestionsStream = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const mistake = await loadMistake(context.supabase, data.mistakeId);
     const set = await loadSet(context.supabase, mistake.set_id);
+    const avoidQuestions = await recentQuestions(context.supabase, set.id);
     return {
       system: `You create fresh practice questions that test the same underlying concept as a student's mistake. Return ONLY JSON: {"questions":[{"type":"mc","question":"...","options":["...","...","...","..."],"answer":0,"answerText":"...","explanation":"...","topic":"..."}]}. Generate exactly ${data.count} distinct questions. Use a balanced mix of multiple choice and short answer. Every answer must be supported by the source material, with one defensible correct answer. Do not copy or merely reword the original question; test the same concept from a different angle. For multiple choice use exactly four plausible options and the zero-based correct index. For short answer use options: [] and answer: -1, with a concise model answer. Include concise explanations. ${QUALITY_RULES}${ci(set)}\nMATERIAL:\n${clip(set.material_text, 40000)}`,
       messages: [{ role: "user" as const, content: `CONCEPT TO RETEST: ${mistake.topic}\nORIGINAL QUESTION: ${mistake.question}\nCORRECT ANSWER: ${mistake.correct_answer}\nSTUDENT'S ANSWER: ${mistake.student_answer || "(blank)"}\nGenerate ${data.count} fresh questions on this concept.` }],
       focus: `Practice the same concept as: "${mistake.question}" (correct answer: ${mistake.correct_answer})`,
+      avoidQuestions,
     };
   });
 
