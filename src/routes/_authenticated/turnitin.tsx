@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import mammoth from "mammoth";
 import { analyzeSimilarity, filterSimilarityMatches, scoreFilteredMatches, getSimilarityHighlightSegments, type SimilarityAnalysis, type SimilaritySource } from "@/lib/similarity-report";
+import { loadOfficeArchive } from "@/lib/archive-limits";
 import { supabase } from "@/integrations/supabase/client";
 import { PageHeader } from "@/components/PageHeader";
 import { btnGhost, btnPrimary, inputCls } from "@/components/set/ui";
@@ -315,6 +316,7 @@ function TurnitinSubmissionPage() {
     if (name.endsWith(".txt") || name.endsWith(".md") || name.endsWith(".markdown")) return sourceFile.text();
     if (name.endsWith(".docx")) {
             const arrayBuffer = await sourceFile.arrayBuffer();
+      await loadOfficeArchive(arrayBuffer);
       const result = await mammoth.extractRawText({
         arrayBuffer,
         buffer: new Uint8Array(arrayBuffer),
@@ -328,8 +330,7 @@ function TurnitinSubmissionPage() {
       return Array.isArray(result.text) ? result.text.join("\n") : result.text;
     }
     if (name.endsWith(".pptx")) {
-      const JSZip = (await import("jszip")).default;
-      const zip = await JSZip.loadAsync(await sourceFile.arrayBuffer());
+      const zip = await loadOfficeArchive(await sourceFile.arrayBuffer());
       const paths = Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path)).sort((a, b) => Number(a.match(/\d+/)?.[0] ?? 0) - Number(b.match(/\d+/)?.[0] ?? 0));
       const slideText: string[] = [];
       for (const path of paths) {
@@ -346,8 +347,7 @@ function TurnitinSubmissionPage() {
     }
     if (name.endsWith(".rtf")) return (await sourceFile.text()).replace(/\\'[0-9a-f]{2}/gi, " ").replace(/\\[a-z]+-?\d* ?|[{}]/gi, " ").replace(/\s+/g, " ");
     if (name.endsWith(".odt")) {
-      const JSZip = (await import("jszip")).default;
-      const zip = await JSZip.loadAsync(await sourceFile.arrayBuffer());
+      const zip = await loadOfficeArchive(await sourceFile.arrayBuffer());
       const xml = await zip.file("content.xml")?.async("text");
       if (!xml) return "";
       return new DOMParser().parseFromString(xml, "application/xml").documentElement.textContent ?? "";

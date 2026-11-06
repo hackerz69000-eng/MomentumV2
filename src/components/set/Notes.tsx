@@ -6,7 +6,6 @@ import { toast } from "sonner";
 import { Headphones, Lightbulb, Loader2, Play, RefreshCw, Square, X } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { prepareExplainPassageStream, regenerateNotes } from "@/lib/study.functions";
-import { newStudyGenerationToken, releaseStudyGeneration, startStudyGenerationHeartbeat } from "@/lib/study-generation-lock";
 import { streamAiText, streamPreparedNotes } from "@/lib/ai-stream";
 import type { StudySet } from "@/lib/queries";
 import { cn } from "@/lib/utils";
@@ -151,24 +150,19 @@ export function Notes({ set }: { set: StudySet }) {
     streamController.current?.abort();
     const controller = new AbortController();
     streamController.current = controller;
-    const lockToken = newStudyGenerationToken();
-    let stopHeartbeat: (() => void) | null = null;
     setBusy(true);
     try {
-      const prepared = await regen({ data: { setId: set.id, prepareOnly: true, lockToken } });
+      const prepared = await regen({ data: { setId: set.id, prepareOnly: true } });
       if ("notesPrompts" in prepared && prepared.notesPrompts) {
-        stopHeartbeat = startStudyGenerationHeartbeat(set.id, lockToken, () => controller.abort());
         setStreamedNotes("");
         const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setStreamedNotes, onDelta: (chunk) => setStreamedNotes((old) => `${old}${chunk}`) });
-        await regen({ data: { setId: set.id, generatedNotes: notes, lockToken, generationKey: prepared.generationKey, sourceRevision: prepared.sourceRevision } });
+        await regen({ data: { setId: set.id, generatedNotes: notes } });
       } else throw new Error("Couldn't prepare note generation.");
       await qc.invalidateQueries({ queryKey: ["set", set.id] });
       toast.success("Notes regenerated");
     } catch (e) {
-      await releaseStudyGeneration(set.id, lockToken, e instanceof Error ? e.message : "Notes generation failed.");
       toast.error(e instanceof DOMException && e.name === "AbortError" ? "Notes generation cancelled. Your saved notes are unchanged." : e instanceof Error ? e.message : "Failed");
     }
-    stopHeartbeat?.();
     streamController.current = null;
     setBusy(false);
   };

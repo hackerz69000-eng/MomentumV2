@@ -7,8 +7,7 @@ import { Download, FileText, Loader2, Plus, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { ocrFile, regenerateNotes } from "@/lib/study.functions";
-import { newStudyGenerationToken, releaseStudyGeneration, startStudyGenerationHeartbeat } from "@/lib/study-generation-lock";
-import { ACCEPT, MAX_BYTES, extractFileCached, fileKind, storeOriginal } from "@/lib/extract";
+import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import type { StudySet } from "@/lib/queries";
 import { trashRow } from "@/lib/trash";
 import { cn } from "@/lib/utils";
@@ -36,7 +35,7 @@ export function Materials({ set }: { set: StudySet }) {
   const [pending, setPending] = useState<{
     files: File[];
     text: string;
-    meta: { file: File; chars: number; fileSha256: string | null; cacheHit: boolean }[];
+    meta: { file: File; chars: number }[];
   } | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const streamController = useRef<AbortController | null>(null);
@@ -76,14 +75,13 @@ export function Materials({ set }: { set: StudySet }) {
     }
     if (!files.length) return;
     const parts: string[] = [];
-    const meta: { file: File; chars: number; fileSha256: string | null; cacheHit: boolean }[] = [];
+    const meta: { file: File; chars: number }[] = [];
     const failedFiles: File[] = [];
     for (const f of files) {
       try {
-        const result = await extractFileCached(f, user?.id, ocr, setMsg, parts.join("\n\n").slice(0, 12000));
-        const t = result.text;
+        const t = await extractFile(f, ocr, setMsg, parts.join("\n\n").slice(0, 12000));
         if (t) parts.push(`=== ${f.name} ===\n${t}`);
-        meta.push({ file: f, chars: t.length, fileSha256: result.fileSha256, cacheHit: result.cacheHit });
+        meta.push({ file: f, chars: t.length });
       } catch (e) {
         failedFiles.push(f);
         toast.error(e instanceof Error ? e.message : `Couldn't read ${f.name}`);
@@ -120,7 +118,7 @@ export function Materials({ set }: { set: StudySet }) {
       return;
     }
     const stored = await Promise.allSettled(
-      pending.meta.map((m) => storeOriginal(user.id, set.id, m.file, m.chars, m.fileSha256)),
+      pending.meta.map((m) => storeOriginal(user.id, set.id, m.file, m.chars)),
     );
     const lost = stored.filter((r) => r.status === "rejected").length;
     setPending(null);
@@ -142,22 +140,17 @@ export function Materials({ set }: { set: StudySet }) {
     streamController.current?.abort();
     const controller = new AbortController();
     streamController.current = controller;
-    const lockToken = newStudyGenerationToken();
-    let stopHeartbeat: (() => void) | null = null;
     setMsg("Rewriting your notes with the new material…");
     try {
-      const prepared = await renotes({ data: { setId: set.id, prepareOnly: true, lockToken } });
-      if ("notesPrompts" in prepared && prepared.notesPrompts) {
-        stopHeartbeat = startStudyGenerationHeartbeat(set.id, lockToken, () => controller.abort());
+      const prepared = await renotes({ data: { setId: set.id, prepareOnly: true } });
+      if ("notesPrompts" in prepared && "cardsSystem" in prepared && "cardsMessages" in prepared && prepared.notesPrompts && prepared.cardsSystem && Array.isArray(prepared.cardsMessages)) {
         const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: (message) => setMsg(message), onDelta: (chunk) => setMsg((old) => `${old ?? ""}${chunk}`.slice(-900)) });
-        await renotes({ data: { setId: set.id, generatedNotes: notes, lockToken, generationKey: prepared.generationKey, sourceRevision: prepared.sourceRevision } });
+        await renotes({ data: { setId: set.id, generatedNotes: notes } });
       } else throw new Error("Couldn't prepare notes generation.");
       toast.success("Notes updated");
     } catch (e) {
-      await releaseStudyGeneration(set.id, lockToken, e instanceof Error ? e.message : "Notes generation failed.");
       toast.error(e instanceof Error ? e.message : "Failed");
     }
-    stopHeartbeat?.();
     setMsg(null);
     refresh();
   };

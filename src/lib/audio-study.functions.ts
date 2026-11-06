@@ -1,46 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { isDuplicateQuestionText } from "./quiz-generation";
-import { assertGenerationClaimed } from "./study-generation-guards";
-
-function questionsFromAttempts(rows: { results: unknown }[] | null | undefined): string[] {
-  return (rows ?? []).flatMap((attempt) => Array.isArray(attempt.results)
-    ? attempt.results.flatMap((result) => result && typeof result === "object" && "q" in result && typeof result.q === "string" ? [result.q] : [])
-    : []);
-}
-
-async function savedQuestionsForSet(supabase: any, setId: string): Promise<string[]> {
-  const found: string[] = [];
-  const pageSize = 500;
-  for (let offset = 0; ; offset += pageSize) {
-    const { data, error } = await supabase.from("quiz_attempts").select("results").eq("set_id", setId).order("created_at", { ascending: false }).range(offset, offset + pageSize - 1);
-    if (error) throw new Error("Couldn't check earlier questions for duplicates.");
-    found.push(...questionsFromAttempts(data));
-    if ((data?.length ?? 0) < pageSize) break;
-  }
-  return [...new Set(found)];
-}
-
-async function savedAudioQuestionsForSet(supabase: any, userId: string, setId: string): Promise<string[]> {
-  const { data: sessions, error: sessionError } = await supabase.from("audio_study_sessions").select("id").eq("user_id", userId).eq("set_id", setId);
-  if (sessionError) throw new Error("Couldn't check earlier Audio Study questions for duplicates.");
-  const sessionIds = (sessions ?? []).map((session: { id: string }) => session.id);
-  if (!sessionIds.length) return [];
-  const found: string[] = [];
-  const pageSize = 500;
-  for (let offset = 0; ; offset += pageSize) {
-    const { data, error } = await supabase.from("audio_study_events").select("content").in("session_id", sessionIds).eq("kind", "quiz_question").range(offset, offset + pageSize - 1);
-    if (error) throw new Error("Couldn't check earlier Audio Study questions for duplicates.");
-    found.push(...(data ?? []).map((row: { content: string }) => row.content));
-    if ((data?.length ?? 0) < pageSize) break;
-  }
-  return [...new Set(found)];
-}
 import { clip } from "./ai.server";
 import { ci, loadSet, openMistakes } from "./set-helpers.server";
 import { setStats, type Attempt, type Flashcard } from "./stats";
 import type { Tables } from "@/integrations/supabase/types";
+import { completeProviderUsage, ProviderLimitError, reserveProviderUsage, type UsageReservation } from "@/lib/provider-usage.server";
 
 const modeSchema = z.enum(["quick", "full", "deep", "weak"]);
 export type AudioStudyMode = z.infer<typeof modeSchema>;
@@ -61,15 +26,17 @@ export const prepareAudioStudyStream = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), mode: modeSchema, requestKey: z.string().uuid() }).parse(d))
   .handler(async ({ data, context }) => {
     const sb = context.supabase;
-    const { data: duplicate } = await sb.from("audio_study_sessions").select("*").eq("request_key", data.requestKey).eq("user_id", context.userId).maybeSingle();
+    const { data: duplicate, error: duplicateError } = await sb.from("audio_study_sessions").select("*").eq("request_key", data.requestKey).eq("user_id", context.userId).maybeSingle();
+    if (duplicateError) throw new Error("Couldn't check for an existing audio lesson request.");
     if (duplicate?.status === "ready") return { existingSession: duplicate as SessionRow };
     const set = await loadSet(sb, data.setId);
-    const [{ data: cards }, { data: attempts }, { data: lectures }, mistakes] = await Promise.all([
+    const [{ data: cards, error: cardsError }, { data: attempts, error: attemptsError }, { data: lectures, error: lecturesError }, mistakes] = await Promise.all([
       sb.from("flashcards").select("*").eq("set_id", set.id),
       sb.from("quiz_attempts").select("*").eq("set_id", set.id),
       sb.from("lectures").select("title, transcript").eq("set_id", set.id).eq("in_material", true),
       openMistakes(sb, set.id, 20),
     ]);
+    if (cardsError || attemptsError || lecturesError) throw new Error("Couldn't load the study history needed to prepare this audio lesson.");
     const stats = setStats((cards ?? []) as Flashcard[], (attempts ?? []) as Attempt[], mistakes);
     if (data.mode === "weak" && !stats.topics.length && !mistakes.length) throw new Error("Complete a quiz, Active Recall, or some flashcards before starting a Weak Topics lesson.");
     const created = duplicate ?? (await sb.from("audio_study_sessions").insert({ user_id: context.userId, set_id: set.id, mode: data.mode, status: "generating", title: `${set.name} audio lesson`, request_key: data.requestKey }).select("*").single()).data;
@@ -136,7 +103,7 @@ export const generateAudioSpeech = createServerFn({ method: "POST" })
       const complete = sections.every((_, i) =>
         paths.some((p) => p.endsWith(`section-${String(i + 1).padStart(2, "0")}.mp3`)),
       );
-      await sb
+      const { error: updateError } = await sb
         .from("audio_study_sessions")
         .update({
           audio_paths: paths,
@@ -146,20 +113,26 @@ export const generateAudioSpeech = createServerFn({ method: "POST" })
         })
         .eq("id", session.id)
         .eq("user_id", context.userId);
+      if (updateError) throw new Error("Audio was saved, but the lesson status couldn't be updated. Refresh to retry.");
       return { paths, complete };
     };
     const merge = (p: string) => Array.from(new Set([...(session.audio_paths ?? []), p])).sort();
+    let reservation: UsageReservation | null = null;
+    let finalized = false;
     try {
       // Reuse a section that was already voiced (e.g. by an earlier interrupted attempt).
-      const { data: existing } = await sb.storage
+      const { data: existing, error: listError } = await sb.storage
         .from("study-files")
         .list(folder, { search: file });
+      if (listError) throw new Error("Couldn't check whether this lesson section already has audio. Please retry.");
       if (existing?.some((o) => o.name === file)) return await finish(merge(path));
       const apiKey = process.env["DEEPGRAM_API_KEY"]?.trim();
       if (!apiKey)
         throw new Error(
           "Audio generation is not configured. Add DEEPGRAM_API_KEY to the Vercel Production environment.",
         );
+
+      reservation = await reserveProviderUsage(sb, "deepgram_tts", section.narration.length);
 
       // Use Deepgram's Aura-2 REST TTS directly. This keeps the TTS request
       // independent of the text-generation provider.
@@ -173,25 +146,36 @@ export const generateAudioSpeech = createServerFn({ method: "POST" })
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ text: section.narration }),
+          signal: AbortSignal.timeout(45_000),
         },
       );
 
       if (!response.ok) {
-        const body = await response.text();
+        await response.body?.cancel().catch(() => undefined);
+        await completeProviderUsage(sb, reservation, "failure");
+        finalized = true;
         throw new Error(
-          `Deepgram audio generation failed [${response.status}]: ${body.slice(0, 500)}`,
+          `Deepgram audio generation failed [${response.status}].`,
         );
       }
 
       const contentType = response.headers.get("content-type")?.split(";")[0];
       if (contentType !== "audio/mpeg") {
-        const body = await response.text();
+        await response.body?.cancel().catch(() => undefined);
+        await completeProviderUsage(sb, reservation, "failure");
+        finalized = true;
         throw new Error(
-          `Deepgram returned ${contentType ?? "an unknown response"} instead of audio: ${body.slice(0, 500)}`,
+          `Deepgram returned ${contentType ?? "an unknown response"} instead of audio.`,
         );
       }
       const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.length < 1000) throw new Error("Audio generation returned an empty file.");
+      if (bytes.length < 1000) {
+        await completeProviderUsage(sb, reservation, "failure");
+        finalized = true;
+        throw new Error("Audio generation returned an empty file.");
+      }
+      await completeProviderUsage(sb, reservation, "success", bytes.length);
+      finalized = true;
       const { error: uploadError } = await sb.storage
         .from("study-files")
         .upload(path, bytes, { contentType: "audio/mpeg", upsert: true });
@@ -199,9 +183,16 @@ export const generateAudioSpeech = createServerFn({ method: "POST" })
         throw new Error(`The lesson audio couldn't be saved: ${uploadError.message}`);
       return await finish(merge(path));
     } catch (cause) {
+      // Provider reservations are released on both failed and timed out calls.
+      // A finalized reservation is idempotently absent from the active table.
+      if (reservation && !finalized) {
+        await completeProviderUsage(sb, reservation, "failure").catch((usageError) => {
+          console.error("[provider-usage] Could not finalize audio usage:", usageError instanceof Error ? usageError.message : "unknown error");
+        });
+      }
       const message = cause instanceof Error ? cause.message : "Audio generation failed";
       console.error("[audio-study] section voice failed", data.index, message);
-      await sb
+      const { error: statusError } = await sb
         .from("audio_study_sessions")
         .update({
           audio_error: message,
@@ -210,6 +201,7 @@ export const generateAudioSpeech = createServerFn({ method: "POST" })
         })
         .eq("id", session.id)
         .eq("user_id", context.userId);
+      if (statusError) throw new Error("Audio generation failed and the session couldn't be marked for retry. Refresh the session to check its saved audio.");
       throw new Error(`Audio generation failed: ${message}`);
     }
   });
@@ -263,43 +255,22 @@ export const prepareAudioStudyQuizStream = createServerFn({ method: "POST" })
     const sections = (session.sections as AudioSection[] | null) ?? [];
     const section = sections[Math.min(data.sectionIndex, Math.max(0, sections.length - 1))];
     if (!section) throw new Error("Play part of the lesson before asking for a quiz.");
-    const [savedAudioQuestions, savedAttemptQuestions] = await Promise.all([
-      savedAudioQuestionsForSet(context.supabase, context.userId, set.id),
-      savedQuestionsForSet(context.supabase, set.id),
-    ]);
-    const previousQuestions = [
-      ...savedAudioQuestions,
-      ...savedAttemptQuestions,
-    ].filter(Boolean);
     return {
       system: `Write ONE active-recall question about the lesson section below. It must be answerable from the source material with one clear expected answer. Return ONLY JSON: {"question":"","topic":"","model":""}. No multiple choice, no yes/no, no trick question.${ci(set)}\nSOURCE MATERIAL:\n${clip(set.material_text, 30000)}`,
       messages: [{ role: "user" as const, content: `CURRENT LESSON SECTION:\n${section.title}\n${section.narration}` }],
       sessionId: session.id,
       sectionIndex: data.sectionIndex,
       defaultTopic: section.topic,
-      avoidQuestions: previousQuestions,
     };
   });
 
 export const saveAudioStudyQuizStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ sessionId: z.string().uuid(), sectionIndex: z.number().int().min(0).max(20), question: z.string().min(1).max(1000), topic: z.string().max(80), model: z.string().min(1).max(3000), lockToken: z.string().uuid() }).parse(d))
+  .inputValidator((d: unknown) => z.object({ sessionId: z.string().uuid(), sectionIndex: z.number().int().min(0).max(20), question: z.string().min(1).max(1000), topic: z.string().max(80), model: z.string().min(1).max(3000) }).parse(d))
   .handler(async ({ data, context }) => {
     const { data: session, error } = await context.supabase.from("audio_study_sessions").select("id,set_id").eq("id", data.sessionId).eq("user_id", context.userId).single();
     if (error || !session) throw new Error("This audio session couldn't be found.");
-    const { data: claimed, error: claimError } = await context.supabase.rpc("claim_study_set_generation", { p_set_id: session.set_id, p_lock_token: data.lockToken });
-    assertGenerationClaimed(claimed, claimError);
-    try {
-      const [audioQuestions, savedAttemptQuestions] = await Promise.all([
-        savedAudioQuestionsForSet(context.supabase, context.userId, session.set_id),
-        savedQuestionsForSet(context.supabase, session.set_id),
-      ]);
-      const prior = [...audioQuestions, ...savedAttemptQuestions].filter(Boolean);
-      if (isDuplicateQuestionText(data.question, prior)) throw new Error("This question is too similar to one already used for this study material. Generate a different question.");
-      const { error: saveError } = await context.supabase.from("audio_study_events").insert({ user_id: context.userId, session_id: session.id, kind: "quiz_question", content: data.question, context: { sectionIndex: data.sectionIndex, topic: data.topic, model: data.model } });
-      if (saveError) throw new Error("The quiz question was created but couldn't be saved.");
-      return { question: data.question, topic: data.topic, model: data.model };
-    } finally {
-      await context.supabase.rpc("release_study_set_generation", { p_set_id: session.set_id, p_lock_token: data.lockToken, p_error: "", p_mark_set_error: false });
-    }
+    const { error: saveError } = await context.supabase.from("audio_study_events").insert({ user_id: context.userId, session_id: session.id, kind: "quiz_question", content: data.question, context: { sectionIndex: data.sectionIndex, topic: data.topic, model: data.model } });
+    if (saveError) throw new Error("The quiz question was created but couldn't be saved.");
+    return { question: data.question, topic: data.topic, model: data.model };
   });

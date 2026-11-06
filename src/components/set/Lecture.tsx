@@ -27,14 +27,12 @@ import { prepareLectureNotesStream, saveLectureNotesStream, prepareLectureGuideS
 import { streamAiText, streamAiJson } from "@/lib/ai-stream";
 import { logActivity } from "@/lib/log-activity";
 import { micErrorMessage, startRecorder, transcribeSegment, type Recorder } from "@/lib/recorder";
-import { newStudyGenerationToken, releaseStudyGeneration, startStudyGenerationHeartbeat } from "@/lib/study-generation-lock";
 import type { StudySet } from "@/lib/queries";
 import type { Attempt, TopicRow } from "@/lib/stats";
 import { cn } from "@/lib/utils";
 import { trashRow } from "@/lib/trash";
 import { SaveStatus } from "@/components/SaveStatus";
 import { btnGhost, btnPrimary, ErrorBox, inputCls } from "./ui";
-import { uniqueQuestionTexts } from "@/lib/quiz-generation";
 import { QuizRunner } from "./QuizRunner";
 import { ActiveRecall } from "./ActiveRecall";
 
@@ -742,26 +740,15 @@ function LectureDetail({
                   "cards",
                   () =>
                     (async () => {
-                      const lockToken = newStudyGenerationToken();
-                      let stopHeartbeat: (() => void) | null = null;
-                      try {
-                        const prompt = await cardsPrepareFn({ data: { lectureId: lecture.id, lockToken } });
-                        const controller = streamController.current;
-                        stopHeartbeat = startStudyGenerationHeartbeat(set.id, lockToken, () => controller?.abort());
-                        const cards = await streamAiJson({ system: prompt.system, messages: prompt.messages, ...(controller ? { signal: controller.signal } : {}), onDelta: (chunk) => setStreamingText((old) => old + chunk), validate: (value) => {
-                          if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The lecture flashcards were not valid.");
-                          return uniqueQuestionTexts((value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "", question: card.q.trim() })).slice(0, 25)).map(({ question, ...card }) => ({ ...card, q: question }));
-                        }});
-                        const saved = await cardsSaveFn({ data: { lectureId: lecture.id, cards, lockToken, generationKey: prompt.generationKey, sourceRevision: prompt.sourceRevision, lectureUpdatedAt: prompt.lectureUpdatedAt } });
-                        setStreamingText("");
-                        await qc.invalidateQueries({ queryKey: ["cards", set.id] });
-                        return saved;
-                      } catch (error) {
-                        await releaseStudyGeneration(set.id, lockToken, error instanceof Error ? error.message : "Lecture card generation failed.");
-                        throw error;
-                      } finally {
-                        stopHeartbeat?.();
-                      }
+                      const prompt = await cardsPrepareFn({ data: { lectureId: lecture.id } });
+                      const cards = await streamAiJson({ system: prompt.system, messages: prompt.messages, ...(streamController.current ? { signal: streamController.current.signal } : {}), onDelta: (chunk) => setStreamingText((old) => old + chunk), validate: (value) => {
+                        if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The lecture flashcards were not valid.");
+                        return (value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "" })).slice(0, 25);
+                      }});
+                      const saved = await cardsSaveFn({ data: { lectureId: lecture.id, cards } });
+                      setStreamingText("");
+                      await qc.invalidateQueries({ queryKey: ["cards", set.id] });
+                      return saved;
                     })(),
                   "Lecture flashcards added to your deck",
                 )

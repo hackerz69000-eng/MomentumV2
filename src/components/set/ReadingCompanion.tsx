@@ -8,10 +8,9 @@ import { BookOpen, FileText, GraduationCap, Loader2, MessageCircle, Sparkles, La
 import type { StudySet } from "@/lib/queries";
 import { readingAddDocument, readingDeleteDocument, readingAskPrepare, readingListSources, readingLinkSource, readingSaveCards, readingUnlinkSource, readingApplyNotesAdditions, prepareReadingSummaryStream, prepareReadingCardsStream, prepareReadingNotesAdditionsStream } from "@/lib/reading.functions";
 import { btnGhost, btnPrimary, inputCls } from "./ui";
-import { ACCEPT, MAX_BYTES, extractFileCached, fileKind, storeOriginal } from "@/lib/extract";
+import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { ocrFile } from "@/lib/study.functions";
 import { useAuth } from "@/hooks/use-auth";
-import { extractNumberedQuestionSection, uniqueQuestionTexts } from "@/lib/quiz-generation";
 
 type DraftCard = { q: string; a: string; t?: string };
 type SourceOption = { key: string; title: string; kind: "reading" | "lecture"; linked: boolean };
@@ -137,18 +136,9 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
   const makeSummary = async () => {
     const result = await run("summary", async () => {
       const prompt = await summaryPrepareFn({ data: { setId: set.id, sourceKey: selectedSourceKey } });
-      let lastIssue = "The practice questions could not be checked for uniqueness.";
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        let streamed = "";
-        const retryContext = attempt ? `\n\nRETRY: The last guide included repeated or unnumbered practice questions. Return a complete corrected guide with 5-7 numbered understanding questions that are each genuinely different. Do not repeat these questions:\n${(prompt.avoidQuestions ?? []).join("\n")}` : "";
-        const messages = attempt ? [...prompt.messages, { role: "user" as const, content: retryContext }] : prompt.messages;
-        const summaryText = await streamAiText({ system: prompt.system, messages, ...(generationController.current ? { signal: generationController.current.signal } : {}), onDelta: (chunk) => { streamed += chunk; } });
-        const questions = extractNumberedQuestionSection(summaryText, "Check your understanding");
-        const unique = uniqueQuestionTexts(questions.map((question) => ({ question })), prompt.avoidQuestions ?? []);
-        if (questions.length >= 5 && unique.length === questions.length) { setSummary(summaryText || streamed); return { summary: summaryText || streamed }; }
-        lastIssue = questions.length < 5 ? "The guide did not contain the expected numbered practice questions." : "Some practice questions repeat earlier questions or another question in this guide.";
-      }
-      throw new Error(`${lastIssue} The guide wasn't accepted; retry generation or use broader material.`);
+      setSummary("");
+      const summaryText = await streamAiText({ system: prompt.system, messages: prompt.messages, ...(generationController.current ? { signal: generationController.current.signal } : {}), onDelta: (chunk) => setSummary((old) => old + chunk) });
+      return { summary: summaryText };
     });
     if (result) { setSummary(result.summary); setSummarySourceKey(sourceKey); setActiveSummarySection(0); setExpandedSummarySections([]); setCompletedSections([]); setShowAnswerKey(false); }
   };
@@ -170,7 +160,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
       setCardsStreamText("");
       const generated = await streamAiJson({ system: prompt.system, messages: prompt.messages, ...(generationController.current ? { signal: generationController.current.signal } : {}), onDelta: (chunk) => setCardsStreamText((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The generated flashcards were not valid.");
-        return uniqueQuestionTexts((value as { cards: unknown[] }).cards.filter((card): card is DraftCard => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "", question: card.q.trim() })).slice(0, 15)).map(({ question, ...card }) => ({ ...card, q: question }));
+        return (value as { cards: unknown[] }).cards.filter((card): card is DraftCard => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "" })).slice(0, 15);
       }});
       if (!generated.length) throw new Error("No flashcards could be generated from these sources.");
       return { cards: generated };
@@ -206,8 +196,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
       const filesToExtract = [...valid].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
       for (const file of filesToExtract) {
         setUploadMessage(`Reading ${file.name}…`);
-        const extraction = await extractFileCached(file, user?.id, ocrFn, setUploadMessage, extractedContext.slice(0, 12000));
-        const text = extraction.text;
+        const text = await extractFile(file, ocrFn, setUploadMessage, extractedContext.slice(0, 12000));
         if (text.trim()) extractedContext += `\n\n${file.name}:\n${text.trim()}`;
         if (!text.trim() || text.trim().length < 20) {
           toast.error(`Couldn't extract enough readable text from ${file.name}.`);
@@ -215,7 +204,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
         }
         await addReadingFn({ data: { setId: set.id, filename: file.name, contentText: text.slice(0, 500000) } });
         if (user?.id) {
-          try { const stored = await storeOriginal(user.id, set.id, file, text.length, extraction.fileSha256); if (!stored) toast.error(`${file.name} text was saved, but its original file could not be stored for download.`); }
+          try { const stored = await storeOriginal(user.id, set.id, file, text.length); if (!stored) toast.error(`${file.name} text was saved, but its original file could not be stored for download.`); }
           catch { toast.error(`${file.name} text was saved, but its original file could not be stored for download.`); }
         }
         added += 1;

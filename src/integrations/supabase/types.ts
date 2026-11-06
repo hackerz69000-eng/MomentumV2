@@ -554,7 +554,6 @@ export type Database = {
         Row: {
           chars: number;
           created_at: string;
-          content_sha256: string | null;
           id: string;
           mime: string;
           name: string;
@@ -566,7 +565,6 @@ export type Database = {
         Insert: {
           chars?: number;
           created_at?: string;
-          content_sha256?: string | null;
           id?: string;
           mime?: string;
           name: string;
@@ -578,7 +576,6 @@ export type Database = {
         Update: {
           chars?: number;
           created_at?: string;
-          content_sha256?: string | null;
           id?: string;
           mime?: string;
           name?: string;
@@ -596,42 +593,6 @@ export type Database = {
             referencedColumns: ["id"];
           },
         ];
-      };
-      study_file_extractions: {
-        Row: {
-          context_sha256: string;
-          created_at: string;
-          expires_at: string;
-          extracted_text: string;
-          extraction_version: number;
-          file_sha256: string;
-          user_id: string;
-          visual_assets: Json;
-          visual_descriptions: Json;
-        };
-        Insert: {
-          context_sha256: string;
-          created_at?: string;
-          expires_at?: string;
-          extracted_text?: string;
-          extraction_version: number;
-          file_sha256: string;
-          user_id: string;
-          visual_assets?: Json;
-          visual_descriptions?: Json;
-        };
-        Update: {
-          context_sha256?: string;
-          created_at?: string;
-          expires_at?: string;
-          extracted_text?: string;
-          extraction_version?: number;
-          file_sha256?: string;
-          user_id?: string;
-          visual_assets?: Json;
-          visual_descriptions?: Json;
-        };
-        Relationships: [];
       };
       study_folders: {
         Row: {
@@ -717,8 +678,6 @@ export type Database = {
           error: string | null;
           exam_date: string | null;
           folder_id: string | null;
-          generation_checkpoint: Json;
-          generation_source_revision: string;
           id: string;
           material_filename: string | null;
           material_source: string;
@@ -726,13 +685,10 @@ export type Database = {
           minutes_per_day: number | null;
           name: string;
           notes: string | null;
-          notes_source_version: string | null;
-          cards_source_version: string | null;
           plan: Json | null;
           quiz_score: number | null;
           quiz_total: number | null;
           status: string;
-          study_source_version: string | null;
           study_guide: string | null;
           study_guide_at: string | null;
           subject: string;
@@ -746,8 +702,6 @@ export type Database = {
           error?: string | null;
           exam_date?: string | null;
           folder_id?: string | null;
-          generation_checkpoint?: Json;
-          generation_source_revision?: string;
           id?: string;
           material_filename?: string | null;
           material_source?: string;
@@ -755,13 +709,10 @@ export type Database = {
           minutes_per_day?: number | null;
           name: string;
           notes?: string | null;
-          notes_source_version?: string | null;
-          cards_source_version?: string | null;
           plan?: Json | null;
           quiz_score?: number | null;
           quiz_total?: number | null;
           status?: string;
-          study_source_version?: string | null;
           study_guide?: string | null;
           study_guide_at?: string | null;
           subject?: string;
@@ -775,8 +726,6 @@ export type Database = {
           error?: string | null;
           exam_date?: string | null;
           folder_id?: string | null;
-          generation_checkpoint?: Json;
-          generation_source_revision?: string;
           id?: string;
           material_filename?: string | null;
           material_source?: string;
@@ -784,13 +733,10 @@ export type Database = {
           minutes_per_day?: number | null;
           name?: string;
           notes?: string | null;
-          notes_source_version?: string | null;
-          cards_source_version?: string | null;
           plan?: Json | null;
           quiz_score?: number | null;
           quiz_total?: number | null;
           status?: string;
-          study_source_version?: string | null;
           study_guide?: string | null;
           study_guide_at?: string | null;
           subject?: string;
@@ -877,11 +823,7 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
-      claim_study_set_generation: { Args: { p_lock_token: string; p_set_id: string }; Returns: boolean };
-      commit_study_set_generation: { Args: { p_append_cards?: boolean; p_cards: Json | null; p_generation_key: string; p_lecture_id?: string | null; p_lecture_updated_at?: string | null; p_lock_token: string; p_notes: string | null; p_set_id: string; p_source_revision: string }; Returns: boolean };
-      release_study_set_generation: { Args: { p_error?: string | null; p_lock_token: string; p_mark_set_error?: boolean; p_set_id: string }; Returns: boolean };
-      renew_study_set_generation: { Args: { p_lock_token: string; p_set_id: string }; Returns: boolean };
-      save_study_generation_checkpoint: { Args: { p_checkpoint: Json; p_generation_key: string; p_lock_token: string; p_set_id: string; p_source_revision: string }; Returns: boolean };
+      [_ in never]: never;
     };
     Enums: {
       [_ in never]: never;

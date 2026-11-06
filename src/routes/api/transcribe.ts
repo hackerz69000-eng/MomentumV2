@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { verifySupabaseAccessToken } from "@/integrations/supabase/verify-token.server";
+import { createSupabaseUserClient, verifySupabaseAccessToken } from "@/integrations/supabase/verify-token.server";
+import { completeProviderUsage, ProviderLimitError, reserveProviderUsage, type UsageReservation } from "@/lib/provider-usage.server";
 
 // Stay below Vercel Functions’ request-body cap, including multipart overhead.
 // The recorder’s 60-second 16 kHz mono WAV segments are about 1.9 MiB.
@@ -38,14 +39,14 @@ function sse(transcript: string) {
   });
 }
 
-async function authorized(request: Request) {
+async function bearerToken(request: Request): Promise<string | null> {
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
-  if (!token) return false;
+  if (!token) return null;
   try {
-    return !!(await verifySupabaseAccessToken(token));
+    return (await verifySupabaseAccessToken(token)) ? token : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -57,11 +58,33 @@ function safeProviderMessage(status: number) {
   return "Deepgram transcription failed. Please try again in a moment.";
 }
 
+async function readBodyLimited(request: Request, maxBytes: number): Promise<Uint8Array> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error("INVALID_BODY");
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      size += value.byteLength;
+      if (size > maxBytes) { await reader.cancel(); throw new Error("BODY_TOO_LARGE"); }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const result = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+  return result;
+}
+
 export const Route = createFileRoute("/api/transcribe")({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        if (!(await authorized(request))) return json({ error: "Please sign in again." }, 401);
+        const token = await bearerToken(request);
+        if (!token) return json({ error: "Please sign in again." }, 401);
 
         const contentLength = Number(request.headers.get("content-length") ?? 0);
         if (Number.isFinite(contentLength) && contentLength > MAX_FILE + 128 * 1024) {
@@ -73,8 +96,12 @@ export const Route = createFileRoute("/api/transcribe")({
 
         let form: FormData;
         try {
-          form = await request.formData();
-        } catch {
+          const bytes = await readBodyLimited(request, MAX_FILE + 128 * 1024);
+          const body = new Blob([bytes], { type: request.headers.get("content-type") ?? "" });
+          const boundedRequest = new Request(request.url, { method: "POST", headers: request.headers, body });
+          form = await boundedRequest.formData();
+        } catch (error) {
+          if (error instanceof Error && error.message === "BODY_TOO_LARGE") return json({ error: "Audio segment too large." }, 413);
           return json({ error: "Invalid audio upload." }, 400);
         }
 
@@ -91,6 +118,14 @@ export const Route = createFileRoute("/api/transcribe")({
           String.fromCharCode(...header.slice(8, 12)) === "WAVE";
         if (!isWav) return json({ error: "Audio must be a valid WAV segment. Please record again." }, 415);
 
+        const supabase = createSupabaseUserClient(token);
+        let reservation: UsageReservation;
+        try { reservation = await reserveProviderUsage(supabase, "deepgram_asr", file.size); }
+        catch (error) {
+          if (error instanceof ProviderLimitError) return json({ error: error.message }, 429);
+          return json({ error: "Audio usage limits could not be checked. Please try again shortly." }, 503);
+        }
+
         let upstream: Response;
         try {
           upstream = await fetch(DEEPGRAM_URL, {
@@ -104,6 +139,7 @@ export const Route = createFileRoute("/api/transcribe")({
             signal: AbortSignal.any([request.signal, AbortSignal.timeout(60_000)]),
           });
         } catch (error) {
+          await completeProviderUsage(supabase, reservation, request.signal.aborted ? "cancelled" : "failure").catch(() => undefined);
           if (request.signal.aborted) return new Response(null, { status: 499 });
           if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
             return json({ error: "Transcription timed out. Please try the segment again." }, 504);
@@ -113,6 +149,7 @@ export const Route = createFileRoute("/api/transcribe")({
 
         if (!upstream.ok) {
           try { await upstream.body?.cancel(); } catch { /* ignore cancellation errors */ }
+          await completeProviderUsage(supabase, reservation, "failure").catch(() => undefined);
           const status = upstream.status === 429 ? 429
             : upstream.status === 413 ? 413
             : upstream.status === 400 || upstream.status === 415 ? 422
@@ -126,10 +163,17 @@ export const Route = createFileRoute("/api/transcribe")({
         try {
           payload = await upstream.json() as typeof payload;
         } catch {
+          await completeProviderUsage(supabase, reservation, "failure").catch(() => undefined);
           return json({ error: "Deepgram returned an unreadable transcription response." }, 502);
         }
         const transcript = payload.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ?? "";
-        if (!transcript) return json({ error: "No speech was detected in this audio segment." }, 422);
+        if (!transcript) {
+          await completeProviderUsage(supabase, reservation, "failure").catch(() => undefined);
+          return json({ error: "No speech was detected in this audio segment." }, 422);
+        }
+        await completeProviderUsage(supabase, reservation, "success", transcript.length).catch((error) => {
+          console.error("[provider-usage] Could not finalize transcription usage:", error instanceof Error ? error.message : "unknown error");
+        });
         return sse(transcript);
       },
     },

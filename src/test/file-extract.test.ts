@@ -29,4 +29,14 @@ describe("lecture upload extraction", () => {
     expect(text).toContain("Membranes control transport.");
     expect(ocr).not.toHaveBeenCalled();
   });
+
+  it("rejects highly compressed Office archives before document extraction", async () => {
+    const zip = new JSZip();
+    zip.file("word/document.xml", `<document>${"repeated text ".repeat(50_000)}</document>`);
+    const archive = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE", compressionOptions: { level: 9 } });
+    const buffer = archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength) as ArrayBuffer;
+    const file = new File([new Uint8Array(buffer)], "compressed.docx", { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+    Object.defineProperty(file, "arrayBuffer", { value: async () => buffer });
+    await expect(extractFile(file, vi.fn(), vi.fn())).rejects.toThrow(/expands beyond the safe extraction limit/i);
+  });
 });

@@ -6,10 +6,9 @@ import { FileText, Upload, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
-import { processSet, saveStudyGenerationCheckpoint, ocrFile } from "@/lib/study.functions";
-import { newStudyGenerationToken, releaseStudyGeneration, startStudyGenerationHeartbeat } from "@/lib/study-generation-lock";
+import { processSet, ocrFile } from "@/lib/study.functions";
 import { streamAiJson, streamPreparedNotes } from "@/lib/ai-stream";
-import { ACCEPT, MAX_BYTES, extractFileCached, fileKind, storeOriginal } from "@/lib/extract";
+import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/sets/new")({
@@ -39,7 +38,6 @@ function NewSet() {
   const qc = useQueryClient();
   const { user } = useAuth();
   const process = useServerFn(processSet);
-  const saveCheckpoint = useServerFn(saveStudyGenerationCheckpoint);
   const ocr = useServerFn(ocrFile);
   const [name, setName] = useState("");
   const [subject, setSubject] = useState("");
@@ -48,7 +46,7 @@ function NewSet() {
   const [mode, setMode] = useState<"pdf" | "text">("pdf");
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [extracted, setExtracted] = useState<{ file: File; chars: number; fileSha256: string | null; cacheHit: boolean }[] | null>(null);
+  const [extracted, setExtracted] = useState<{ file: File; chars: number }[] | null>(null);
   const [progressMsg, setProgressMsg] = useState("");
   const [stage, setStage] = useState<null | "reading" | "generating">(null);
   const streamController = useRef<AbortController | null>(null);
@@ -60,21 +58,19 @@ function NewSet() {
     }
     setStage("reading");
     const parts: string[] = [];
-    const meta: { file: File; chars: number; fileSha256: string | null; cacheHit: boolean }[] = [];
+    const meta: { file: File; chars: number }[] = [];
     // Lectures are the primary source and define note structure and order.
     const filesToExtract = [...files].sort((a, b) => Number(fileKind(a) === "image") - Number(fileKind(b) === "image"));
     for (const [idx, f] of filesToExtract.entries()) {
       try {
-        const result = await extractFileCached(
+        const t = await extractFile(
           f,
-          user?.id,
           ocr,
           (m) => setProgressMsg(filesToExtract.length > 1 ? `${m} (${idx + 1}/${filesToExtract.length})` : m),
           parts.join("\n\n").slice(0, 12000),
         );
-        const t = result.text;
         if (t) parts.push(files.length > 1 ? `=== ${f.name} ===\n${t}` : t);
-        meta.push({ file: f, chars: t.length, fileSha256: result.fileSha256, cacheHit: result.cacheHit });
+        meta.push({ file: f, chars: t.length });
       } catch (e) {
         toast.error(e instanceof Error ? e.message : `Couldn't read ${f.name}`);
       }
@@ -98,8 +94,6 @@ function NewSet() {
     }
 
     let createdSetId: string | null = null;
-    let lockToken: string | null = null;
-    let stopHeartbeat: (() => void) | null = null;
     try {
       const material = text.trim();
       if (material.length < 30) {
@@ -143,7 +137,7 @@ function NewSet() {
       // Keep every uploaded file attached to the same study set.
       if (mode === "pdf" && extracted?.length) {
         const stored = await Promise.allSettled(
-          extracted.map((m) => storeOriginal(user.id, targetId, m.file, m.chars, m.fileSha256)),
+          extracted.map((m) => storeOriginal(user.id, targetId, m.file, m.chars)),
         );
         const failed = stored.filter((r) => r.status === "rejected").length;
         if (failed) {
@@ -152,34 +146,26 @@ function NewSet() {
       }
 
       // Gemini generates the notes first, then flashcards from those notes.
-      lockToken = newStudyGenerationToken();
-      const prepared = await process({ data: { setId: targetId, prepareOnly: true, lockToken } });
+      const prepared = await process({ data: { setId: targetId, prepareOnly: true } });
       if ("notesPrompts" in prepared && "cardsSystem" in prepared && "cardsMessages" in prepared && prepared.notesPrompts && prepared.cardsSystem && Array.isArray(prepared.cardsMessages)) {
-        stopHeartbeat = startStudyGenerationHeartbeat(targetId, lockToken, () => controller.abort());
-        const notes = prepared.cachedNotes ?? await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setProgressMsg, onDelta: (chunk) => setProgressMsg((old) => `${old}\n${chunk}`.slice(-900)) });
-        if (!prepared.cachedNotes) await saveCheckpoint({ data: { setId: targetId, generationKey: prepared.generationKey, sourceRevision: prepared.sourceRevision, lockToken, notes } });
+        const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setProgressMsg, onDelta: (chunk) => setProgressMsg((old) => `${old}\n${chunk}`.slice(-900)) });
         setProgressMsg("Generating flashcards…");
-        const cards = prepared.cachedCards ?? await streamAiJson({ system: prepared.cardsSystem, messages: [...prepared.cardsMessages, { role: "user" as const, content: `Use these newly generated notes as a coverage guide, but verify every card against the authoritative source material already provided.\n\nGENERATED NOTES:\n${notes.slice(0, 50000)}` }], signal: controller.signal, onDelta: (chunk) => setProgressMsg((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
+        const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgressMsg((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
           if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");
           const valid = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim() })).filter((item) => item.q && item.a).slice(0, 20);
           if (!valid.length) throw new Error("No useful flashcards could be generated.");
           return valid;
         }});
-        if (!prepared.cachedCards) await saveCheckpoint({ data: { setId: targetId, generationKey: prepared.generationKey, sourceRevision: prepared.sourceRevision, lockToken, cards } });
-        await process({ data: { setId: targetId, generationKey: prepared.generationKey, sourceRevision: prepared.sourceRevision, lockToken, generatedNotes: notes, generatedCards: cards } });
+        await process({ data: { setId: targetId, generatedNotes: notes, generatedCards: cards } });
       } else throw new Error("Couldn't prepare study set processing.");
 
       streamController.current = null;
-      stopHeartbeat?.();
-      stopHeartbeat = null;
-      lockToken = null;
       toast.success("Study set created.");
       qc.invalidateQueries({ queryKey: ["sets"] });
       navigate({ to: "/sets/$id", params: { id: targetId } });
     } catch (err) {
       const message = err instanceof DOMException && err.name === "AbortError" ? "Generation cancelled. Your new study set can be retried." : err instanceof Error ? err.message : "Something went wrong";
-      stopHeartbeat?.();
-      if (createdSetId && lockToken) await releaseStudyGeneration(createdSetId, lockToken, message, true);
+      if (createdSetId) await supabase.from("study_sets").update({ status: "error", error: message.slice(0, 500) }).eq("id", createdSetId);
       toast.error(message);
       streamController.current = null;
       setStage(null);

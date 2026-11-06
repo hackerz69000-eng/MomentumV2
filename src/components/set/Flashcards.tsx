@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { ArrowLeft, ArrowRight, Loader2, Pencil, Plus, Shuffle, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { prepareRegenerateCardsStream, saveRegenerateCardsStream } from "@/lib/study.functions";
-import { newStudyGenerationToken, releaseStudyGeneration, startStudyGenerationHeartbeat } from "@/lib/study-generation-lock";
 import { streamAiJson } from "@/lib/ai-stream";
 import { trashRow } from "@/lib/trash";
 import { cardStats, isDue, schedule, shuffle, type Flashcard, type Rating } from "@/lib/stats";
@@ -14,7 +13,6 @@ import { logActivity } from "@/lib/log-activity";
 import { updateLocalCardStatus } from "@/lib/local-store";
 import { recordStudySessionCompletion } from "@/components/DailyStreak";
 import { cn } from "@/lib/utils";
-import { uniqueQuestionTexts } from "@/lib/quiz-generation";
 import {
   Dialog,
   DialogContent,
@@ -254,29 +252,24 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
     streamController.current?.abort();
     const controller = new AbortController();
     streamController.current = controller;
-    const lockToken = newStudyGenerationToken();
-    let stopHeartbeat: (() => void) | null = null;
     setBusy(true);
     try {
-      const prompt = await prepareRegen({ data: { setId, lockToken } });
-      stopHeartbeat = startStudyGenerationHeartbeat(setId, lockToken, () => controller.abort());
+      const prompt = await prepareRegen({ data: { setId } });
       setStreamedJson("");
       const cards = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedJson((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The generated flashcards were not valid.");
-        const valid = uniqueQuestionTexts((value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "", question: card.q.trim() })).slice(0, 20)).map(({ question, ...card }) => ({ ...card, q: question }));
+        const valid = (value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "" })).slice(0, 20);
         if (!valid.length) throw new Error("No useful flashcards could be generated from the supplied study material.");
         return valid;
       }});
-      await saveRegen({ data: { setId, cards, lockToken, generationKey: prompt.generationKey, sourceRevision: prompt.sourceRevision } });
+      await saveRegen({ data: { setId, cards } });
       await qc.invalidateQueries({ queryKey: ["cards", setId] });
       setOrder(null);
       setI(0);
       toast.success("New flashcards generated");
     } catch (e) {
-      await releaseStudyGeneration(setId, lockToken, e instanceof Error ? e.message : "Flashcard generation failed.");
       toast.error(e instanceof DOMException && e.name === "AbortError" ? "Flashcard generation cancelled. Existing cards are unchanged." : e instanceof Error ? e.message : "Failed");
     }
-    stopHeartbeat?.();
     streamController.current = null;
     setBusy(false);
   };

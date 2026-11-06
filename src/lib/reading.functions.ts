@@ -1,7 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { extractNumberedQuestionSection, uniqueQuestionTexts } from "./quiz-generation";
 import { clip, splitTextIntoChunks } from "./ai.server";
 import { loadSet, ci } from "./set-helpers.server";
 
@@ -12,17 +11,6 @@ const askInput = (data: unknown) => z.object({ setId: z.string().uuid(), questio
 const linkInput = (data: unknown) => z.object({ targetSetId: z.string().uuid(), sourceSetId: z.string().uuid(), sourceKind: z.enum(["set_material", "lecture"]), sourceLectureId: z.string().uuid().nullable().optional() }).parse(data);
 const unlinkInput = (data: unknown) => z.object({ targetSetId: z.string().uuid(), linkId: z.string().uuid() }).parse(data);
 const cardsInput = (data: unknown) => z.object({ setId: z.string().uuid(), cards: z.array(z.object({ q: z.string().trim().min(1).max(500), a: z.string().trim().min(1).max(2000), t: z.string().trim().max(80).optional() })).min(1).max(25) }).parse(data);
-
-async function previousAssessmentQuestions(sb: any, setId: string): Promise<string[]> {
-  const questions: string[] = [];
-  for (let offset = 0; ; offset += 500) {
-    const { data, error } = await sb.from("quiz_attempts").select("results").eq("set_id", setId).order("created_at", { ascending: false }).range(offset, offset + 499);
-    if (error) throw new Error("Couldn't check earlier questions for duplicates.");
-    for (const attempt of data ?? []) if (Array.isArray(attempt.results)) for (const result of attempt.results) if (result && typeof result.q === "string") questions.push(result.q);
-    if ((data?.length ?? 0) < 500) break;
-  }
-  return [...new Set(questions)];
-}
 
 type CompanionSource = { key: string; title: string; kind: "reading" | "lecture"; text: string; linked: boolean };
 
@@ -171,8 +159,7 @@ export const prepareReadingSummaryStream = createServerFn({ method: "POST" })
       sourceBudget -= text.length;
       return `SOURCE ${i + 1}: ${source.title}\n${text}`;
     }).filter(Boolean).join("\n\n---\n\n");
-    const avoidQuestions = await previousAssessmentQuestions(context.supabase, set.id);
-    return { system: `${READING_SUMMARY_SYSTEM} ${ci(set)}`, messages: [{ role: "user" as const, content: `STUDY SET: ${set.name} (${set.subject || "General"})\n\nSOURCES:\n${sourceText}` }], avoidQuestions };
+    return { system: `${READING_SUMMARY_SYSTEM} ${ci(set)}`, messages: [{ role: "user" as const, content: `STUDY SET: ${set.name} (${set.subject || "General"})\n\nSOURCES:\n${sourceText}` }] };
   });
 
 export const prepareReadingCardsStream = createServerFn({ method: "POST" })
@@ -270,12 +257,12 @@ export const readingSaveCards = createServerFn({ method: "POST" })
     const sb: any = context.supabase;
     const { data: existing, error: readError } = await sb.from("flashcards").select("question").eq("set_id", set.id);
     if (readError) throw new Error("Couldn't check existing cards for duplicates.");
-    const known = (existing ?? []).map((c: { question?: string }) => c.question ?? "");
-    const unique = uniqueQuestionTexts(data.cards.map((card) => ({ ...card, question: card.q })), known);
-    const novel = unique.map(({ question: _question, ...card }) => card);
-    if (!novel.length) return { added: 0, skipped: data.cards.length };
+    const norm = (s: string) => s.toLocaleLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N} ]/gu, " ").replace(/\s+/g, " ").trim();
+    const known = new Set((existing ?? []).map((c: any) => norm(c.question ?? "")));
+    const unique = data.cards.filter((c) => { const key = norm(c.q); if (!key || known.has(key)) return false; known.add(key); return true; });
+    if (!unique.length) return { added: 0, skipped: data.cards.length };
     const { count } = await sb.from("flashcards").select("id", { count: "exact", head: true }).eq("set_id", set.id);
-    const { error } = await sb.from("flashcards").insert(novel.map((c, i) => ({ set_id: set.id, user_id: context.userId, question: c.q, answer: c.a, topic: (c.t || "Reading Companion").slice(0, 80), position: (count ?? 0) + i, is_custom: false })));
+    const { error } = await sb.from("flashcards").insert(unique.map((c, i) => ({ set_id: set.id, user_id: context.userId, question: c.q, answer: c.a, topic: (c.t || "Reading Companion").slice(0, 80), position: (count ?? 0) + i, is_custom: false })));
     if (error) throw new Error(error.message);
-    return { added: novel.length, skipped: data.cards.length - novel.length };
+    return { added: unique.length, skipped: data.cards.length - unique.length };
   });

@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { lookup } from "node:dns/promises";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { analyzeSimilarity, type SimilaritySource } from "@/lib/similarity-report";
 import { verifySupabaseAccessToken } from "@/integrations/supabase/verify-token.server";
@@ -50,7 +52,7 @@ function decodeHtmlTitle(html: string): string | undefined {
   return htmlToText(raw).replace(/\s+/g, " ").trim().slice(0, 240) || undefined;
 }
 
-function isPrivateAddress(address: string): boolean {
+export function isPrivateAddress(address: string): boolean {
   if (isIP(address) === 4) {
     const octets = address.split(".").map(Number);
     const a = octets[0] ?? -1;
@@ -62,10 +64,15 @@ function isPrivateAddress(address: string): boolean {
       || (a === 203 && b === 0) || a >= 224;
   }
   if (isIP(address) === 6) {
-    const normalized = address.toLowerCase();
+    let normalized = address.toLowerCase();
+    try { normalized = new URL(`http://[${address}]/`).hostname.slice(1, -1).toLowerCase(); } catch { return true; }
     return normalized === "::" || normalized === "::1" || normalized.startsWith("fe80:")
       || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("ff")
-      || normalized.startsWith("::ffff:") || !/^2[0-9a-f]{3}:/i.test(normalized);
+      || normalized.startsWith("::ffff:") || normalized.startsWith("2001:db8:")
+      || normalized.startsWith("2001:0:") || normalized.startsWith("2001:2:")
+      || normalized.startsWith("2001:10:") || normalized.startsWith("2001:20:")
+      || normalized.startsWith("2002:")
+      || !/^2[0-9a-f]{3}:/i.test(normalized);
   }
   return true;
 }
@@ -73,12 +80,62 @@ function isPrivateAddress(address: string): boolean {
 async function assertPublicHttpUrl(raw: string): Promise<URL> {
   const url = new URL(raw);
   if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) throw new Error("Unsupported source URL.");
+  if (url.port && url.port !== (url.protocol === "https:" ? "443" : "80")) throw new Error("Nonstandard source port blocked.");
   const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) throw new Error("Private source host blocked.");
   const literalType = isIP(hostname);
   const addresses = literalType ? [{ address: hostname }] : await lookup(hostname, { all: true, verbatim: true });
   if (!addresses.length || addresses.some((item) => isPrivateAddress(item.address))) throw new Error("Non-public source host blocked.");
   return url;
+}
+
+/** Resolve once, reject mixed/private answers, then pin Node's socket lookup to that address. */
+async function pinnedFetch(url: URL, headers: Record<string, string>, signal: AbortSignal, maxBytes: number): Promise<Response> {
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await lookup(hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some((entry) => isPrivateAddress(entry.address))) throw new Error("Non-public source host blocked.");
+  const selected = addresses[0]!;
+  const requestFn: any = url.protocol === "https:" ? httpsRequest : httpRequest;
+  const pinnedLookup = ((_host: string, options: any, callback: (...args: any[]) => void) => {
+    if (options && typeof options === "object" && options.all) callback(null, [{ address: selected.address, family: isIP(selected.address) }]);
+    else callback(null, selected.address, isIP(selected.address));
+  }) as any;
+  return new Promise((resolve, reject) => {
+    const req = requestFn({
+      protocol: url.protocol,
+      hostname,
+      ...(url.port ? { port: url.port } : {}),
+      method: "GET",
+      path: `${url.pathname}${url.search}`,
+      headers: { Host: url.host, ...headers },
+      lookup: pinnedLookup,
+      signal,
+      ...(url.protocol === "https:" && !isIP(hostname) ? { servername: hostname } : {}),
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on("data", (chunk: Buffer | string) => {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += buffer.length;
+        if (size > maxBytes) { req.destroy(new Error("Source response exceeded its size limit.")); return; }
+        chunks.push(buffer);
+      });
+      res.on("end", () => {
+        const status = res.statusCode ?? 502;
+        if (status < 200 || status > 599) { reject(new Error("Invalid source response status.")); return; }
+        const responseHeaders = new Headers();
+        for (const name of ["content-type", "content-length", "location"]) {
+          const value = res.headers[name];
+          if (typeof value === "string") responseHeaders.set(name, value);
+        }
+        const body = status === 204 || status === 205 || status === 304 ? null : Buffer.concat(chunks);
+        resolve(new Response(body === null ? null : new Uint8Array(body), { status, headers: responseHeaders }));
+      });
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 const robotsCache = new Map<string, Promise<boolean>>();
@@ -91,7 +148,7 @@ async function robotsAllows(url: URL): Promise<boolean> {
       try {
         const robotsUrl = new URL("/robots.txt", origin);
         await assertPublicHttpUrl(robotsUrl.href);
-        const response = await fetch(robotsUrl, { redirect: "manual", signal: AbortSignal.timeout(2_500), headers: { "User-Agent": "MomentumSimilarityPrecheck/1.0" } });
+        const response = await pinnedFetch(robotsUrl, { "User-Agent": "MomentumSimilarityPrecheck/1.0" }, AbortSignal.timeout(2_500), 64_000);
         if (response.status === 404 || response.status === 410) return true;
         if (!response.ok || response.status >= 300) return false;
         const text = (await response.text()).slice(0, 64_000);
@@ -132,11 +189,9 @@ async function safeFetchText(rawUrl: string): Promise<{ url: string; title?: str
     if (!(await robotsAllows(url))) return null;
     let response: Response;
     try {
-      response = await fetch(url, {
-        redirect: "manual",
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        headers: { "User-Agent": "MomentumSimilarityPrecheck/1.0", Accept: "text/html,text/plain,application/xhtml+xml;q=0.9,*/*;q=0.1" },
-      });
+      response = await pinnedFetch(url,
+        { "User-Agent": "MomentumSimilarityPrecheck/1.0", Accept: "text/html,text/plain,application/xhtml+xml;q=0.9,*/*;q=0.1" },
+        AbortSignal.timeout(REQUEST_TIMEOUT_MS), MAX_PAGE_BYTES);
     } catch { return null; }
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");

@@ -13,6 +13,15 @@ function getSupabaseConfig() {
   return { url, key };
 }
 
+/** Create an RLS-bound client for an already verified bearer token. */
+export function createSupabaseUserClient(token: string) {
+  const { url, key } = getSupabaseConfig();
+  return createClient<Database>(url, key, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { storage: undefined, persistSession: false, autoRefreshToken: false },
+  });
+}
+
 /**
  * Validate a bearer access token against Supabase Auth.
  *

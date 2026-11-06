@@ -121,19 +121,44 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
         reward_announcements: snapshot.reward_announcements,
         reward_theme: snapshot.reward_theme,
         activity_ids: snapshot.activity_ids,
-        tier_override: snapshot.tier_override == null || snapshot.tier_override === "" ? null : Number(snapshot.tier_override),
-        updated_at: new Date().toISOString(),
       };
-      const { data: savedRow, error: saveError } = await ((supabase as any).from(TABLE))
-        .upsert(payload, { onConflict: "user_id" })
-        .select("updated_at")
-        .single();
-      if (saveError) console.error("[progression] Cloud save failed:", saveError.message);
-      else {
+      const progressionTable = (supabase as any).from(TABLE);
+      let expectedUpdatedAt = String(remote["updated_at"] ?? "");
+      let savedAt: string | null = null;
+      for (let attempt = 0; attempt < 3 && !savedAt; attempt += 1) {
+        if (!expectedUpdatedAt) {
+          const { data: inserted, error: insertError } = await progressionTable.insert({ ...payload, user_id: userId }).select("updated_at").maybeSingle();
+          if (!insertError && inserted) { savedAt = String(inserted.updated_at ?? ""); break; }
+          if (insertError && !/duplicate|unique/i.test(insertError.message)) throw insertError;
+        } else {
+          const { user_id: _userId, ...userEditablePayload } = payload;
+          const { data: updated, error: updateError } = await progressionTable.update(userEditablePayload)
+            .eq("user_id", userId).eq("updated_at", expectedUpdatedAt).select("updated_at").maybeSingle();
+          if (updateError) throw updateError;
+          if (updated) { savedAt = String(updated.updated_at ?? ""); break; }
+        }
+        const { data: latest, error: readError } = await progressionTable.select("updated_at,xp,streak_data,freeze_data,reward_announcements,reward_theme,activity_ids,tier_override_revision").eq("user_id", userId).maybeSingle();
+        if (readError) throw readError;
+        expectedUpdatedAt = String(latest?.updated_at ?? "");
+        if (latest) {
+          const current = localSnapshot();
+          const revisionAdvanced = number(latest.tier_override_revision) > number(localStorage.getItem(TIER_OVERRIDE_REVISION_KEY));
+          payload.xp = revisionAdvanced ? number(latest.xp) : Math.max(current.xp, number(latest.xp));
+          payload.streak_data = mergeStreak(current.streak_data, (latest.streak_data as JsonRecord | null) ?? {});
+          payload.freeze_data = {
+            available: Math.max(number(current.freeze_data.available), number((latest.freeze_data as JsonRecord | null)?.available)),
+            used: Math.max(number(current.freeze_data.used), number((latest.freeze_data as JsonRecord | null)?.used)),
+          };
+          payload.reward_announcements = [...new Set([...current.reward_announcements, ...parseArray(latest.reward_announcements)])];
+          payload.activity_ids = [...new Set([...current.activity_ids, ...parseArray(latest.activity_ids)])].slice(-5000);
+          if (!window.localStorage.getItem(REWARDS_THEME_KEY)) payload.reward_theme = typeof latest.reward_theme === "string" ? latest.reward_theme : "default";
+        }
+      }
+      if (!savedAt) {
+        console.warn("[progression] Cloud save conflicted repeatedly; a later sync will retry.");
+      } else {
         localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
-        // Remember the database's timestamp, not the browser clock, so later
-        // admin edits are detected even when client/server clocks differ.
-        const savedUpdatedAt = Date.parse(String(savedRow?.updated_at ?? ""));
+        const savedUpdatedAt = Date.parse(savedAt);
         if (savedUpdatedAt > 0) localStorage.setItem(LAST_REMOTE_UPDATED_KEY, String(savedUpdatedAt));
       }
     } finally { writing = false; }

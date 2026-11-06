@@ -73,7 +73,8 @@ export async function restoreItem(item: TrashItem) {
   const d = item.data;
   const needSet = async () => {
     if (!item.set_id) return;
-    const { data } = await sb.from("study_sets").select("id").eq("id", item.set_id).maybeSingle();
+    const { data, error } = await sb.from("study_sets").select("id").eq("id", item.set_id).maybeSingle();
+    if (error) throw new Error("Couldn't verify the study set needed for restoration. Please try again.");
     if (!data) throw new Error("Restore its study set first (it's also in Recently Deleted).");
   };
   if (item.kind === "set") {
@@ -92,12 +93,13 @@ export async function restoreItem(item: TrashItem) {
     }
   } else if (item.kind === "notes") {
     await needSet();
-    const { data: cur } = await sb
+    const { data: cur, error: readError } = await sb
       .from("study_sets")
       .select("notes, name")
       .eq("id", item.set_id)
       .single();
-    if (cur?.notes?.trim())
+    if (readError || !cur) throw new Error("Couldn't safely read the current notes before restoring the previous version.");
+    if (cur.notes?.trim())
       await put("notes", `Previous notes — ${cur.name}`, item.set_id, { notes: cur.notes });
     const { error: saveError } = await sb.from("study_sets").update({ notes: d.notes }).eq("id", item.set_id);
     if (saveError) throw new Error("Couldn't restore the previous notes. The backup remains in Recently Deleted.");

@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { verifySupabaseAccessToken } from "@/integrations/supabase/verify-token.server";
+import { createSupabaseUserClient, verifySupabaseAccessToken } from "@/integrations/supabase/verify-token.server";
+import { completeProviderUsage, meterProviderStream, ProviderLimitError, reserveProviderUsage, type UsageReservation } from "@/lib/provider-usage.server";
 
 const MAX_TEXT_CHARS = 4000;
 const DEEPGRAM_SPEAK_URL = "https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mp3";
@@ -15,22 +16,44 @@ function json(data: unknown, status: number) {
   });
 }
 
-async function authorized(request: Request) {
+async function bearerToken(request: Request): Promise<string | null> {
   const auth = request.headers.get("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
-  if (!token) return false;
+  if (!token) return null;
   try {
-    return !!(await verifySupabaseAccessToken(token));
+    return (await verifySupabaseAccessToken(token)) ? token : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+async function readBodyLimited(request: Request, maxBytes: number): Promise<Uint8Array> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error("INVALID_BODY");
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      size += value.byteLength;
+      if (size > maxBytes) { await reader.cancel(); throw new Error("BODY_TOO_LARGE"); }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const result = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+  return result;
 }
 
 export const Route = createFileRoute("/api/speak")({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        if (!(await authorized(request))) return json({ error: "Please sign in again." }, 401);
+        const token = await bearerToken(request);
+        if (!token) return json({ error: "Please sign in again." }, 401);
         const apiKey = process.env["DEEPGRAM_API_KEY"]?.trim();
         if (!apiKey) return json({ error: "Text-to-speech is not configured. Set DEEPGRAM_API_KEY in Vercel." }, 500);
 
@@ -41,8 +64,10 @@ export const Route = createFileRoute("/api/speak")({
 
         let payload: unknown;
         try {
-          payload = await request.json();
-        } catch {
+          const bytes = await readBodyLimited(request, 32 * 1024);
+          payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+        } catch (error) {
+          if (error instanceof Error && error.message === "BODY_TOO_LARGE") return json({ error: "Speech request is too large." }, 413);
           return json({ error: "Invalid speech request." }, 400);
         }
         const text = payload && typeof payload === "object" && "text" in payload && typeof payload.text === "string"
@@ -50,6 +75,14 @@ export const Route = createFileRoute("/api/speak")({
           : "";
         if (!text || text.length > MAX_TEXT_CHARS) {
           return json({ error: `Speech text must contain between 1 and ${MAX_TEXT_CHARS} characters.` }, 400);
+        }
+
+        const supabase = createSupabaseUserClient(token);
+        let reservation: UsageReservation;
+        try { reservation = await reserveProviderUsage(supabase, "deepgram_tts", text.length); }
+        catch (error) {
+          if (error instanceof ProviderLimitError) return json({ error: error.message }, 429);
+          return json({ error: "Speech usage limits could not be checked. Please try again shortly." }, 503);
         }
 
         let upstream: Response;
@@ -65,6 +98,7 @@ export const Route = createFileRoute("/api/speak")({
             signal: AbortSignal.any([request.signal, AbortSignal.timeout(45_000)]),
           });
         } catch (error) {
+          await completeProviderUsage(supabase, reservation, request.signal.aborted ? "cancelled" : "failure").catch(() => undefined);
           if (request.signal.aborted) return new Response(null, { status: 499 });
           if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
             return json({ error: "Speech generation timed out. Please try again." }, 504);
@@ -75,6 +109,7 @@ export const Route = createFileRoute("/api/speak")({
         if (!upstream.ok) {
           const status = upstream.status === 429 ? 429 : upstream.status === 400 ? 422 : 502;
           try { await upstream.body?.cancel(); } catch { /* ignore cancellation errors */ }
+          await completeProviderUsage(supabase, reservation, "failure").catch(() => undefined);
           return json({
             error: upstream.status === 401 || upstream.status === 403
               ? "Deepgram rejected the API key. Check DEEPGRAM_API_KEY in Vercel."
@@ -87,9 +122,10 @@ export const Route = createFileRoute("/api/speak")({
         const contentType = upstream.headers.get("content-type")?.split(";")[0];
         if (contentType !== "audio/mpeg" || !upstream.body) {
           try { await upstream.body?.cancel(); } catch { /* ignore cancellation errors */ }
+          await completeProviderUsage(supabase, reservation, "failure").catch(() => undefined);
           return json({ error: "Text-to-speech returned an unreadable audio response." }, 502);
         }
-        return new Response(upstream.body, {
+        return new Response(meterProviderStream(supabase, upstream.body, reservation), {
           status: 200,
           headers: {
             "content-type": "audio/mpeg",

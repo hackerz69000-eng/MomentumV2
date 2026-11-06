@@ -325,13 +325,13 @@ export const gradeEssay = createServerFn({ method: "POST" })
       scores: scores
         .map((s) => ({
           category: String(s?.category ?? ""),
-          score: Number(s?.score) || 0,
-          max: Number(s?.max) || 100,
+          score: typeof s?.score === "number" ? s.score : Number.NaN,
+          max: typeof s?.max === "number" ? s.max : s?.max == null ? 100 : Number.NaN,
           reasoning: String(s?.reasoning ?? ""),
         }))
         .filter((s) => s.category),
-      finalScore: Number(r.finalScore) || 0,
-      finalMax: Number(r.finalMax) || 100,
+      finalScore: typeof r.finalScore === "number" ? r.finalScore : Number.NaN,
+      finalMax: typeof r.finalMax === "number" ? r.finalMax : r.finalMax == null ? 100 : Number.NaN,
       like: arr(r.like),
       improve: arr(r.improve),
       opportunities: arr(r.opportunities),
@@ -351,14 +351,15 @@ export const gradeEssay = createServerFn({ method: "POST" })
       },
       threeChanges: arr(r.threeChanges).slice(0, 3),
     };
-    if (!result.scores.length)
+    if (!result.scores.length || result.scores.length > 30 ||
+      result.scores.some((score) => !Number.isFinite(score.score) || !Number.isFinite(score.max) || score.max <= 0 || score.max > 100_000 || score.score < 0 || score.score > score.max) ||
+      !Number.isFinite(result.finalScore) || !Number.isFinite(result.finalMax) || result.finalMax <= 0 || result.finalMax > 100_000 || result.finalScore < 0 || result.finalScore > result.finalMax)
       throw new Error("The grader returned an incomplete result. Please try again.");
-    const pct = result.finalMax
-      ? Math.round((result.finalScore / result.finalMax) * 1000) / 10
-      : null;
-    await sb
+    const pct = Math.round((result.finalScore / result.finalMax) * 1000) / 10;
+    const { error: saveError } = await sb
       .from("essay_grades")
       .update({ result: result as never, final_score: pct })
       .eq("id", e.id);
+    if (saveError) throw new Error("The essay was graded but the result couldn't be saved. Please retry saving.");
     return { result };
   });

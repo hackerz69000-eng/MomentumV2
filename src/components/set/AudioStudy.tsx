@@ -32,7 +32,6 @@ import {
 } from "@/lib/audio-study.functions";
 import { prepareRecallGradeStream, type RecallGrade } from "@/lib/study.functions";
 import { recordResults } from "@/lib/mistakes";
-import { isDuplicateQuestionText } from "@/lib/quiz-generation";
 import { logActivity } from "@/lib/log-activity";
 import type { StudySet } from "@/lib/queries";
 import type { TopicRow } from "@/lib/stats";
@@ -517,23 +516,13 @@ function Player({
     setBusy("quiz");
     try {
       const prompt = await quizPrepare({ data: { sessionId: session.id, sectionIndex } });
-      let q: { question: string; topic: string; model: string } | null = null;
-      let lastError: unknown;
-      const avoid = [...(prompt.avoidQuestions ?? []), ...(eventsQ.data ?? []).filter((row) => row.kind === "quiz_question").map((row) => row.content)];
-      for (let attempt = 0; attempt < 3 && !q; attempt += 1) {
-        try {
-          q = await streamAiJson({ system: `${prompt.system}${attempt ? "\nGenerate a replacement question; the previous question was invalid or repeated." : ""}`, messages: attempt ? [...prompt.messages, { role: "user" as const, content: `Do not repeat these questions:\n${avoid.join("\n")}` }] : prompt.messages, validate: (value) => {
-            if (!value || typeof value !== "object") throw new Error("The generated quiz question was not valid.");
-            const item = value as { question?: unknown; topic?: unknown; model?: unknown };
-            if (typeof item.question !== "string" || !item.question.trim() || typeof item.model !== "string" || !item.model.trim()) throw new Error("Couldn't create a reliable question. Please try again.");
-            const candidate = item.question.trim().slice(0, 1000);
-            if (isDuplicateQuestionText(candidate, avoid)) throw new Error("The generated question repeats a question already used for this study material.");
-            return { question: candidate, topic: String(item.topic ?? prompt.defaultTopic).slice(0, 80), model: item.model.trim().slice(0, 3000) };
-          }});
-        } catch (error) { lastError = error; }
-      }
-      if (!q) throw new Error(`${lastError instanceof Error ? lastError.message : "Couldn't create a question."} The material may not support another distinct question.`);
-      const saved = await quizSave({ data: { sessionId: prompt.sessionId, sectionIndex: prompt.sectionIndex, ...q, lockToken: crypto.randomUUID() } });
+      const q = await streamAiJson({ system: prompt.system, messages: prompt.messages, validate: (value) => {
+        if (!value || typeof value !== "object") throw new Error("The generated quiz question was not valid.");
+        const item = value as { question?: unknown; topic?: unknown; model?: unknown };
+        if (typeof item.question !== "string" || !item.question.trim() || typeof item.model !== "string" || !item.model.trim()) throw new Error("Couldn't create a reliable question. Please try again.");
+        return { question: item.question.trim().slice(0, 1000), topic: String(item.topic ?? prompt.defaultTopic).slice(0, 80), model: item.model.trim().slice(0, 3000) };
+      }});
+      const saved = await quizSave({ data: { sessionId: prompt.sessionId, sectionIndex: prompt.sectionIndex, ...q } });
       setQuiz({ ...saved, answer: "" });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't create a question.");

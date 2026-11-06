@@ -4,13 +4,13 @@ Momentum is an AI study platform that turns your study material into notes, flas
 
 ## Development
 
-Requirements: Node.js 22+ and npm.
+Requirements: Bun (the repository's `bun.lock` is the dependency lockfile) and a Node.js 22+ compatible runtime for deployment.
 
 ```sh
 git clone <this-repository-url>
 cd <repository-name>
-npm install
-npm run dev
+bun install --frozen-lockfile
+bun run dev
 ```
 
 Copy `.env.example` to `.env` and fill in the required Supabase and AI environment variables for the features you use. Do not commit `.env` or other local environment files.
@@ -18,10 +18,11 @@ Copy `.env.example` to `.env` and fill in the required Supabase and AI environme
 ### Useful commands
 
 ```sh
-npm run dev       # start the local development server
-npm run build     # production build
-npm run lint      # ESLint + Prettier checks
-npm test          # test suite
+bun run dev       # start the local development server
+bun run build     # production build
+bun run typecheck # TypeScript check
+bun run lint      # ESLint + Prettier checks
+bun run test      # test suite
 ```
 
 
@@ -35,22 +36,9 @@ Before deploying this version, run `drizzle/migrations/0011_reading_companion_so
 
 PDF extraction now preserves page headings where the PDF parser returns individual pages. Page citations are only shown when a page marker exists in the extracted text; the AI is instructed not to invent page numbers.
 
-## Study engine extraction cache and recovery
-
-Before deploying the Stage 1/2 study-engine upgrade, run these additive SQL migrations in timestamp order in the Supabase SQL Editor:
-
-1. `supabase/migrations/20261104000000_study_engine_cache_and_checkpoints.sql`
-2. `supabase/migrations/20261105000000_study_generation_safety.sql`
-
-They add a per-user extraction cache, source-version fields, retry checkpoints, short-lived study-set generation leases, and transaction-safe result commits. The safety migration uses a two-minute database lease renewed every 30 seconds while a browser is actively generating. If a tab closes, its lease expires and another tab can retry. Source-changing edits update a database revision, and the final transaction checks that revision before saving notes or cards. The migrations do not delete or rewrite existing study sets, notes, flashcards, attempts, or original uploads. They are written to tolerate repeated application of these statements in the normal case; still inspect the SQL Editor result and your schema before retrying any migration that reports an error. Do not deploy this application version until both migrations succeed. Cache entries stop being reused after 90 days, but there is no scheduled cleanup job; expired cache rows and private visual files remain until manually cleaned up. The AI streaming limit is two streams per browser tab only; it is not a global cap across tabs/devices, and it does not cover server-side OCR calls.
-
 ## Optional image-based quiz questions
 
 In a Study Set quiz or exam, select **Include questions about lecture images** to ask questions grounded in saved PNG, JPEG, or WebP uploads, sampled PDF pages, or embedded Word and PowerPoint figures. The option is off by default. Momentum skips visuals it cannot extract, uses at most three visuals per quiz, and keeps image references with saved results so learners can review them later. Image data is not copied into saved quiz results. Configure `NVIDIA_VISION_MODEL` for visual question generation; the project default is listed in `.env.example`.
-
-## Large quiz generation
-
-Quizzes, practice exams, and comprehensive exams generate questions in sequential batches of five by default. Set the server-only `QUIZ_GENERATION_BATCH_SIZE` to a value from 3 to 6 to tune provider response size; other values are safely clamped. Each returned batch is validated and deduplicated before it counts toward progress. Completed batches are kept in the current browser so an interrupted request can resume with the same settings and unchanged material. Changing the source starts a fresh generation because old questions may no longer apply. Quiz generation itself does not create or replace quiz attempts; attempts are still written only after the student submits.
 
 ## Vercel deployment
 
@@ -68,7 +56,6 @@ Set these environment variables in Vercel for the environments you deploy to:
 - `NVIDIA_REASONING_MODEL` (optional; defaults to `nvidia/nemotron-3-ultra-550b-a55b`)
 - `NVIDIA_FALLBACK_MODELS` (optional; comma-separated fallback chat model IDs)
 - `NVIDIA_VISION_MODEL` (optional; defaults to `nvidia/nemotron-3.5-super-vl-120b-a12b`)
-- `QUIZ_GENERATION_BATCH_SIZE` (optional server-only setting; default 5, safely limited to 3–6)
 - `DEEPGRAM_API_KEY` for microphone speech-to-text and Audio Study text-to-speech
 - `SUPABASE_SERVICE_ROLE_KEY` only if using server-only admin operations
 - `DATABASE_URL` only when running Drizzle migrations
@@ -81,7 +68,7 @@ The `VITE_` Supabase values are intentionally public client configuration; never
 - Authenticated server functions receive the browser session as a Bearer token and verify it server-side.
 - AI operations run on the server so provider keys are never exposed to the browser.
 - The `_authenticated` route is gated client-side because Supabase sessions live in browser storage.
-- Database migrations live under `drizzle/migrations`.
+- New database changes use timestamped SQL under `supabase/migrations` and the documented Supabase workflow in [`DATABASE_MIGRATIONS.md`](./DATABASE_MIGRATIONS.md). The `drizzle/migrations` directory is retained historical bootstrap/migration material; do not apply its files to an existing database without reconciling that environment's migration ledger and catalog first.
 
 
 ## Reading-first support for lecture-based Study Sets

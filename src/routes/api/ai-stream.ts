@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { verifySupabaseAccessToken } from "@/integrations/supabase/verify-token.server";
+import { createSupabaseUserClient, verifySupabaseAccessToken } from "@/integrations/supabase/verify-token.server";
+import { nvidiaModels, openNvidiaStream } from "@/lib/ai.server";
+import { completeProviderUsage, meterProviderStream, ProviderLimitError, reserveProviderUsage } from "@/lib/provider-usage.server";
 
-const BASE_URL = "https://integrate.api.nvidia.com/v1";
 const MAX_BODY = 8_000_000;
 const MAX_MESSAGES = 24;
 const MAX_CONTENT = 160_000;
@@ -9,39 +10,58 @@ const MAX_CONTENT = 160_000;
 type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 type Message = { role: "user" | "assistant"; content: string | ContentPart[] };
 
-function json(data: unknown, status: number, requestId?: string) {
-  const headers = new Headers({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-  if (requestId) headers.set("x-momentum-request-id", requestId);
+function json(data: unknown, status: number) {
   return new Response(JSON.stringify(data), {
     status,
-    headers,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
+}
+
+async function readBodyLimited(request: Request, maxBytes: number): Promise<string> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error("INVALID_BODY");
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const chunks: string[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      size += value.byteLength;
+      if (size > maxBytes) { await reader.cancel(); throw new Error("BODY_TOO_LARGE"); }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+  } finally { reader.releaseLock(); }
+  return chunks.join("");
 }
 
 export const Route = createFileRoute("/api/ai-stream")({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const rawRequestId = request.headers.get("x-momentum-request-id") ?? "";
-        const requestId = /^[a-z0-9._-]{1,100}$/i.test(rawRequestId) ? rawRequestId : undefined;
         const authorization = request.headers.get("authorization") ?? "";
         const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
-        if (!token || !(await verifySupabaseAccessToken(token))) {
-          return json({ error: "Please sign in again." }, 401, requestId);
+        let user: Awaited<ReturnType<typeof verifySupabaseAccessToken>> = null;
+        try { user = token ? await verifySupabaseAccessToken(token) : null; }
+        catch { return json({ error: "Please sign in again." }, 401); }
+        if (!token || !user) {
+          return json({ error: "Please sign in again." }, 401);
         }
 
         const length = Number(request.headers.get("content-length") ?? 0);
-        if (length > MAX_BODY) return json({ error: "AI request is too large." }, 413, requestId);
+        if (length > MAX_BODY) return json({ error: "AI request is too large." }, 413);
 
         let rawBody: string;
-        try { rawBody = await request.text(); }
-        catch { return json({ error: "Invalid AI request." }, 400, requestId); }
-        if (new TextEncoder().encode(rawBody).byteLength > MAX_BODY) {
-          return json({ error: "AI request is too large." }, 413, requestId);
+        try { rawBody = await readBodyLimited(request, MAX_BODY); }
+        catch (error) {
+          if (error instanceof Error && error.message === "BODY_TOO_LARGE") return json({ error: "AI request is too large." }, 413);
+          return json({ error: "Invalid AI request." }, 400);
         }
         let body: { system?: unknown; messages?: unknown; task?: unknown; jsonMode?: unknown };
         try { body = JSON.parse(rawBody) as typeof body; }
-        catch { return json({ error: "Invalid AI request." }, 400, requestId); }
+        catch { return json({ error: "Invalid AI request." }, 400); }
 
         const system = typeof body.system === "string" ? body.system.trim() : "";
         const messages = Array.isArray(body.messages) ? body.messages as Message[] : [];
@@ -65,69 +85,63 @@ export const Route = createFileRoute("/api/ai-stream")({
           totalContent > MAX_BODY ||
           messages.some((m) => !m || !["user", "assistant"].includes(m.role) || !validContent(m.content)) ||
           (task === "vision" && !messages.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url")))) {
-          return json({ error: "The AI prompt or conversation is invalid or too large." }, 400, requestId);
+          return json({ error: "The AI prompt or conversation is invalid or too large." }, 400);
         }
 
-        const apiKey = process.env["NVIDIA_API_KEY"]?.trim();
-        if (!apiKey) return json({ error: "NVIDIA AI is not configured. Set NVIDIA_API_KEY in Vercel." }, 500, requestId);
-        const preferredModel = task === "vision"
-          ? process.env["NVIDIA_VISION_MODEL"]?.trim() || "nvidia/nemotron-3.5-super-vl-120b-a12b"
-          : task === "reasoning"
-          ? process.env["NVIDIA_REASONING_MODEL"]?.trim() || "nvidia/nemotron-3-ultra-550b-a55b"
-          : process.env["NVIDIA_MODEL"]?.trim() || "nvidia/nemotron-3.5-lightning-30b-a3b";
-        const fallbackModels = task === "vision" ? [] : (process.env["NVIDIA_FALLBACK_MODELS"] ?? "stepfun-ai/step-3.5-flash")
-          .split(",").map((item) => item.trim()).filter(Boolean);
-        const models = [...new Set([preferredModel, ...(task === "vision" ? [] : [process.env["NVIDIA_MODEL"]?.trim(), ...fallbackModels])].filter(Boolean))] as string[];
+        if (!process.env["NVIDIA_API_KEY"]?.trim()) return json({ error: "NVIDIA AI is not configured. Set NVIDIA_API_KEY in Vercel." }, 500);
+        const supabase = createSupabaseUserClient(token);
+        const models = nvidiaModels(task);
         let upstream: Response | null = null;
-        let lastError = "Couldn't connect to NVIDIA. Please try again.";
+        let reservation: Awaited<ReturnType<typeof reserveProviderUsage>> | null = null;
+        let lastStatus = 502;
         for (let index = 0; index < models.length; index += 1) {
           const model = models[index]!;
           try {
-            const candidate = await fetch(`${BASE_URL}/chat/completions`, {
-              method: "POST",
-              cache: "no-store",
-              headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "text/event-stream" },
-              body: JSON.stringify({
-                model,
-                messages: [{ role: "system", content: system }, ...messages],
-                temperature: 0.2,
-                max_tokens: body.jsonMode === true ? 8192 : 6000,
-                ...(body.jsonMode === true ? { response_format: { type: "json_object" } } : {}),
-                stream: true,
-                ...(model.startsWith("nvidia/nemotron-3") ? { chat_template_kwargs: { enable_thinking: model.includes("ultra") } } : {}),
-              }),
-              signal: AbortSignal.any([request.signal, AbortSignal.timeout(90_000)]),
+            // Each attempted model consumes quota: fallback calls can also incur provider cost.
+            reservation = await reserveProviderUsage(supabase, "nvidia", totalContent);
+          } catch (error) {
+            if (error instanceof ProviderLimitError) return json({ error: error.message }, 429);
+            return json({ error: "AI usage limits could not be checked. Please try again shortly." }, 503);
+          }
+          try {
+            const candidate = await openNvidiaStream(system, messages, {
+              model, signal: request.signal, jsonMode: body.jsonMode === true,
+              maxTokens: body.jsonMode === true ? 8192 : 6000,
             });
             if (candidate.ok && candidate.body) { upstream = candidate; break; }
-            const detail = (await candidate.text().catch(() => "")).slice(0, 400);
-            lastError = candidate.status === 401 || candidate.status === 403
-              ? "NVIDIA rejected the API key or model access."
-              : candidate.status === 402 ? "NVIDIA API access or usage limits are unavailable for this model."
-              : candidate.status === 429 ? "NVIDIA is busy. Wait a moment and try again."
-              : `NVIDIA streaming request failed${detail ? `: ${detail}` : ` (${candidate.status}).`}`;
+            lastStatus = candidate.status;
+            await candidate.body?.cancel().catch(() => undefined);
+            await completeProviderUsage(supabase, reservation, "failure");
+            reservation = null;
             const retryable = [400, 403, 404, 408, 429].includes(candidate.status) || candidate.status >= 500;
-            if (!retryable || index === models.length - 1) return json({ error: lastError }, candidate.status >= 400 && candidate.status < 600 ? candidate.status : 502, requestId);
+            if (!retryable || index === models.length - 1) {
+              const message = candidate.status === 401 || candidate.status === 403 ? "NVIDIA rejected the API key or model access."
+                : candidate.status === 402 ? "NVIDIA API access or usage limits are unavailable for this model."
+                : candidate.status === 429 ? "NVIDIA is busy. Wait a moment and try again."
+                : "NVIDIA couldn't complete the AI request. Please try again.";
+              return json({ error: message }, candidate.status >= 400 && candidate.status < 600 ? candidate.status : 502);
+            }
           } catch (error) {
-            if (request.signal.aborted) return json({ error: "The AI request was cancelled." }, 499, requestId);
-            lastError = error instanceof Error && error.name === "TimeoutError"
-              ? "The NVIDIA request timed out. Try a shorter response or smaller source document."
-              : "Couldn't connect to NVIDIA. Please try again.";
-            if (index === models.length - 1) return json({ error: lastError }, 502, requestId);
+            lastStatus = request.signal.aborted ? 499 : 502;
+            try { await completeProviderUsage(supabase, reservation, request.signal.aborted ? "cancelled" : "failure"); }
+            catch { return json({ error: "The AI request ran, but its usage could not be finalized. Wait a moment before retrying." }, 503); }
+            reservation = null;
+            if (request.signal.aborted) return json({ error: "The AI request was cancelled." }, 499);
+            if (index === models.length - 1) return json({ error: error instanceof Error ? error.message : "Couldn't connect to NVIDIA. Please try again." }, lastStatus);
           }
         }
-        if (!upstream?.body) return json({ error: lastError }, 502, requestId);
+        if (!upstream?.body || !reservation) return json({ error: "Couldn't connect to NVIDIA. Please try again." }, lastStatus);
 
-        // Forward provider SSE bytes without buffering so the browser can render tokens immediately.
-        return new Response(upstream.body, {
+        // Metering wraps the byte stream without buffering, preserving immediate token delivery.
+        return new Response(meterProviderStream(supabase, upstream.body, reservation), {
           status: 200,
           headers: {
             "content-type": "text/event-stream; charset=utf-8",
-            "cache-control": "no-store, no-cache, no-transform",
+            "cache-control": "no-cache, no-transform",
             connection: "keep-alive",
             "x-accel-buffering": "no",
             "x-content-type-options": "nosniff",
             "vary": "Authorization",
-            ...(requestId ? { "x-momentum-request-id": requestId } : {}),
           },
         });
       },
