@@ -34,7 +34,7 @@ describe("provider usage metering", () => {
     expect(received).toContain("é");
     expect(calls).toHaveLength(1);
     expect(calls[0]?.[0]).toBe("complete_provider_usage");
-    expect((calls[0]?.[1] as Record<string, unknown>).p_status).toBe("success");
+    expect((calls[0]?.[1] as Record<string, unknown>)["p_status"]).toBe("success");
   });
 
   it("marks incomplete cost estimates until non-secret provider rates are configured", () => {
@@ -56,7 +56,7 @@ describe("provider usage metering", () => {
     const content = new TextEncoder().encode('data: {"delta":"the phrase data: [DONE] is an example"}\n\n');
     const stream = meterProviderStream(supabase, new ReadableStream({ start(c) { c.enqueue(content); c.close(); } }), reservation);
     await new Response(stream).text();
-    expect((supabase.rpc.mock.calls[0]?.[1] as Record<string, unknown>).p_status).toBe("failure");
+    expect((supabase.rpc.mock.calls[0]?.[1] as Record<string, unknown>)["p_status"]).toBe("failure");
   });
 
   it("releases a provider reservation when the downstream reader cancels", async () => {
@@ -66,6 +66,6 @@ describe("provider usage metering", () => {
     const reader = stream.getReader();
     await reader.read();
     await reader.cancel();
-    expect((supabase.rpc.mock.calls[0]?.[1] as Record<string, unknown>).p_status).toBe("cancelled");
+    expect((supabase.rpc.mock.calls[0]?.[1] as Record<string, unknown>)["p_status"]).toBe("cancelled");
   });
 });

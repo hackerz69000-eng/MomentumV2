@@ -5,6 +5,21 @@ import { aiImage, parseJson, clip, splitTextIntoChunks } from "./ai.server";
 import { setStats, type Attempt, type AttemptResult, type Flashcard } from "./stats";
 import { activityStats, dayKey } from "./activity";
 import { loadSet, ci, openMistakes, type MistakeRow } from "./set-helpers.server";
+import {
+  MAX_QUIZ_QUESTIONS,
+  MIN_QUIZ_QUESTIONS,
+  QUESTIONS_PER_BATCH,
+  QUESTIONS_PER_VISION_BATCH,
+  acceptQuestions,
+  finalizeComprehensiveQuestions,
+  finalizeQuizQuestions,
+  planComprehensiveBatches,
+  planQuizBatches,
+  questionKey,
+  readInQuizState,
+  readQuestionCandidates,
+  type QuizQuestion,
+} from "./quiz-questions";
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -57,26 +72,6 @@ Prioritize:
 5. concepts that require actual recall rather than recognition
 
 Avoid trivial wording, vague prompts, duplicate questions, questions whose answer is obvious from the question, and generic study advice. Answers should be concise but complete (normally under 60 words). Each card's topic must match the section/topic it came from.`;
-
-async function recentQuestions(supabase: any, setId: string): Promise<string[]> {
-  const { data } = await supabase
-    .from("quiz_attempts")
-    .select("results")
-    .eq("set_id", setId)
-    .order("created_at", { ascending: false })
-    .limit(15);
-  const qs: string[] = [];
-  for (const a of data ?? [])
-    for (const r of (a.results as AttemptResult[] | null) ?? []) if (r.q) qs.push(r.q);
-  return [...new Set(qs)].slice(0, 40);
-}
-
-const norm = (t: string) =>
-  t
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]+/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
 
 function splitPrimaryAndOptionalReadings(material: string): { lecture: string; readings: string | null } {
   const marker = "=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===";
@@ -307,23 +302,7 @@ export const saveRegenerateCardsStream = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-export type QuizQuestion = {
-  type: "mc" | "tf" | "short";
-  question: string;
-  options: string[];
-  answer: number;
-  answerText: string;
-  explanation: string;
-  topic: string;
-  setId?: string;
-  imageIndex?: number;
-  imageUrl?: string;
-  imageName?: string;
-  imagePath?: string;
-  imageKind?: "image" | "pdf" | "pptx" | "docx";
-  imageSourceIndex?: number;
-  imageDataUrl?: string;
-};
+export type { QuizQuestion } from "./quiz-questions";
 
 const DIFF = z.enum(["easy", "medium", "hard", "mixed"]);
 const QTYPE = z.enum(["mc", "tf", "short"]);
@@ -343,63 +322,60 @@ const QUALITY_RULES = `QUALITY RULES (mandatory):
 - When prior mistakes are supplied, retest the underlying concept with a different angle and provide a useful correction in the explanation; do not copy the original question.
 - For mixed difficulty, include a real spread of foundational, application, and challenging questions. Do not make every question difficult just by making its wording longer.`;
 
-function parseQuestions(text: string): QuizQuestion[] {
-  const parsed = parseJson<{ questions?: unknown }>(text);
-  const rawQuestions = parsed && typeof parsed === "object" && Array.isArray(parsed.questions) ? parsed.questions : [];
-  const out: QuizQuestion[] = [];
+const JSON_SHAPE =
+  '{"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"concise explanation of why the answer is right and the concept tested","topic":"short topic name (2-4 words)"}]}';
+
+/** Human-readable description of the accepted question types for a prompt. */
+function describeQuestionTypes(types: readonly ("mc" | "tf" | "short")[]): string {
+  return types
+    .map((type) =>
+      type === "mc"
+        ? '"mc" (multiple choice, 4 options)'
+        : type === "tf"
+          ? '"tf" (true/false, options ["True","False"])'
+          : '"short" (short answer, 1-2 sentence expected answer)',
+    )
+    .join(", ");
+}
+
+/**
+ * Questions from earlier quizzes, used ONLY as a soft prompt hint so the model
+ * leans toward fresh material. These are never fed to a rejection filter, which
+ * is what previously made a study set run out of usable questions.
+ */
+async function historyQuestionHints(supabase: any, setId: string): Promise<string[]> {
+  const { data } = await supabase
+    .from("quiz_attempts")
+    .select("results")
+    .eq("set_id", setId)
+    .order("created_at", { ascending: false })
+    .limit(8);
+  const qs: string[] = [];
+  for (const attempt of data ?? []) {
+    for (const result of (attempt.results as AttemptResult[] | null) ?? []) {
+      if (result.q) qs.push(result.q);
+    }
+  }
+  return [...new Set(qs)].slice(0, 24);
+}
+
+/** Case/punctuation-insensitive de-dupe of prompt hints (not a rejection filter). */
+function uniqueQuestionTexts(list: readonly string[], limit = 40): string[] {
   const seen = new Set<string>();
-  for (const raw of rawQuestions) {
-    if (!raw || typeof raw !== "object") continue;
-    const q = raw as Partial<QuizQuestion>;
-    if (!q?.question || typeof q.question !== "string" || !q.question.trim() || q.question.length > 2000) continue;
-    if (q.type !== "mc" && q.type !== "tf" && q.type !== "short") continue;
-    const type = q.type;
-    if (!Array.isArray(q.options) || q.options.some((option) => typeof option !== "string" || !option.trim() || option.length > 500)) continue;
-    const options = q.options.map((option) => option.trim());
-    const answer = typeof q.answer === "number" ? q.answer : Number.NaN;
-    const answerText = typeof q.answerText === "string" ? q.answerText.trim() : "";
-    const explanation = typeof q.explanation === "string" ? q.explanation.trim() : "";
-    // Reject malformed structures instead of silently showing incomplete or mis-keyed questions.
-    if (type === "mc" && (options.length !== 4 || !Number.isInteger(answer) || answer < 0 || answer >= 4)) continue;
-    if (type === "tf" && (options.length !== 2 || !Number.isInteger(answer) || answer < 0 || answer >= 2)) continue;
-    if (type === "short" && (!answerText || answerText.length > 2000 || options.length > 0 || q.answer !== -1)) continue;
-    if (type !== "short" && !answerText && !options[answer]) continue;
-    if (type === "mc" && new Set(options.map(norm)).size !== options.length) continue;
-    if (type === "tf" && (new Set(options.map(norm)).size !== 2 || !options.some((o) => norm(o) === "true") || !options.some((o) => norm(o) === "false"))) continue;
-    if (!explanation) continue;
-    const key = norm(q.question);
-    if (seen.has(key)) continue;
+  const out: string[] = [];
+  for (const text of list) {
+    const key = questionKey(text);
+    if (!key || seen.has(key)) continue;
     seen.add(key);
-    out.push({
-      type,
-      question: q.question.trim(),
-      options: type === "short" ? [] : options,
-      answer: type === "short" ? -1 : answer,
-      // For objective questions, the option indexed as correct is the single source of truth.
-      answerText: type === "short" ? answerText : options[answer]!,
-      explanation,
-      topic: typeof q.topic === "string" ? q.topic.trim().slice(0, 60) || "General" : "General",
-      ...(Number.isInteger(q.imageIndex) && Number(q.imageIndex) >= 0 && Number(q.imageIndex) < 3 ? { imageIndex: Number(q.imageIndex) } : {}),
-    });
+    out.push(text);
+    if (out.length >= limit) break;
   }
   return out;
 }
 
-function parseQuestionParts(text: string): QuizQuestion[] {
-  let parsed: { parts?: unknown } | null = null;
-  try { parsed = JSON.parse(text) as { parts?: unknown }; } catch { /* accept legacy top-level questions below */ }
-  if (!parsed || !Array.isArray(parsed.parts)) return parseQuestions(text);
-  const result: QuizQuestion[] = [];
-  const seen = new Set<string>();
-  for (const part of parsed.parts) {
-    if (!part || typeof part !== "object") continue;
-    const questions = parseQuestions(JSON.stringify({ questions: (part as { questions?: unknown }).questions }));
-    for (const question of questions) {
-      const key = norm(question.question);
-      if (!seen.has(key)) { seen.add(key); result.push(question); }
-    }
-  }
-  return result;
+/** Batch size that keeps one provider response small enough to stay valid JSON. */
+function batchCapacity(includeImages: boolean | undefined): number {
+  return includeImages ? QUESTIONS_PER_VISION_BATCH : QUESTIONS_PER_BATCH;
 }
 
 export const generateQuiz = createServerFn({ method: "POST" })
@@ -408,69 +384,99 @@ export const generateQuiz = createServerFn({ method: "POST" })
     z
       .object({
         setId: z.string().min(1).max(200),
-        count: z.number().int().min(3).max(50),
+        count: z.number().int().min(MIN_QUIZ_QUESTIONS).max(MAX_QUIZ_QUESTIONS),
         difficulty: DIFF,
         types: z.array(QTYPE).min(1),
         exam: z.boolean().optional(),
         questionGuidance: z.string().max(2000).optional(),
         plan: z
-          .array(z.object({ topic: z.string().max(80), count: z.number().int().min(1).max(50) }))
+          .array(z.object({ topic: z.string().max(80), count: z.number().int().min(1).max(MAX_QUIZ_QUESTIONS) }))
           .max(30)
           .optional(),
         lectureId: lectureIdField,
         includeImages: z.boolean().optional(),
         prepareOnly: z.boolean().optional(),
-        generatedText: z.string().min(20).max(100000).optional(),
+        /** This quiz's accepted questions so far, as {"parts":[{partIndex,questions}]}. */
+        generatedText: z.string().max(400000).optional(),
+        /** Replacement round; rotates which material part is asked next. */
+        round: z.number().int().min(0).max(400).optional(),
+        /** Parts that twice returned nothing usable and should be skipped. */
+        exhaustedParts: z.array(z.number().int().min(0).max(400)).max(400).optional(),
       })
       .parse(d),
   )
   .handler(async ({ data, context }) => {
     const set = await loadSet(context.supabase, data.setId, data.lectureId);
-    const avoid = await recentQuestions(context.supabase, set.id);
-    const retest = data.plan?.length && !data.lectureId
-      ? mistakeLines(await openMistakes(context.supabase, set.id, 8)) : [];
     const sourceParts = splitTextIntoChunks(set.material_text, 22000);
     if (!sourceParts.length) throw new Error("Add readable study material before generating questions.");
-    const priorParts = (() => {
-      try {
-        const parsed = JSON.parse(data.generatedText ?? "{}") as { parts?: { partIndex?: number; questions?: unknown[] }[] };
-        return new Map((parsed.parts ?? []).filter((part) => Number.isInteger(part.partIndex)).map((part) => [part.partIndex!, Array.isArray(part.questions) ? part.questions : []]));
-      } catch { return new Map<number, unknown[]>(); }
-    })();
-    const previouslyGenerated = data.generatedText ? parseQuestionParts(data.generatedText) : [];
-    const effectiveAvoid = [...avoid, ...previouslyGenerated.map((question) => question.question)];
-    let allocated = 0;
-    const partTargets = sourceParts.map((_, index) => {
-      const target = Math.ceil((data.count - allocated) / Math.max(1, sourceParts.length - index));
-      allocated += target;
-      return target;
-    });
-    const typeDesc = data.types.map((type) => type === "mc" ? '"mc" (multiple choice, 4 options)' : type === "tf" ? '"tf" (true/false, options ["True","False"])' : '"short" (short answer, 1-2 sentence expected answer)').join(", ");
-    const planText = data.plan?.length ? `\nADAPTIVE TOPIC PLAN — write this many questions per topic (use these exact topic names): ${data.plan.map((item) => `${item.topic}: ${item.count}`).join("; ")}. If a topic isn't in the material, use the closest topic.` : "";
-    if (data.prepareOnly) {
-      const prompts = sourceParts.flatMap((part, partIndex) => {
-        const already = priorParts.get(partIndex) ?? [];
-        const batchCount = Math.min(5, Math.max(0, (partTargets[partIndex] ?? 0) - already.length));
-        if (batchCount < 1) return [];
-        const imageRules = data.includeImages ? ` The user also supplied up to three actual lecture images in this request. You may create image-based questions only when the visual is clear and supports a reliable answer. Such a question MUST include imageIndex (0-based index matching the supplied image order); include the image's source filename in the question's context where useful. Questions may test visible labels, relationships, axes, trends, or processes. If a visual is unclear, decorative, or irrelevant, do not use it. Never invent details. Return questions based on the source material and images together.` : "";
-        const system = `You write ${data.exam ? "realistic practice exams" : "quizzes"} from study material. Return ONLY JSON: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"concise explanation of why the answer is right and the concept tested","topic":"short topic name (2-4 words)"}]}. Generate exactly ${batchCount} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}${data.difficulty === "mixed" ? " (blend easy, medium and hard)" : ""}. For mc/tf, answer is the zero-based correct option. For short, options must be [] and answer -1, with the model answer in answerText. Only use this source part. Vary the concepts tested. ${data.questionGuidance?.trim() ? `Student guidance: ${data.questionGuidance.trim().slice(0, 2000)}.` : ""}${imageRules}${QUALITY_RULES}${effectiveAvoid.length ? `\nDo not repeat recent or already generated questions:\n- ${effectiveAvoid.slice(0, 80).join("\n- ")}` : ""}${planText}${retest.length ? `\nMistake Bank concepts to retest with fresh wording:\n- ${retest.join("\n- ")}` : ""}${ci(set)}`;
-        return [{ partIndex, batchCount, system, messages: [{ role: "user" as const, content: `STUDY SET: ${set.name}\nMATERIAL PART ${partIndex + 1}/${sourceParts.length}:\n${part}` }] }];
+
+    if (!data.prepareOnly) {
+      // Finalization validates and de-duplicates WITHIN this quiz only. Earlier
+      // quizzes are not consulted, so they can never exhaust the study set.
+      const questions = finalizeQuizQuestions({
+        count: data.count,
+        ...(data.generatedText ? { generatedText: data.generatedText } : {}),
       });
-      return { prompts, complete: prompts.length === 0 };
+      return { questions };
     }
-    const questions = parseQuestionParts(data.generatedText ?? "").filter((question) => !new Set(avoid.map(norm)).has(norm(question.question))).slice(0, data.count);
-    if (questions.length !== data.count) throw new Error(`Momentum generated ${questions.length} of ${data.count} requested questions. Your material is preserved; retry generation to fill the missing questions.`);
-    return { questions };
+
+    const plan = planQuizBatches({
+      partCount: sourceParts.length,
+      count: data.count,
+      batchCap: batchCapacity(data.includeImages),
+      round: data.round ?? 0,
+      ...(data.generatedText ? { generatedText: data.generatedText } : {}),
+      ...(data.exhaustedParts?.length ? { exhaustedParts: data.exhaustedParts } : {}),
+    });
+
+    if (!plan.requests.length) {
+      return { prompts: [], complete: true, remaining: plan.remaining, accepted: plan.accepted };
+    }
+
+    const typeDesc = describeQuestionTypes(data.types);
+    const planText = data.plan?.length
+      ? `\nADAPTIVE TOPIC PLAN — write this many questions per topic (use these exact topic names): ${data.plan.map((item) => `${item.topic}: ${item.count}`).join("; ")}. If a topic isn't in the material, use the closest topic.`
+      : "";
+    const imageRules = data.includeImages
+      ? ` The user also supplied up to three actual lecture images in this request. You may create image-based questions only when the visual is clear and supports a reliable answer. Such a question MUST include imageIndex (0-based index matching the supplied image order); include the image's source filename in the question's context where useful. Questions may test visible labels, relationships, axes, trends, or processes. If a visual is unclear, decorative, or irrelevant, do not use it. Never invent details. Return questions based on the source material and images together.`
+      : "";
+    const retest = data.plan?.length && !data.lectureId
+      ? mistakeLines(await openMistakes(context.supabase, set.id, 8))
+      : [];
+    const avoidHints = uniqueQuestionTexts([
+      ...readInQuizState(data.generatedText).all.map((question) => question.question),
+      ...(await historyQuestionHints(context.supabase, set.id)),
+    ]);
+
+    const prompts = plan.requests.map((request) => {
+      const part = sourceParts[request.unit] ?? "";
+      const system = `You write ${data.exam ? "realistic practice exams" : "quizzes"} from study material. Return ONLY JSON: ${JSON_SHAPE}. Generate exactly ${request.batchCount} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}${data.difficulty === "mixed" ? " (blend easy, medium and hard)" : ""}. For mc/tf, answer is the zero-based correct option. For short, options must be [] and answer -1, with the model answer in answerText. Only use this source part. Vary the concepts tested. ${data.questionGuidance?.trim() ? `Student guidance: ${data.questionGuidance.trim().slice(0, 2000)}.` : ""}${imageRules}${QUALITY_RULES}${avoidHints.length ? `\nThis quiz already has ${plan.accepted} question(s). Write fresh questions that test different facts and ideas from these (do not merely reword them):\n- ${avoidHints.join("\n- ")}` : ""}${planText}${retest.length ? `\nMistake Bank concepts to retest with fresh wording:\n- ${retest.join("\n- ")}` : ""}${ci(set)}`;
+      return {
+        partIndex: request.unit,
+        batchCount: request.batchCount,
+        system,
+        messages: [{
+          role: "user" as const,
+          content: `STUDY SET: ${set.name}\nMATERIAL PART ${request.unit + 1}/${sourceParts.length}:\n${part}`,
+        }],
+      };
+    });
+
+    return { prompts, complete: prompts.length === 0, remaining: plan.remaining, accepted: plan.accepted };
   });
 
 export const prepareQuizReviewStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({
-    setId: z.string().min(1).max(200),
-    lectureId: lectureIdField,
-    questionGuidance: z.string().max(2000).optional(),
-    questions: z.array(z.unknown()).min(1).max(50),
-  }).parse(d))
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        setId: z.string().min(1).max(200),
+        lectureId: lectureIdField,
+        questionGuidance: z.string().max(2000).optional(),
+        questions: z.array(z.unknown()).min(1).max(MAX_QUIZ_QUESTIONS),
+      })
+      .parse(d),
+  )
   .handler(async ({ data, context }) => {
     const set = await loadSet(context.supabase, data.setId, data.lectureId);
     const extra = data.questionGuidance?.trim()
@@ -478,7 +484,10 @@ export const prepareQuizReviewStream = createServerFn({ method: "POST" })
       : "";
     return {
       system: `You are a strict exam reviewer. For each question, check it against the MATERIAL: is it supported, can the answer actually be determined from the material, is the marked answer correct, is there exactly one correct option (no other option arguably correct), are distractors plausible but wrong, is the explanation accurate and consistent with the answer, is it unambiguous, is it a duplicate of another? Fix problems in place; if a question can't be supported, REPLACE it with a better question on the same topic that is supported. Preserve the exact number of questions; do not drop questions. Keep the same JSON shape and type. Return ONLY JSON: {"questions":[...]}. ${QUALITY_RULES}${extra}${ci(set)}`,
-      messages: [{ role: "user" as const, content: `QUESTIONS:\n${JSON.stringify({ questions: data.questions })}\n\nMATERIAL:\n${clip(set.material_text, 35000)}` }],
+      messages: [{
+        role: "user" as const,
+        content: `QUESTIONS:\n${JSON.stringify({ questions: data.questions })}\n\nMATERIAL:\n${clip(set.material_text, 35000)}`,
+      }],
     };
   });
 
@@ -488,70 +497,87 @@ export const generateComprehensive = createServerFn({ method: "POST" })
     z
       .object({
         setIds: z.array(z.string().min(1).max(200)).min(2).max(10),
-        count: z.number().int().min(5).max(60),
+        count: z.number().int().min(5).max(MAX_QUIZ_QUESTIONS),
         difficulty: DIFF,
         types: z.array(QTYPE).min(1),
         questionGuidance: z.string().max(2000).optional(),
         prepareOnly: z.boolean().optional(),
-        generatedBySet: z.array(z.object({ setId: z.string().min(1).max(200), generatedText: z.string().min(20).max(100000) })).max(10).optional(),
+        /** Per-set accepted questions for this exam, as {"parts":[{partIndex,questions}]}. */
+        generatedBySet: z
+          .array(z.object({ setId: z.string().min(1).max(200), generatedText: z.string().min(2).max(400000) }))
+          .max(10)
+          .optional(),
+        round: z.number().int().min(0).max(400).optional(),
+        exhaustedSets: z.array(z.string().min(1).max(200)).max(10).optional(),
       })
       .parse(d),
   )
   .handler(async ({ data, context }) => {
     const sets = await Promise.all(data.setIds.map((id) => loadSet(context.supabase, id)));
-    const base = Math.floor(data.count / sets.length);
-    let extra = data.count - base * sets.length;
-    // Allocate every requested question across source sets; browser streams each batch.
-    const allocations = sets.map((set) => {
-      const count = base + (extra-- > 0 ? 1 : 0);
-      return { set, count };
+    const sourcePartsBySet = new Map<string, string[]>();
+    for (const set of sets) {
+      const parts = splitTextIntoChunks(set.material_text, 22000);
+      if (!parts.length) throw new Error(`Study set "${set.name}" has no readable source material.`);
+      sourcePartsBySet.set(set.id, parts);
+    }
+
+    if (!data.prepareOnly) {
+      const questions = finalizeComprehensiveQuestions({
+        count: data.count,
+        setIds: data.setIds,
+        types: data.types,
+        ...(data.generatedBySet ? { generatedBySet: data.generatedBySet } : {}),
+      });
+      return { questions };
+    }
+
+    const plan = planComprehensiveBatches({
+      sets: sets.map((set) => ({ id: set.id, partCount: sourcePartsBySet.get(set.id)?.length ?? 0 })),
+      count: data.count,
+      batchCap: QUESTIONS_PER_BATCH,
+      round: data.round ?? 0,
+      ...(data.generatedBySet ? { generatedBySet: data.generatedBySet } : {}),
+      ...(data.exhaustedSets?.length ? { exhaustedSets: data.exhaustedSets } : {}),
     });
-    const preparedPrompts: { setId: string; setName: string; partIndex: number; system: string; messages: { role: "user"; content: string }[]; batchCount: number }[] = [];
-    if (data.prepareOnly) {
-      for (const { set, count } of allocations) {
-        if (count < 1) continue;
-        const avoid = await recentQuestions(context.supabase, set.id);
-        const priorText = (data.generatedBySet ?? []).find((item) => item.setId === set.id)?.generatedText;
-        const priorParts = (() => {
-          try {
-            const parsed = JSON.parse(priorText ?? "{}") as { parts?: { partIndex?: number; questions?: unknown[] }[] };
-            return new Map((parsed.parts ?? []).filter((part) => Number.isInteger(part.partIndex)).map((part) => [part.partIndex!, Array.isArray(part.questions) ? part.questions : []]));
-          } catch { return new Map<number, unknown[]>(); }
-        })();
-        const priorQuestions = priorText ? parseQuestionParts(priorText) : [];
-        const effectiveAvoid = [...avoid, ...priorQuestions.map((question) => question.question)];
-        const sourceParts = splitTextIntoChunks(set.material_text, 22000);
-        if (!sourceParts.length) throw new Error(`Study set “${set.name}” has no readable source material.`);
-        let allocatedForSet = 0;
-        const partTargets = sourceParts.map((_, index) => {
-          const target = Math.ceil((count - allocatedForSet) / Math.max(1, sourceParts.length - index));
-          allocatedForSet += target;
-          return target;
-        });
-        const typeDesc = data.types.map((type) => type === "mc" ? '"mc" (multiple choice, 4 options)' : type === "tf" ? '"tf" (true/false, options ["True","False"])' : '"short" (short answer, 1-2 sentence expected answer)').join(", ");
-        for (let partIndex = 0; partIndex < sourceParts.length; partIndex += 1) {
-          const already = priorParts.get(partIndex) ?? [];
-          const batchCount = Math.min(5, Math.max(0, (partTargets[partIndex] ?? 0) - already.length));
-          if (batchCount < 1) continue;
-          const system = `You write realistic comprehensive practice exam questions from this study set. Return ONLY JSON: {"questions":[{"type":"mc","question":"...","options":["..","..","..",".."],"answer":0,"answerText":"the correct answer as text","explanation":"concise explanation","topic":"short topic name"}]}. Generate exactly ${batchCount} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}. For mc/tf, answer is the zero-based correct option. For short, options must be [] and answer -1, with the model answer in answerText. Only use this source part. Avoid duplicates and ensure one defensible correct answer. ${data.questionGuidance?.trim() ? `Student guidance: ${data.questionGuidance.trim().slice(0, 2000)}.` : ""}${QUALITY_RULES}${effectiveAvoid.length ? `\nDo not repeat recent or already generated questions:\n- ${effectiveAvoid.slice(0, 80).join("\n- ")}` : ""}${ci(set)}`;
-          preparedPrompts.push({ setId: set.id, setName: set.name, partIndex, system, messages: [{ role: "user", content: `STUDY SET: ${set.name}\nMATERIAL PART ${partIndex + 1}/${sourceParts.length}:\n${sourceParts[partIndex]}` }], batchCount });
-        }
-      }
-      return { prompts: preparedPrompts };
+
+    if (!plan.requests.length) {
+      return { prompts: [], complete: true, remaining: plan.remaining, accepted: plan.accepted };
     }
-    const generatedMap = new Map((data.generatedBySet ?? []).map((item) => [item.setId, item.generatedText]));
-    const questions: QuizQuestion[] = [];
-    for (const { set, count } of allocations) {
-      if (count < 1) continue;
-      const generatedText = generatedMap.get(set.id);
-      const generated = generatedText ? parseQuestionParts(generatedText) : [];
-      const avoid = await recentQuestions(context.supabase, set.id);
-      const unique = generated.filter((question) => !new Set(avoid.map(norm)).has(norm(question.question))).slice(0, count);
-      if (unique.length !== count) throw new Error(`Momentum generated ${unique.length} of ${count} requested questions for “${set.name}”. Your material is preserved; retry generation to fill the missing questions.`);
-      questions.push(...unique.map((question) => ({ ...question, setId: set.id })));
+
+    const typeDesc = describeQuestionTypes(data.types);
+    const texts = new Map((data.generatedBySet ?? []).map((item) => [item.setId, item.generatedText]));
+    const prompts: {
+      setId: string;
+      setName: string;
+      partIndex: number;
+      system: string;
+      messages: { role: "user"; content: string }[];
+      batchCount: number;
+    }[] = [];
+
+    for (const request of plan.requests) {
+      const set = sets.find((item) => item.id === request.setId);
+      if (!set) continue;
+      const sourceParts = sourcePartsBySet.get(set.id) ?? [];
+      const avoidHints = uniqueQuestionTexts([
+        ...readInQuizState(texts.get(set.id)).all.map((question) => question.question),
+        ...(await historyQuestionHints(context.supabase, set.id)),
+      ]);
+      const system = `You write realistic comprehensive practice exam questions from this study set. Return ONLY JSON: ${JSON_SHAPE}. Generate exactly ${request.batchCount} questions. Allowed types: ${typeDesc}; mix them roughly evenly. Difficulty: ${data.difficulty}. For mc/tf, answer is the zero-based correct option. For short, options must be [] and answer -1, with the model answer in answerText. Only use this source part. Avoid duplicates and ensure one defensible correct answer. ${data.questionGuidance?.trim() ? `Student guidance: ${data.questionGuidance.trim().slice(0, 2000)}.` : ""}${QUALITY_RULES}${avoidHints.length ? `\nThis exam already has ${plan.accepted} question(s) across all selected sets. Write fresh questions that test different facts and ideas from these (do not merely reword them):\n- ${avoidHints.join("\n- ")}` : ""}${ci(set)}`;
+      prompts.push({
+        setId: set.id,
+        setName: set.name,
+        partIndex: request.partIndex,
+        batchCount: request.batchCount,
+        system,
+        messages: [{
+          role: "user",
+          content: `STUDY SET: ${set.name}\nMATERIAL PART ${request.partIndex + 1}/${sourceParts.length}:\n${sourceParts[request.partIndex] ?? ""}`,
+        }],
+      });
     }
-    if (questions.length !== data.count) throw new Error(`Momentum generated ${questions.length} of ${data.count} requested questions. Your material is preserved.`);
-    return { questions };
+
+    return { prompts, complete: prompts.length === 0, remaining: plan.remaining, accepted: plan.accepted };
   });
 
 export type RecallQuestion = { question: string; topic: string };
@@ -562,7 +588,7 @@ export const prepareRecallQuestionsStream = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), count: z.number().int().min(1).max(20), focus: z.array(z.string().max(80)).max(10), difficulty: DIFF.optional(), lectureId: lectureIdField }).parse(d))
   .handler(async ({ data, context }) => {
     const set = await loadSet(context.supabase, data.setId, data.lectureId);
-    const avoid = await recentQuestions(context.supabase, set.id);
+    const avoid = await historyQuestionHints(context.supabase, set.id);
     const retest = data.lectureId ? [] : mistakeLines(await openMistakes(context.supabase, set.id, 6));
     return {
       system: `You write active-recall questions: open questions a student must answer from memory in 1-4 sentences (explain, define, compare, why/how). No multiple choice, no yes/no. Return ONLY JSON: {"questions":[{"question":"...","topic":"short topic name (2-4 words)"}]}. Exactly ${data.count} questions, all different from each other. Every question must be answerable from the material alone, with one clear expected answer; don't ask about anything not in the material.${data.difficulty ? ` Difficulty: ${data.difficulty}.` : ""}${avoid.length ? ` Do not repeat these recent questions: ${avoid.slice(0, 30).join(" | ")}.` : ""}${ci(set)}${data.focus.length ? ` Prioritize these weak topics (about half the questions), using these exact topic names: ${data.focus.join(", ")}.` : ""}${retest.length ? ` Mistake Bank — the student repeatedly missed these concepts; re-test 1-3 of them with fresh wording: ${retest.join(" | ")}.` : ""}`,
@@ -756,9 +782,10 @@ Use the app's tools in tasks: "Notes", "Study Guide", "Mistake Bank", "Flashcard
     const plan = rawDays.map((day): PlanDay | null => {
       if (!day || typeof day !== "object") return null;
       const item = day as Record<string, unknown>;
-      if (typeof item.date !== "string" || typeof item.title !== "string" || !Array.isArray(item.tasks)) return null;
-      if (!item.tasks.every((task) => typeof task === "string" && task.trim().length > 0 && task.length <= 500)) return null;
-      return { date: item.date, title: item.title.trim(), tasks: item.tasks.map((task) => (task as string).trim()) };
+      if (typeof item["date"] !== "string" || typeof item["title"] !== "string" || !Array.isArray(item["tasks"])) return null;
+      if (!(item["tasks"] as unknown[]).every((task) => typeof task === "string" && task.trim().length > 0 && task.length <= 500)) return null;
+      const taskList = item["tasks"] as unknown[];
+      return { date: item["date"], title: String(item["title"]).trim(), tasks: taskList.map((task) => String(task).trim()) };
     });
     if (plan.length !== n || plan.some((day) => day === null)) throw new Error("The generated plan was incomplete. Please generate it again.");
     const validPlan = plan as PlanDay[];

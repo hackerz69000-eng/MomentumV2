@@ -146,8 +146,8 @@ export async function initializeProgressionSync(userId: string): Promise<() => v
           payload.xp = revisionAdvanced ? number(latest.xp) : Math.max(current.xp, number(latest.xp));
           payload.streak_data = mergeStreak(current.streak_data, (latest.streak_data as JsonRecord | null) ?? {});
           payload.freeze_data = {
-            available: Math.max(number(current.freeze_data.available), number((latest.freeze_data as JsonRecord | null)?.available)),
-            used: Math.max(number(current.freeze_data.used), number((latest.freeze_data as JsonRecord | null)?.used)),
+            available: Math.max(number(current.freeze_data["available"]), number((latest.freeze_data as JsonRecord | null)?.["available"])),
+            used: Math.max(number(current.freeze_data["used"]), number((latest.freeze_data as JsonRecord | null)?.["used"])),
           };
           payload.reward_announcements = [...new Set([...current.reward_announcements, ...parseArray(latest.reward_announcements)])];
           payload.activity_ids = [...new Set([...current.activity_ids, ...parseArray(latest.activity_ids)])].slice(-5000);

@@ -52,9 +52,7 @@ describe("standard quiz generation when image questions are off", () => {
       return Promise.resolve({ questions });
     });
     mocks.prepareQuizReviewStream.mockResolvedValue({ system: "review", messages: [{ role: "user", content: "review these" }] });
-    mocks.streamAiJson.mockImplementation(async ({ system }: { system: string }) => system === "quiz"
-      ? questions
-      : questions);
+    mocks.streamAiText.mockImplementation(async () => JSON.stringify({ questions }));
 
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const set = { id: "set-1", name: "Biology", user_id: "user-1", material_text: "Cells" } as StudySet;
@@ -64,8 +62,8 @@ describe("standard quiz generation when image questions are off", () => {
     expect(await screen.findByText("Question 1")).toBeInTheDocument();
     expect(mocks.from).not.toHaveBeenCalled();
     expect(mocks.generateQuiz).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ includeImages: false }) }));
-    expect(mocks.streamAiJson).toHaveBeenCalledWith(expect.objectContaining({ task: "fast" }));
-    expect(mocks.streamAiJson).not.toHaveBeenCalledWith(expect.objectContaining({ task: "vision" }));
+    expect(mocks.streamAiText).toHaveBeenCalledWith(expect.objectContaining({ task: "fast" }));
+    expect(mocks.streamAiText).not.toHaveBeenCalledWith(expect.objectContaining({ task: "vision" }));
     expect(mocks.prepareQuizReviewStream).toHaveBeenCalledTimes(1);
   });
 
@@ -83,7 +81,7 @@ describe("standard quiz generation when image questions are off", () => {
       if (data.prepareOnly) return Promise.resolve({ prompts: data.generatedText ? [] : [{ partIndex: 0, batchCount: 3, system: "vision-quiz", messages: [{ role: "user", content: "lecture text" }] }] });
       return Promise.resolve({ questions: Array.from({ length: 3 }, (_, index) => ({ ...question, question: `${question.question} ${index + 1}` })) });
     });
-    mocks.streamAiJson.mockResolvedValue([question, { ...question, question: "Question 2" }, { ...question, question: "Question 3" }]);
+    mocks.streamAiText.mockResolvedValue(JSON.stringify({ questions: [question, { ...question, question: "Question 2" }, { ...question, question: "Question 3" }] }));
 
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const set = { id: "set-1", name: "Biology", user_id: "user-1", material_text: "Cells" } as StudySet;
@@ -93,7 +91,7 @@ describe("standard quiz generation when image questions are off", () => {
 
     expect(await screen.findAllByRole("img", { name: "Lecture image: cell.png" })).not.toHaveLength(0);
     expect(mocks.generateQuiz).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ includeImages: true }) }));
-    expect(mocks.streamAiJson).toHaveBeenCalledWith(expect.objectContaining({ task: "vision" }));
+    expect(mocks.streamAiText).toHaveBeenCalledWith(expect.objectContaining({ task: "vision" }));
     expect(mocks.prepareQuizReviewStream).not.toHaveBeenCalled();
   });
 });

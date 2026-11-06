@@ -123,7 +123,7 @@ export const Route = createFileRoute("/api/ai-stream")({
             }
           } catch (error) {
             lastStatus = request.signal.aborted ? 499 : 502;
-            try { await completeProviderUsage(supabase, reservation, request.signal.aborted ? "cancelled" : "failure"); }
+            try { if (reservation) await completeProviderUsage(supabase, reservation, request.signal.aborted ? "cancelled" : "failure"); }
             catch { return json({ error: "The AI request ran, but its usage could not be finalized. Wait a moment before retrying." }, 503); }
             reservation = null;
             if (request.signal.aborted) return json({ error: "The AI request was cancelled." }, 499);

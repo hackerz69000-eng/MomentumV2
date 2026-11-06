@@ -13,6 +13,14 @@ import {
   prepareGradeShortAnswersStream,
   type QuizQuestion,
 } from "@/lib/study.functions";
+import {
+  MAX_GENERATION_ROUNDS,
+  MAX_STALLED_ROUNDS,
+  QuizQuestionRegistry,
+  acceptQuestions,
+  readQuestionCandidates,
+  serializeInQuizState,
+} from "@/lib/quiz-questions";
 import { logActivity } from "@/lib/log-activity";
 import { recordResults } from "@/lib/mistakes";
 import { ExplainWhy } from "./ExplainWhy";
@@ -53,6 +61,71 @@ function prepare(qs: QuizQuestion[]): QuizQuestion[] {
     const order = shuffle(q.options.map((_, i) => i));
     return { ...q, options: order.map((i) => q.options[i]!), answer: order.indexOf(q.answer) };
   });
+}
+
+/**
+ * Partial generation is persisted per quiz, so an interrupted or short run can
+ * be resumed (Retry) instead of starting over. Only accepted questions are
+ * stored, and the key includes the exact settings used.
+ */
+type GenerationSnapshot = {
+  single?: { partIndex: number; questions: QuizQuestion[] }[];
+  comprehensive?: { setId: string; parts: { partIndex: number; questions: QuizQuestion[] }[] }[];
+};
+
+function loadGenerationSnapshot(key: string): GenerationSnapshot | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as GenerationSnapshot;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveGenerationSnapshot(key: string, snapshot: GenerationSnapshot) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(snapshot));
+  } catch {
+    /* Storage can be unavailable or full; generation still continues. */
+  }
+}
+
+function clearGenerationSnapshot(key: string) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Stream one provider batch, retrying transient failures a bounded number of
+ * times. A single timed-out or truncated batch must never destroy a quiz that
+ * already holds valid questions.
+ */
+const MAX_BATCH_ATTEMPTS = 3;
+async function retryableStream(args: {
+  system: string;
+  messages: any;
+  task: "vision" | "fast";
+  signal: AbortSignal;
+  onDelta?: (chunk: string) => void;
+}): Promise<string> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < MAX_BATCH_ATTEMPTS; attempt += 1) {
+    try {
+      return await streamAiText({ ...args, jsonMode: true });
+    } catch (error) {
+      if (args.signal.aborted) throw error;
+      lastError = error;
+      if (attempt < MAX_BATCH_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("The AI request failed.");
 }
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -143,6 +216,7 @@ export function QuizRunner({
   const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
   const [draftReady, setDraftReady] = useState(false);
   const draftKey = `momentum:quiz-draft:v1:${user?.id ?? "guest"}:${kind}:${comprehensive ? (sets ?? []).map((s) => s.id).sort().join(",") : set?.id ?? "no-set"}:${lectureId ?? ""}`;
+  const genKey = `${draftKey}:gen:${settings.count}:${settings.difficulty}:${[...settings.types].sort().join("-")}:${settings.includeImages ? 1 : 0}`;
   const [answers, setAnswers] = useState<Answer[]>([]);
   const [current, setCurrent] = useState(0);
   const [graded, setGraded] = useState<Graded[] | null>(null);
@@ -250,86 +324,220 @@ export function QuizRunner({
       }
       let res: { questions: QuizQuestion[] };
       setStreamedQuestions("");
+      const snapshot = loadGenerationSnapshot(genKey);
       if (comprehensive) {
-        const input = { setIds: (sets ?? []).map((s) => s.id), count: settings.count, difficulty: settings.difficulty, types: settings.types, questionGuidance: settings.questionGuidance.trim() || undefined };
-        let batchPlan = await genComp({ data: { ...input, prepareOnly: true } });
-        if (!("prompts" in batchPlan)) throw new Error("Couldn't prepare the comprehensive exam.");
-        const generatedBySet = new Map<string, Map<number, unknown[]>>();
-        let rounds = 0;
-        while (true) {
-          if (++rounds > 12) throw new Error("Comprehensive exam generation exceeded the safe batch limit. Please retry.");
-          if (!batchPlan.prompts.length) break;
-          let progress = 0;
-          for (const prompt of batchPlan.prompts) {
-            const batch = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk), validate: (value) => {
-              if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The generated exam batch was not valid JSON.");
-              return (value as { questions: unknown[] }).questions;
-            }});
-            if (!batch.length) throw new Error(`NVIDIA returned an empty question batch for ${prompt.setName}.`);
-            const acceptedBatch = batch.slice(0, prompt.batchCount);
-            const parts = generatedBySet.get(prompt.setId) ?? new Map<number, unknown[]>();
-            const current = parts.get(prompt.partIndex) ?? [];
-            parts.set(prompt.partIndex, [...current, ...acceptedBatch]);
-            generatedBySet.set(prompt.setId, parts);
-            progress += acceptedBatch.length;
-          }
-          if (!progress) throw new Error("Comprehensive exam generation made no progress.");
-          const prior = [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, generatedText: JSON.stringify({ parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) }) }));
-          batchPlan = await genComp({ data: { ...input, prepareOnly: true, generatedBySet: prior } });
-          if (!("prompts" in batchPlan)) throw new Error("Couldn't prepare the next comprehensive exam batch.");
+        const input = {
+          setIds: (sets ?? []).map((s) => s.id),
+          count: settings.count,
+          difficulty: settings.difficulty,
+          types: settings.types,
+          questionGuidance: settings.questionGuidance.trim() || undefined,
+        };
+        // One registry for the whole exam: accepted questions are the only ones
+        // that count, and nothing accepted twice can reach the exam.
+        const registry = new QuizQuestionRegistry();
+        const generatedBySet = new Map<string, Map<number, QuizQuestion[]>>(
+          (snapshot?.comprehensive ?? []).map((entry) => [
+            entry.setId,
+            new Map<number, QuizQuestion[]>(entry.parts.map((part) => [part.partIndex, part.questions])),
+          ]),
+        );
+        for (const parts of generatedBySet.values()) {
+          for (const list of parts.values()) for (const question of list) registry.register(question.question);
         }
-        const generated = await genComp({ data: { ...input, generatedBySet: [...generatedBySet.entries()].map(([setId, parts]) => ({ setId, generatedText: JSON.stringify({ parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) }) })) } });
+        const exhaustedSets = new Set<string>();
+        let rounds = 0;
+        let stalled = 0;
+        while (rounds < MAX_GENERATION_ROUNDS && exhaustedSets.size < (sets ?? []).length) {
+          const prior = [...generatedBySet.entries()].map(([setId, parts]) => ({
+            setId,
+            generatedText: serializeInQuizState(parts),
+          }));
+          const batchPlan = await genComp({
+            data: { ...input, prepareOnly: true, generatedBySet: prior, round: rounds, exhaustedSets: [...exhaustedSets] },
+          });
+          if (!("prompts" in batchPlan)) throw new Error("Couldn't prepare the comprehensive exam.");
+          if (!batchPlan.prompts.length) break;
+          rounds += 1;
+          let roundAccepted = 0;
+          for (const prompt of batchPlan.prompts) {
+            const parts = generatedBySet.get(prompt.setId) ?? new Map<number, QuizQuestion[]>();
+            let text: string;
+            try {
+              text = await retryableStream({
+                system: prompt.system,
+                messages: prompt.messages,
+                task: "fast",
+                signal: controller.signal,
+                onDelta: (chunk) => setStreamedQuestions((old) => old + chunk),
+              });
+            } catch {
+              // Keep the batches already accepted; the next round asks for the
+              // remainder again instead of failing the whole exam.
+              if (controller.signal.aborted) throw new Error("Comprehensive exam generation was cancelled.");
+              continue;
+            }
+            const accepted = acceptQuestions(readQuestionCandidates(text), registry, {
+              limit: prompt.batchCount,
+              types: input.types,
+            });
+            if (accepted.questions.length) {
+              parts.set(prompt.partIndex, [...(parts.get(prompt.partIndex) ?? []), ...accepted.questions]);
+              generatedBySet.set(prompt.setId, parts);
+              roundAccepted += accepted.questions.length;
+            } else if (stalled >= 1) {
+              // This set returned nothing usable twice — stop asking it so the
+              // remaining sets can still fill the exam.
+              exhaustedSets.add(prompt.setId);
+            }
+            saveGenerationSnapshot(genKey, {
+              comprehensive: [...generatedBySet.entries()].map(([setId, parts]) => ({
+                setId,
+                parts: [...parts.entries()].map(([partIndex, questions]) => ({ partIndex, questions })),
+              })),
+            });
+          }
+          if (registry.size >= input.count) break;
+          if (!roundAccepted) {
+            stalled += 1;
+            if (stalled >= MAX_STALLED_ROUNDS) break;
+          } else stalled = 0;
+        }
+        const generated = await genComp({
+          data: {
+            ...input,
+            generatedBySet: [...generatedBySet.entries()].map(([setId, parts]) => ({
+              setId,
+              generatedText: serializeInQuizState(parts),
+            })),
+          },
+        });
         if (!("questions" in generated)) throw new Error("The comprehensive exam could not be finalized.");
         res = { questions: generated.questions };
+        clearGenerationSnapshot(genKey);
       } else {
-        const input = { setId: set!.id, count: settings.count, difficulty: settings.difficulty, types: settings.types, exam, plan: plan.length ? plan : undefined, lectureId, questionGuidance: settings.questionGuidance.trim() || undefined, includeImages: quizImages.length > 0 };
-        const generatedByPart = new Map<number, unknown[]>();
-        setStreamedQuestions("");
+        const input = {
+          setId: set!.id,
+          count: settings.count,
+          difficulty: settings.difficulty,
+          types: settings.types,
+          exam,
+          plan: plan.length ? plan : undefined,
+          lectureId,
+          questionGuidance: settings.questionGuidance.trim() || undefined,
+          includeImages: quizImages.length > 0,
+        };
+        const registry = new QuizQuestionRegistry();
+        const generatedByPart = new Map<number, QuizQuestion[]>(
+          (snapshot?.single ?? []).map((part) => [part.partIndex, part.questions]),
+        );
+        for (const list of generatedByPart.values()) for (const question of list) registry.register(question.question);
+        const exhaustedParts = new Set<number>();
         let rounds = 0;
-        while (true) {
-          if (++rounds > 20) throw new Error("Quiz generation exceeded the safe batch limit. Please retry.");
-          const priorText = generatedByPart.size ? JSON.stringify({ parts: [...generatedByPart.entries()].map(([partIndex, questions]) => ({ partIndex, questions })) }) : undefined;
-          const prepared = await gen({ data: { ...input, prepareOnly: true, generatedText: priorText } });
-          if (!("prompts" in prepared) || !prepared.prompts.length) break;
-          let progress = 0;
-          for (const prompt of prepared.prompts) {
-            const messages = quizImages.length ? [{ role: "user" as const, content: [
-              { type: "text" as const, text: `${prompt.messages[0]?.content ?? ""}\n\nThe images are attached in this exact order: ${quizImages.map((_, index) => `imageIndex ${index}`).join(", ")}. Use the matching imageIndex only for a question grounded in that image.` },
-              ...quizImages.map((image) => ({ type: "image_url" as const, image_url: { url: image.data } })),
-            ] }] : prompt.messages;
-            const batch = await streamAiJson({ system: prompt.system, messages, task: quizImages.length ? "vision" : "fast", signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => old + chunk), validate: (value) => {
-              if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The generated quiz batch was not valid JSON.");
-              return (value as { questions: unknown[] }).questions;
-            }});
-            const acceptedBatch = batch.slice(0, prompt.batchCount);
-            if (!acceptedBatch.length) throw new Error("NVIDIA returned an empty quiz batch.");
-            generatedByPart.set(prompt.partIndex, [...(generatedByPart.get(prompt.partIndex) ?? []), ...acceptedBatch]);
-            progress += acceptedBatch.length;
-          }
-          if (!progress) throw new Error("Quiz generation made no progress.");
-        }
-        const generatedQuestions = [...generatedByPart.values()].flat();
-        if (generatedQuestions.length < input.count) throw new Error(`Only ${generatedQuestions.length} of ${input.count} questions were generated. Please retry.`);
-        let finalQuestions = generatedQuestions;
-        if (!exam) {
-          const imageQuestions = generatedQuestions.filter((q) => {
-            const index = q && typeof q === "object" ? (q as { imageIndex?: number }).imageIndex : undefined;
-            return quizImages.length > 0 && Number.isInteger(index) && index! >= 0 && index! < quizImages.length;
+        let stalled = 0;
+        while (rounds < MAX_GENERATION_ROUNDS) {
+          const generatedText = generatedByPart.size ? serializeInQuizState(generatedByPart) : undefined;
+          const prepared = await gen({
+            data: {
+              ...input,
+              prepareOnly: true,
+              ...(generatedText ? { generatedText } : {}),
+              round: rounds,
+              exhaustedParts: [...exhaustedParts],
+            },
           });
-          const textQuestions = generatedQuestions.filter((q) => !imageQuestions.includes(q));
-          const reviewPrompt = textQuestions.length ? await reviewPrepare({ data: { setId: input.setId, lectureId, questionGuidance: input.questionGuidance, questions: textQuestions } }) : null;
-          const reviewedQuestions = reviewPrompt ? await streamAiJson({ system: reviewPrompt.system, messages: reviewPrompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)), validate: (value) => {
-            if (!value || typeof value !== "object" || !Array.isArray((value as { questions?: unknown }).questions)) throw new Error("The quiz review response was not valid.");
-            return (value as { questions: unknown[] }).questions;
-          }}) : [];
-          finalQuestions = [...reviewedQuestions, ...imageQuestions];
-          if (finalQuestions.length !== input.count) throw new Error(`The quiz review returned ${finalQuestions.length} of ${input.count} questions. Nothing was saved; please retry.`);
+          if (!("prompts" in prepared) || !prepared.prompts.length) break;
+          rounds += 1;
+          let roundAccepted = 0;
+          for (const prompt of prepared.prompts) {
+            const messages = quizImages.length
+              ? [{
+                  role: "user" as const,
+                  content: [
+                    { type: "text" as const, text: `${prompt.messages[0]?.content ?? ""}\n\nThe images are attached in this exact order: ${quizImages.map((_, index) => `imageIndex ${index}`).join(", ")}. Use the matching imageIndex only for a question grounded in that image.` },
+                    ...quizImages.map((image) => ({ type: "image_url" as const, image_url: { url: image.data } })),
+                  ],
+                }]
+              : prompt.messages;
+            let text: string;
+            try {
+              text = await retryableStream({
+                system: prompt.system,
+                messages,
+                task: quizImages.length ? "vision" : "fast",
+                signal: controller.signal,
+                onDelta: (chunk) => setStreamedQuestions((old) => old + chunk),
+              });
+            } catch {
+              // Validation never sees the failed batch, so nothing is credited.
+              // Earlier batches stay accepted and the remainder is re-requested.
+              if (controller.signal.aborted) throw new Error("Quiz generation was cancelled.");
+              continue;
+            }
+            // Validate before counting: partial or malformed answers never inflate progress.
+            const accepted = acceptQuestions(readQuestionCandidates(text), registry, {
+              limit: prompt.batchCount,
+              types: input.types,
+            });
+            if (accepted.questions.length) {
+              generatedByPart.set(prompt.partIndex, [...(generatedByPart.get(prompt.partIndex) ?? []), ...accepted.questions]);
+              roundAccepted += accepted.questions.length;
+            } else if (stalled >= 1) {
+              exhaustedParts.add(prompt.partIndex);
+            }
+            saveGenerationSnapshot(genKey, {
+              single: [...generatedByPart.entries()].map(([partIndex, questions]) => ({ partIndex, questions })),
+            });
+          }
+          if (registry.size >= input.count) break;
+          if (!roundAccepted) {
+            stalled += 1;
+            if (stalled >= MAX_STALLED_ROUNDS) break;
+          } else stalled = 0;
         }
-        const generatedText = JSON.stringify({ parts: [{ partIndex: 0, questions: finalQuestions }] });
+
+        let finalQuestions = [...generatedByPart.values()].flat();
+        if (!exam && finalQuestions.length === input.count) {
+          // The review pass can only improve the set: if it loses questions or
+          // returns something unusable, the validated originals are kept.
+          const imageQuestions = finalQuestions.filter((q) => quizImages.length > 0 && Number.isInteger(q.imageIndex));
+          const textQuestions = finalQuestions.filter((q) => !imageQuestions.includes(q));
+          if (textQuestions.length) {
+            try {
+              const reviewPrompt = await reviewPrepare({
+                data: { setId: input.setId, lectureId, questionGuidance: input.questionGuidance, questions: textQuestions },
+              });
+              const reviewText = await retryableStream({
+                system: reviewPrompt.system,
+                messages: reviewPrompt.messages,
+                task: "fast",
+                signal: controller.signal,
+                onDelta: (chunk) => setStreamedQuestions((old) => `${old}${chunk}`.slice(-12000)),
+              });
+              const reviewRegistry = new QuizQuestionRegistry(imageQuestions.map((q) => ({ question: q.question })));
+              const reviewed = acceptQuestions(readQuestionCandidates(reviewText), reviewRegistry, {
+                limit: textQuestions.length,
+                types: input.types,
+              });
+              if (reviewed.questions.length === textQuestions.length) {
+                finalQuestions = [...reviewed.questions, ...imageQuestions];
+              }
+            } catch { /* review is optional; validated originals stay */ }
+          }
+        }
+
+        if (finalQuestions.length < input.count) {
+          throw new Error(
+            `Momentum generated ${finalQuestions.length} of ${input.count} questions. Your progress is saved — press Retry generation to fill the remaining ${input.count - finalQuestions.length}.`,
+          );
+        }
+        const generatedText = JSON.stringify({ parts: [{ partIndex: 0, questions: finalQuestions.slice(0, input.count) }] });
         const generated = await gen({ data: { ...input, generatedText } });
         if (!("questions" in generated)) throw new Error("The quiz questions could not be finalized.");
         res = { questions: attachQuizVisuals(generated.questions, quizImages) };
+        clearGenerationSnapshot(genKey);
       }
+
       const qs = prepare(res.questions);
       setQuestions(qs);
       setAnswers(qs.map(() => null));
@@ -582,10 +790,10 @@ export function QuizRunner({
             value={settings.count}
             onChange={(count) => setSettings((s) => ({ ...s, count }))}
             options={(comprehensive
-              ? [10, 20, 30, 40, 60]
+              ? [10, 20, 30, 40, 50, 60]
               : exam
-                ? [10, 20, 30, 50]
-                : [5, 10, 20, 30]
+                ? [10, 20, 30, 40, 50, 60]
+                : [5, 10, 20, 30, 40, 50, 60]
             ).map((v) => ({ v, l: String(v) }))}
           />
           <Chips

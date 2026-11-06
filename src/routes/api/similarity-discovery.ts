@@ -111,7 +111,7 @@ async function pinnedFetch(url: URL, headers: Record<string, string>, signal: Ab
       lookup: pinnedLookup,
       signal,
       ...(url.protocol === "https:" && !isIP(hostname) ? { servername: hostname } : {}),
-    }, (res) => {
+    }, (res: import("node:http").IncomingMessage) => {
       const chunks: Buffer[] = [];
       let size = 0;
       res.on("data", (chunk: Buffer | string) => {

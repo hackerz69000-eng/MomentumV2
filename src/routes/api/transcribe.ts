@@ -97,7 +97,7 @@ export const Route = createFileRoute("/api/transcribe")({
         let form: FormData;
         try {
           const bytes = await readBodyLimited(request, MAX_FILE + 128 * 1024);
-          const body = new Blob([bytes], { type: request.headers.get("content-type") ?? "" });
+          const body = new Blob([bytes as unknown as ArrayBuffer], { type: request.headers.get("content-type") ?? "" });
           const boundedRequest = new Request(request.url, { method: "POST", headers: request.headers, body });
           form = await boundedRequest.formData();
         } catch (error) {
