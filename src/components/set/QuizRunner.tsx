@@ -17,6 +17,7 @@ import {
   MAX_GENERATION_ROUNDS,
   MAX_STALLED_ROUNDS,
   QuizQuestionRegistry,
+  acceptLimit,
   acceptQuestions,
   readQuestionCandidates,
   serializeInQuizState,
@@ -378,7 +379,7 @@ export function QuizRunner({
               continue;
             }
             const accepted = acceptQuestions(readQuestionCandidates(text), registry, {
-              limit: prompt.batchCount,
+              limit: acceptLimit(prompt.batchCount, input.count, registry.size),
               types: input.types,
             });
             if (accepted.questions.length) {
@@ -412,8 +413,18 @@ export function QuizRunner({
             })),
           },
         });
-        if (!("questions" in generated)) throw new Error("The comprehensive exam could not be finalized.");
-        res = { questions: generated.questions };
+        const localPool = [...generatedBySet.values()].flatMap((parts) => [...parts.values()].flat());
+        if (!("questions" in generated) || !generated.questions.length) {
+          if (!localPool.length) throw new Error("The comprehensive exam could not be finalized.");
+          res = { questions: localPool.slice(0, input.count) };
+        } else {
+          res = { questions: generated.questions };
+        }
+        if (res.questions.length < input.count) {
+          toast.warning(
+            `Generated ${res.questions.length} of ${input.count} exam questions. You can start now, or retry for the rest.`,
+          );
+        }
         clearGenerationSnapshot(genKey);
       } else {
         const input = {
@@ -476,7 +487,7 @@ export function QuizRunner({
             }
             // Validate before counting: partial or malformed answers never inflate progress.
             const accepted = acceptQuestions(readQuestionCandidates(text), registry, {
-              limit: prompt.batchCount,
+              limit: acceptLimit(prompt.batchCount, input.count, registry.size),
               types: input.types,
             });
             if (accepted.questions.length) {
@@ -526,15 +537,32 @@ export function QuizRunner({
           }
         }
 
-        if (finalQuestions.length < input.count) {
+        if (!finalQuestions.length) {
           throw new Error(
-            `Momentum generated ${finalQuestions.length} of ${input.count} questions. Your progress is saved — press Retry generation to fill the remaining ${input.count - finalQuestions.length}.`,
+            "Momentum couldn't produce a usable question from this material. Add more study material, or try a different question type.",
           );
         }
-        const generatedText = JSON.stringify({ parts: [{ partIndex: 0, questions: finalQuestions.slice(0, input.count) }] });
-        const generated = await gen({ data: { ...input, generatedText } });
-        if (!("questions" in generated)) throw new Error("The quiz questions could not be finalized.");
-        res = { questions: attachQuizVisuals(generated.questions, quizImages) };
+        if (finalQuestions.length < input.count) {
+          // Keep going instead of dead-ending: the accepted questions are real
+          // work, and the student can always retry for the remainder.
+          toast.warning(
+            `Generated ${finalQuestions.length} of ${input.count} questions from this material. You can start now, or retry for the rest.`,
+          );
+        }
+        const usable = finalQuestions.slice(0, input.count);
+        const generatedText = JSON.stringify({ parts: [{ partIndex: 0, questions: usable }] });
+        try {
+          const generated = await gen({ data: { ...input, generatedText } });
+          if (!("questions" in generated) || !generated.questions.length) {
+            throw new Error("The quiz questions could not be finalized.");
+          }
+          res = { questions: attachQuizVisuals(generated.questions.slice(0, input.count), quizImages) };
+        } catch (finalizeError) {
+          // The server refuses a short quiz by design; the questions we already
+          // hold are validated, so use them rather than losing the whole run.
+          if (controller.signal.aborted) throw finalizeError;
+          res = { questions: attachQuizVisuals(usable, quizImages) };
+        }
         clearGenerationSnapshot(genKey);
       }
 
@@ -889,6 +917,15 @@ export function QuizRunner({
             <button onClick={start} disabled={!draftReady || (settings.includeImages && imageFilesQ.isLoading)} className={btnPrimary}>
               {exam ? "Start exam" : settings.adaptive ? "Start adaptive quiz" : "Start quiz"}
             </button>
+            {error && (
+              <button
+                onClick={start}
+                disabled={!draftReady || (settings.includeImages && imageFilesQ.isLoading)}
+                className={btnGhost}
+              >
+                <RefreshCw className="size-4" /> Retry generation
+              </button>
+            )}
             {onExit && (
               <button onClick={onExit} className={btnGhost}>
                 Change sets

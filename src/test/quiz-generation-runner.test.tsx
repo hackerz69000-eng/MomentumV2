@@ -34,6 +34,7 @@ vi.mock("@/lib/study.functions", async (importOriginal) => {
 });
 
 import { QuizRunner } from "@/components/set/QuizRunner";
+import { planQuizBatches } from "@/lib/quiz-questions";
 import type { StudySet } from "@/lib/queries";
 
 afterEach(() => {
@@ -129,6 +130,20 @@ const question = (overrides: Record<string, unknown> = {}) => {
   };
 };
 const payload = (n: number) => JSON.stringify({ questions: Array.from({ length: n }, () => question()) });
+/** Provider output cut off mid-array, exactly as a token limit would leave it. */
+const truncated = (n: number) => {
+  const full = payload(Math.max(1, n));
+  return full.slice(0, Math.floor(full.length * 0.72));
+};
+/** Valid questions mixed with objects that must never count toward the total. */
+const withInvalid = (valid: number) => JSON.stringify({
+  questions: [
+    ...Array.from({ length: valid }, () => question()),
+    { type: "mc", question: "Broken: only two options", options: ["A", "B"], answer: 0, explanation: "x", topic: "Core" },
+    { type: "mc", question: "", options: ["A", "B", "C", "D"], answer: 0, explanation: "x", topic: "Core" },
+    { type: "mc", question: "Broken: missing explanation", options: ["A", "B", "C", "D"], answer: 9, explanation: "", topic: "Core" },
+  ],
+});
 
 const set = { id: "set-1", name: "Biology", user_id: "user-1", material_text: "Cells" } as StudySet;
 
@@ -142,42 +157,48 @@ function renderRunner(preset: Record<string, unknown> = { count: 20 }) {
 }
 
 /**
- * Server-function mock that behaves like the real handler: it reports the true
- * remaining count from the questions the browser has already accumulated, and
- * finalizes once enough valid questions exist.
+ * Server-function mock that behaves like the real handler: it uses the REAL
+ * batch planner, so batch sizes, headroom and remaining counts are the ones the
+ * production code computes. Only the provider is faked.
  */
 function mockServerPipeline(options: {
   batchCap: number;
-  respond: (partIndex: number, batchCount: number, call: number) => string | Error;
-  /** Reject one batch to simulate a provider timeout. */
+  /** `asked` is the number of questions the prompt requested. */
+  respond: (partIndex: number, asked: number, call: number) => string | Error;
+  /** Reject one provider call to simulate a timeout. */
   failOnCall?: number;
 }) {
   mocks.generateQuiz.mockImplementation(async (args: any) => {
     const data = (args && args.data ? args.data : args ?? {}) as Record<string, any>;
     const generatedText = data["generatedText"] as string | undefined;
-    const parts: { partIndex: number; questions: unknown[] }[] = generatedText
-      ? (JSON.parse(generatedText) as { parts: { partIndex: number; questions: unknown[] }[] }).parts
-      : [];
-    const accepted = parts.flatMap((part) => part.questions);
     const count = data["count"] as number;
     if (!data["prepareOnly"]) {
-      return { questions: accepted.slice(0, count) };
+      const accepted = planQuizBatches({ partCount: 1, count, batchCap: options.batchCap, ...(generatedText ? { generatedText } : {}) }).accepted;
+      const parts = generatedText
+        ? (JSON.parse(generatedText) as { parts: { questions: unknown[] }[] }).parts
+        : [];
+      return { questions: parts.flatMap((part) => part.questions).slice(0, count), accepted };
     }
-    const remaining = count - accepted.length;
-    if (remaining <= 0) return { prompts: [], complete: true, remaining: 0, accepted: accepted.length };
-    const batchCount = Math.min(options.batchCap, remaining);
+    const plan = planQuizBatches({
+      partCount: 1,
+      count,
+      batchCap: options.batchCap,
+      round: (data["round"] as number) ?? 0,
+      ...(generatedText ? { generatedText } : {}),
+      ...(Array.isArray(data["exhaustedParts"]) && data["exhaustedParts"].length
+        ? { exhaustedParts: data["exhaustedParts"] as number[] }
+        : {}),
+    });
     return {
-      prompts: [
-        {
-          partIndex: 0,
-          batchCount,
-          system: "quiz",
-          messages: [{ role: "user", content: "material" }],
-        },
-      ],
-      complete: false,
-      remaining,
-      accepted: accepted.length,
+      prompts: plan.requests.map((request) => ({
+        partIndex: request.unit,
+        batchCount: request.batchCount,
+        system: `quiz Generate exactly ${request.batchCount} questions`,
+        messages: [{ role: "user", content: "material" }],
+      })),
+      complete: plan.requests.length === 0,
+      remaining: plan.remaining,
+      accepted: plan.accepted,
     };
   });
   let call = 0;
@@ -186,7 +207,8 @@ function mockServerPipeline(options: {
     if (system.startsWith("review")) return payload(0);
     call += 1;
     if (options.failOnCall === call) throw new Error("The NVIDIA NIM request timed out.");
-    const text = options.respond(0, 0, call);
+    const asked = Number(/Generate exactly (\d+) questions/.exec(system)?.[1] ?? options.batchCap);
+    const text = options.respond(0, asked, call);
     if (text instanceof Error) throw text;
     return text;
   });
@@ -194,8 +216,11 @@ function mockServerPipeline(options: {
 }
 
 /** Calls the runner made to the server pipeline, split by purpose. */
-function callStats() {
-  const calls = (mocks.generateQuiz.mock.calls as any[]).map((call) => (call[0]?.data ?? call[0] ?? {}) as Record<string, unknown>);
+function callStats(expectedCount?: number) {
+  const all = (mocks.generateQuiz.mock.calls as any[]).map((call) => (call[0]?.data ?? call[0] ?? {}) as Record<string, unknown>);
+  // A previous test's generation loop can still be finishing; it always sends
+  // its own `count`, so matching on it isolates this test's calls.
+  const calls = expectedCount == null ? all : all.filter((data) => data["count"] === expectedCount);
   const prepare = calls.filter((data) => Boolean(data["prepareOnly"]));
   const finalize = calls.filter((data) => !data["prepareOnly"]);
   const streamed = (mocks.streamAiText.mock.calls as any[]).filter(
@@ -213,22 +238,22 @@ function callStats() {
  * Poll until generation produces its first requests, then until it stops
  * changing, so each test inspects a settled pipeline without fixed sleeps.
  */
-async function settle() {
-  await waitFor(() => expect(callStats().prepare).toBeGreaterThan(0), { timeout: 3000 });
+async function settle(expectedCount?: number) {
+  await waitFor(() => expect(callStats(expectedCount).prepare).toBeGreaterThan(0), { timeout: 3000 });
   // The runner backs off briefly between batch retries, so "unchanged" must be
   // measured over a window longer than that pause.
   let stableFor = 0;
-  let last = JSON.stringify(callStats());
+  let last = JSON.stringify(callStats(expectedCount));
   while (stableFor < 20) {
     await new Promise((resolve) => setTimeout(resolve, 40));
-    const current = JSON.stringify(callStats());
+    const current = JSON.stringify(callStats(expectedCount));
     if (current === last) stableFor += 1;
     else {
       stableFor = 0;
       last = current;
     }
   }
-  return callStats();
+  return callStats(expectedCount);
 }
 
 function snapshotHasQuestions() {
@@ -252,7 +277,7 @@ describe("quiz generation pathway", () => {
     renderRunner({ count: 20 });
     fireEvent.click(await screen.findByRole("button", { name: "Start quiz" }));
 
-    const stats = await settle();
+    const stats = await settle(20);
     // 20 questions at a cap of 8 needs at least three provider batches, and the
     // browser only finalizes once it holds 20 validated questions.
     expect(stats.streamed).toBeGreaterThanOrEqual(3);
@@ -274,7 +299,7 @@ describe("quiz generation pathway", () => {
     renderRunner({ count: 10 });
     fireEvent.click(await screen.findByRole("button", { name: "Start quiz" }));
 
-    const stats = await settle();
+    const stats = await settle(10);
     // Extra replacement rounds were requested beyond the first batch.
     expect(stats.streamed).toBeGreaterThan(2);
     expect(stats.finalize).toBe(1);
@@ -286,7 +311,7 @@ describe("quiz generation pathway", () => {
     renderRunner({ count: 10 });
     fireEvent.click(await screen.findByRole("button", { name: "Start quiz" }));
 
-    const stats = await settle();
+    const stats = await settle(10);
     // The failed round is retried instead of aborting the whole quiz.
     expect(stats.finalize).toBe(1);
     expect(stats.finalizedQuestions).toBe(10);
@@ -306,5 +331,47 @@ describe("quiz generation pathway", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Start quiz" }));
     // Accepted questions are written to storage while generation is still running.
     await waitFor(() => expect(snapshotHasQuestions()).toBeGreaterThan(0), { timeout: 8000 });
+  });
+
+  it("fills a 10-question quiz when every batch returns two fewer than asked", async () => {
+    // The provider under-delivers on purpose: the planner's headroom and the
+    // follow-up rounds must still reach the requested total.
+    mockServerPipeline({ batchCap: 8, respond: (_part, asked) => payload(Math.max(1, asked - 2)) });
+    renderRunner({ count: 10 });
+    fireEvent.click(await screen.findByRole("button", { name: "Start quiz" }));
+
+    const stats = await settle(10);
+    // The quiz must reach the requested total even though every batch came back short.
+    expect(stats.finalizedQuestions).toBe(10);
+    expect(stats.finalize).toBeGreaterThanOrEqual(1);
+  });
+
+  it("fills a 20-question quiz when batches are truncated and contain invalid items", async () => {
+    mockServerPipeline({
+      batchCap: 8,
+      respond: (_part, asked, call) => (call === 1 ? truncated(asked) : withInvalid(Math.max(1, asked - 2))),
+    });
+    renderRunner({ count: 20 });
+    fireEvent.click(await screen.findByRole("button", { name: "Start quiz" }));
+
+    const stats = await settle(20);
+    expect(stats.finalize).toBe(1);
+    expect(stats.finalizedQuestions).toBe(20);
+  });
+
+  it("never asks the provider for a single question and never exceeds the quiz total", async () => {
+    mockServerPipeline({ batchCap: 8, respond: (_part, asked) => payload(asked) });
+    renderRunner({ count: 10 });
+    fireEvent.click(await screen.findByRole("button", { name: "Start quiz" }));
+
+    const stats = await settle(10);
+    const asked = (mocks.generateQuiz.mock.calls as any[])
+      .map((call) => (call[0]?.data ?? call[0] ?? {}) as Record<string, unknown>)
+      .filter((data) => data["prepareOnly"])
+      .map((data) => data["count"] as number);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(stats.finalizedQuestions).toBe(10);
+    // The saved quiz is exactly the requested size, never the overshoot.
+    expect(stats.finalizedQuestions).toBeLessThanOrEqual(10);
   });
 });

@@ -106,7 +106,9 @@ export const Route = createFileRoute("/api/ai-stream")({
           try {
             const candidate = await openNvidiaStream(system, messages, {
               model, signal: request.signal, jsonMode: body.jsonMode === true,
-              maxTokens: body.jsonMode === true ? 8192 : 6000,
+              // JSON batches carry several questions plus explanations; a budget that is
+            // too small truncates the array mid-object and silently loses questions.
+            maxTokens: body.jsonMode === true ? 12000 : 6000,
             });
             if (candidate.ok && candidate.body) { upstream = candidate; break; }
             lastStatus = candidate.status;

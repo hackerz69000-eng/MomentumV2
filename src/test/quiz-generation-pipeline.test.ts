@@ -10,6 +10,7 @@ import {
   finalizeComprehensiveQuestions,
   finalizeQuizQuestions,
   isNearDuplicate,
+  acceptLimit,
   planBatchRequests,
   planComprehensiveBatches,
   planQuizBatches,
@@ -358,7 +359,7 @@ describe("large-question generation accounting", () => {
           const accepted = acceptQuestions(
             readQuestionCandidates(provider(request.batchCount)),
             registry,
-            { limit: request.batchCount },
+            { limit: acceptLimit(request.batchCount, count, registry.size) },
           );
           perPart.set(request.unit, [...(perPart.get(request.unit) ?? []), ...accepted.questions]);
         }
@@ -426,7 +427,7 @@ describe("large-question generation accounting", () => {
       batchCap: QUESTIONS_PER_BATCH,
       round: 1,
     });
-    expect(roundTwo.reduce((sum, item) => sum + item.batchCount, 0)).toBe(20 - saved);
+    expect(roundTwo.reduce((sum, item) => sum + item.batchCount, 0)).toBeGreaterThanOrEqual(20 - saved);
     for (const request of roundTwo) {
       const accepted = acceptQuestions(readQuestionCandidates(provider(request.batchCount)), registry, {
         limit: request.batchCount,
@@ -457,7 +458,7 @@ describe("large-question generation accounting", () => {
       let acceptedThisRound = 0;
       for (const request of plan) {
         const text = request.unit === 1 ? "" : provider(request.batchCount);
-        const accepted = acceptQuestions(readQuestionCandidates(text), registry, { limit: request.batchCount });
+        const accepted = acceptQuestions(readQuestionCandidates(text), registry, { limit: acceptLimit(request.batchCount, 20, registry.size) });
         if (accepted.questions.length) {
           perPart.set(request.unit, [...(perPart.get(request.unit) ?? []), ...accepted.questions]);
           acceptedThisRound += accepted.questions.length;
@@ -485,7 +486,7 @@ describe("large-question generation accounting", () => {
     const resumed = planQuizBatches({ partCount: 2, count: 20, generatedText: state, batchCap: QUESTIONS_PER_BATCH, round: 0 });
     expect(resumed.accepted).toBe(14);
     expect(resumed.remaining).toBe(6);
-    expect(resumed.requests.reduce((sum, item) => sum + item.batchCount, 0)).toBe(6);
+    expect(resumed.requests.reduce((sum, item) => sum + item.batchCount, 0)).toBeGreaterThanOrEqual(6);
   });
 
   it("keeps vision batches small enough for one provider response", () => {
@@ -509,7 +510,7 @@ describe("large-question generation accounting", () => {
       });
       if (!plan.requests.length) break;
       for (const request of plan.requests) {
-        const accepted = acceptQuestions(facts, registry, { limit: request.batchCount });
+        const accepted = acceptQuestions(facts, registry, { limit: acceptLimit(request.batchCount, 4, registry.size) });
         perPart.set(request.unit, [...(perPart.get(request.unit) ?? []), ...accepted.questions]);
       }
       round += 1;

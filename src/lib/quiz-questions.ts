@@ -392,7 +392,50 @@ export function allocateQuestionTargets(count: number, parts: number): number[] 
   });
 }
 
+/**
+ * How many questions of one batch may be accepted: never more than the batch
+ * asked for, and never more than the quiz is still missing. The planner asks
+ * for extra questions on purpose, so the surplus must not inflate the quiz.
+ */
+export function acceptLimit(batchCount: number, count: number, accepted: number): number {
+  return Math.max(0, Math.min(Math.floor(batchCount), Math.floor(count) - Math.floor(accepted)));
+}
+
 export type BatchRequest = { unit: number; batchCount: number };
+
+/**
+ * Smallest batch we ever ask for. Asking for a single question is the worst
+ * case for a model: it tends to hand back a slight rewording of a question the
+ * quiz already has, which the duplicate filter then rejects, so the round makes
+ * no progress and the quiz stalls one question short.
+ */
+export const MIN_BATCH_ASK = 3;
+/** Ceiling on provider requests issued in one round. */
+export const MAX_BATCH_REQUESTS = 6;
+
+/** How many questions one round should ask for, including safety headroom. */
+export function batchAskTotal(remaining: number, batchCap: number): number {
+  if (remaining <= 0) return 0;
+  const cap = Math.max(1, Math.floor(batchCap));
+  const wanted = Math.max(remaining, Math.ceil(remaining * 1.6), Math.min(MIN_BATCH_ASK, cap));
+  return Math.min(wanted, cap * MAX_BATCH_REQUESTS);
+}
+
+/** Split a total into evenly sized provider batches, none above the cap. */
+export function splitIntoBatchSizes(total: number, batchCap: number): number[] {
+  const cap = Math.max(1, Math.floor(batchCap));
+  if (total <= 0) return [];
+  const chunks = Math.ceil(total / cap);
+  const size = Math.ceil(total / chunks);
+  const sizes: number[] = [];
+  let left = total;
+  while (left > 0) {
+    const next = Math.min(size, left);
+    sizes.push(next);
+    left -= next;
+  }
+  return sizes;
+}
 
 /**
  * Plan the next round of provider requests for a set of material units.
@@ -418,47 +461,34 @@ export function planBatchRequests(args: {
   if (count === 0 || args.remaining <= 0) return [];
   const batchCap = Math.max(1, Math.floor(args.batchCap));
   const exhausted = new Set(args.exhausted ?? []);
-  const currentlyExhausted = exhausted.size >= count;
+  const allExhausted = exhausted.size >= count;
   const order: number[] = [];
   for (let step = 0; step < count; step += 1) {
     const unit = (step + Math.max(0, args.round)) % count;
-    if (!currentlyExhausted && exhausted.has(unit)) continue;
+    if (!allExhausted && exhausted.has(unit)) continue;
     order.push(unit);
   }
-  const planned = new Map<number, number>();
-  let budget = Math.max(0, Math.floor(args.remaining));
+  if (!order.length) return [];
 
-  // Pass 1 - close each unit's own shortfall.
-  for (const unit of order) {
-    if (budget <= 0) break;
-    const shortfall = Math.max(0, (args.targets[unit] ?? 0) - (args.accepted[unit] ?? 0));
-    if (shortfall <= 0) continue;
-    const want = Math.min(shortfall, budget, batchCap);
-    planned.set(unit, want);
-    budget -= want;
-  }
+  // Ask for MORE than is missing. A provider that returns exactly what was
+  // asked for, minus one rejected duplicate, used to leave the quiz one short
+  // and then loop on a single-question request that kept colliding.
+  const total = Math.min(
+    batchAskTotal(args.remaining, batchCap),
+    batchCap * order.length * 2,
+  );
+  const sizes = splitIntoBatchSizes(total, batchCap);
 
-  // Pass 2 - redistribute what is still missing across units that still answer.
-  let exhaustedPasses = 0;
-  while (budget > 0 && order.length > 0 && exhaustedPasses <= batchCap * 2) {
-    let added = false;
-    for (const unit of order) {
-      if (budget <= 0) break;
-      const already = planned.get(unit) ?? 0;
-      if (already >= batchCap) continue;
-      planned.set(unit, already + 1);
-      budget -= 1;
-      added = true;
-    }
-    if (!added) exhaustedPasses += 1;
-    else exhaustedPasses = 0;
-    if (!added && exhaustedPasses > 0) break;
-  }
-
-  return order
-    .filter((unit) => (planned.get(unit) ?? 0) > 0)
-    .map((unit) => ({ unit, batchCount: planned.get(unit) as number }))
-    .sort((a, b) => a.unit - b.unit);
+  // Units that still owe their share of the quiz's topic mix get served first.
+  const ranked = [...order].sort((a, b) => {
+    const na = Math.max(0, (args.targets[a] ?? 0) - (args.accepted[a] ?? 0));
+    const nb = Math.max(0, (args.targets[b] ?? 0) - (args.accepted[b] ?? 0));
+    return nb - na;
+  });
+  return sizes.map((batchCount, index) => ({
+    unit: ranked[index % ranked.length] as number,
+    batchCount,
+  }));
 }
 
 /** Number of questions a plan will ask for in total. */
@@ -645,8 +675,9 @@ export function planComprehensiveBatches(args: {
     const set = flexible[cursor % flexible.length] as { id: string; partCount: number };
     cursor += 1;
     guard += 1;
-    requests.push({ setId: set.id, partIndex: (cursor + (args.round ?? 0)) % set.partCount, batchCount: 1 });
-    shortfall -= 1;
+    const ask = Math.min(Math.max(1, Math.floor(args.batchCap)), Math.max(MIN_BATCH_ASK, shortfall));
+    requests.push({ setId: set.id, partIndex: (cursor + (args.round ?? 0)) % set.partCount, batchCount: ask });
+    shortfall -= ask;
   }
 
   return { allocations, requests, remaining, accepted: acceptedTotal, perSet };
