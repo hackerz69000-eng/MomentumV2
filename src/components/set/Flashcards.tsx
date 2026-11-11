@@ -52,6 +52,9 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
   const [order, setOrder] = useState<string[] | null>(null);
   const [i, setI] = useState(0);
   const [flipped, setFlipped] = useState(false);
+  const [clozeResponse, setClozeResponse] = useState("");
+  const [clozeChecked, setClozeChecked] = useState(false);
+  const [clozeRevealed, setClozeRevealed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [streamedJson, setStreamedJson] = useState("");
   const streamController = useRef<AbortController | null>(null);
@@ -71,6 +74,17 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
   }, [order, mode, cards, byId]);
   const idx = i;
   const card = deckIds[idx] ? byId.get(deckIds[idx]!) : undefined;
+  const clozeMatch = card?.card_type === "cloze" ? card.question.match(/\{\{c1::(.+?)\}\}/) : null;
+  const clozeTarget = clozeMatch?.[1] ?? "";
+  const normalizeCloze = (value: string) => value.trim().toLocaleLowerCase().replace(/[\s.,!?;:]+$/g, "");
+  const clozeIsCorrect = !!clozeTarget && normalizeCloze(clozeResponse) === normalizeCloze(clozeTarget);
+
+  useEffect(() => {
+    setClozeResponse("");
+    setClozeChecked(false);
+    setClozeRevealed(false);
+    setFlipped(false);
+  }, [card?.id]);
 
   // Retry locally queued reviews when the user returns or connectivity recovers.
   useEffect(() => {
@@ -349,33 +363,67 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
         </div>
       ) : (
         <>
-          <button
-            onClick={() => setFlipped((f) => !f)}
-            className="flip-scene block w-full h-72 md:h-80"
-            aria-label="Flip card"
-          >
-            <div className={cn("flip-card relative w-full h-full", flipped && "is-flipped")}>
-              <div className="flip-face rounded-2xl bg-ink2 border border-line/70 p-6 md:p-8 flex flex-col">
-                <div className="flex justify-between gap-2">
-                  <p className="eyebrow text-cool2 truncate">{card.card_type === "cloze" ? "Cloze deletion" : card.topic || "Question"}</p>
-                  <StatusTag card={card} />
+          {card.card_type === "cloze" ? (
+            <section className="rounded-2xl bg-ink2 border border-line/70 p-6 md:p-8 min-h-72 md:min-h-80 flex flex-col" aria-label="Cloze deletion exercise">
+              <div className="flex justify-between gap-2">
+                <p className="eyebrow text-cool2">Cloze deletion · fill in the blank</p>
+                <StatusTag card={card} />
+              </div>
+              <p className="font-display text-2xl md:text-3xl leading-tight text-center my-auto">
+                {card.question.replace(/\{\{c1::(.+?)\}\}/g, "________")}
+              </p>
+              <div className="max-w-xl w-full mx-auto space-y-3">
+                <label className="block text-sm font-medium" htmlFor="cloze-response">Your answer</label>
+                <input
+                  id="cloze-response"
+                  value={clozeResponse}
+                  onChange={(event) => { setClozeResponse(event.target.value); setClozeChecked(false); }}
+                  onKeyDown={(event) => { if (event.key === "Enter" && clozeResponse.trim()) setClozeChecked(true); }}
+                  placeholder="Type the missing word or phrase…"
+                  className="w-full rounded-xl border border-line bg-background px-4 py-3 text-base text-foreground outline-none focus:ring-2 focus:ring-cool2"
+                  autoComplete="off"
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={() => setClozeChecked(true)} disabled={!clozeResponse.trim()} className={btnPrimary + " disabled:opacity-40"}>Check answer</button>
+                  <button type="button" onClick={() => setClozeRevealed((value) => !value)} className={btnGhost}>{clozeRevealed ? "Hide answer" : "Reveal answer"}</button>
                 </div>
-                <p className="font-display text-2xl md:text-3xl uppercase leading-tight m-auto text-center">
-                  {card.card_type === "cloze" ? card.question.replace(/\{\{c1::(.+?)\}\}/g, flipped ? "$1" : "＿＿＿＿") : card.question}
-                </p>
-                <p className="text-xs text-soft text-center">
-                  Tap to reveal · card {idx + 1} of {deckIds.length}
-                </p>
+                {clozeChecked && (
+                  <p role="status" className={cn("text-sm font-semibold", clozeIsCorrect ? "text-mint" : "text-amber-300")}>
+                    {clozeIsCorrect ? "Correct — nice work!" : "Not quite. Try again, or reveal the answer."}
+                  </p>
+                )}
+                {clozeRevealed && (
+                  <div className="rounded-xl border border-line bg-accent p-4 space-y-1">
+                    <p className="eyebrow text-mint">Missing phrase: {clozeTarget}</p>
+                    <p className="text-sm leading-relaxed">{card.answer}</p>
+                  </div>
+                )}
+                <p className="text-xs text-soft text-center">Card {idx + 1} of {deckIds.length} · fill in the missing phrase before rating yourself</p>
               </div>
-              <div className="flip-face flip-back rounded-2xl dpanel p-6 md:p-8 flex flex-col">
-                <p className="eyebrow text-mint">Answer</p>
-                <p className="text-lg md:text-xl leading-relaxed m-auto text-center">
-                  {card.answer}
-                </p>
-                <p className="text-xs text-soft text-center">Rate honestly: uncertain or guessed? Choose Hard / unsure.</p>
+            </section>
+          ) : (
+            <button
+              onClick={() => setFlipped((f) => !f)}
+              className="flip-scene block w-full h-72 md:h-80"
+              aria-label="Flip card"
+            >
+              <div className={cn("flip-card relative w-full h-full", flipped && "is-flipped")}>
+                <div className="flip-face rounded-2xl bg-ink2 border border-line/70 p-6 md:p-8 flex flex-col">
+                  <div className="flex justify-between gap-2">
+                    <p className="eyebrow text-cool2 truncate">{card.topic || "Question"}</p>
+                    <StatusTag card={card} />
+                  </div>
+                  <p className="font-display text-2xl md:text-3xl uppercase leading-tight m-auto text-center">{card.question}</p>
+                  <p className="text-xs text-soft text-center">Tap to reveal · card {idx + 1} of {deckIds.length}</p>
+                </div>
+                <div className="flip-face flip-back rounded-2xl dpanel p-6 md:p-8 flex flex-col">
+                  <p className="eyebrow text-mint">Answer</p>
+                  <p className="text-lg md:text-xl leading-relaxed m-auto text-center">{card.answer}</p>
+                  <p className="text-xs text-soft text-center">Rate honestly: uncertain or guessed? Choose Hard / unsure.</p>
+                </div>
               </div>
-            </div>
-          </button>
+            </button>
+          )}
           <div className="grid grid-cols-4 gap-2 mt-4">
             <button
               onClick={() => rate("again")}
