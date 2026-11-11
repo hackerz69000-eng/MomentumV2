@@ -23,6 +23,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { prepareTutorStream, saveTutorStreamReply, processSet } from "@/lib/study.functions";
 import { streamAiText, streamAiJson, streamPreparedNotes } from "@/lib/ai-stream";
 import { setStats, type Attempt } from "@/lib/stats";
+import { deduplicateFlashcards } from "@/lib/flashcard-quality";
 import { cn } from "@/lib/utils";
 import { ErrorBox } from "@/components/set/ui";
 import { Overview, type Tab } from "@/components/set/Overview";
@@ -348,13 +349,17 @@ function Processing({ set }: { set: StudySet }) {
     setProgress("");
     try {
       const prepared = await process({ data: { setId: set.id, prepareOnly: true } });
-      if ("notesPrompts" in prepared && "cardsSystem" in prepared && "cardsMessages" in prepared && prepared.notesPrompts && prepared.cardsSystem && Array.isArray(prepared.cardsMessages)) {
+      if ("notesPrompts" in prepared && "cardsSystem" in prepared && "cardsMessages" in prepared && "targetCardCount" in prepared && prepared.notesPrompts && prepared.cardsSystem && Array.isArray(prepared.cardsMessages)) {
         const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setProgress, onDelta: (chunk) => setProgress((old) => `${old}\n${chunk}`.slice(-900)) });
         setProgress("Generating flashcards…");
         const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgress((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
           if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");
-          const valid = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim(), kind: item["kind"] === "cloze" ? "cloze" as const : "qa" as const })).filter((item) => item.q && item.a && (item.kind !== "cloze" || /\{\{c1::.+?\}\}/.test(item.q))).slice(0, 20);
-          if (!valid.length) throw new Error("No useful flashcards could be generated.");
+          const candidates = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim(), kind: item["kind"] === "cloze" ? "cloze" as const : "qa" as const })).filter((item) => item.q && item.a);
+          const valid = deduplicateFlashcards(candidates).slice(0, 60);
+          const target = Number(prepared.targetCardCount) || 5;
+          if (valid.length < target) throw new Error(`Only ${valid.length} distinct cards were generated; this material needs ${target}. No study materials were saved.`);
+          const clozeCount = valid.filter((item) => item.kind === "cloze").length;
+          if (valid.length >= 4 && clozeCount === 0) throw new Error("No valid sentence-based cloze deletions were generated. No study materials were saved.");
           return valid;
         }});
         await process({ data: { setId: set.id, generatedNotes: notes, generatedCards: cards } });

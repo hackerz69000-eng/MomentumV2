@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { ArrowLeft, ArrowRight, Loader2, Pencil, Plus, Shuffle, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { prepareRegenerateCardsStream, saveRegenerateCardsStream } from "@/lib/study.functions";
+import { deduplicateFlashcards } from "@/lib/flashcard-quality";
 import { streamAiJson } from "@/lib/ai-stream";
 import { trashRow } from "@/lib/trash";
 import { cardStats, isDue, schedule, shuffle, type Flashcard, type Rating } from "@/lib/stats";
@@ -273,10 +274,11 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
       setStreamedJson("");
       const cards = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedJson((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The generated flashcards were not valid.");
-        const candidates = (value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string; kind?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "", kind: card.kind === "cloze" && /\{\{c1::.+?\}\}/.test(card.q) ? "cloze" as const : "qa" as const }));
-        const seen = new Set<string>();
-        const valid = candidates.filter((item) => { const key = item.q.toLowerCase().replace(/\{\{c\d+::(.*?)\}\}/g, "$1").replace(/[^a-z0-9]+/g, ""); if (!key || seen.has(key)) return false; seen.add(key); return true; }).slice(0, 20);
+        const candidates = (value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string; kind?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "", kind: card.kind === "cloze" ? "cloze" as const : "qa" as const }));
+        const valid = deduplicateFlashcards(candidates).slice(0, 60);
         if (!valid.length) throw new Error("No unique flashcards could be generated from the supplied study material.");
+        const target = Number(prompt.targetCardCount) || 5;
+        if (valid.length < target) throw new Error(`Only ${valid.length} distinct cards were generated; this material needs ${target}. Existing cards were not changed. Please regenerate.`);
         const clozeCount = valid.filter((item) => item.kind === "cloze").length;
         if (valid.length >= 4 && clozeCount === 0) throw new Error("The generated deck contained no valid cloze deletions. Your existing cards were not changed.");
         return valid;
@@ -369,9 +371,16 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
                 <p className="eyebrow text-cool2">Cloze deletion · fill in the blank</p>
                 <StatusTag card={card} />
               </div>
-              <p className="font-display text-2xl md:text-3xl leading-tight text-center my-auto">
-                {card.question.replace(/\{\{c1::(.+?)\}\}/g, "________")}
-              </p>
+              <div className="my-auto space-y-3">
+                <p className="font-display text-2xl md:text-3xl leading-tight text-center">
+                  {clozeMatch ? card.question.replace(/\{\{c1::(.+?)\}\}/g, "________") : card.question}
+                </p>
+                {!clozeMatch && (
+                  <p role="alert" className="text-center text-sm text-amber-300">
+                    This saved cloze card is missing its hidden phrase and sentence context. Edit this card or regenerate the deck to repair it.
+                  </p>
+                )}
+              </div>
               <div className="max-w-xl w-full mx-auto space-y-3">
                 <label className="block text-sm font-medium" htmlFor="cloze-response">Your answer</label>
                 <input

@@ -10,6 +10,7 @@ import { processSet, ocrFile } from "@/lib/study.functions";
 import { streamAiJson, streamPreparedNotes } from "@/lib/ai-stream";
 import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { cn } from "@/lib/utils";
+import { deduplicateFlashcards } from "@/lib/flashcard-quality";
 
 export const Route = createFileRoute("/_authenticated/sets/new")({
   ssr: false,
@@ -147,22 +148,17 @@ function NewSet() {
 
       // Gemini generates the notes first, then flashcards from those notes.
       const prepared = await process({ data: { setId: targetId, prepareOnly: true } });
-      if ("notesPrompts" in prepared && "cardsSystem" in prepared && "cardsMessages" in prepared && prepared.notesPrompts && prepared.cardsSystem && Array.isArray(prepared.cardsMessages)) {
+      if ("notesPrompts" in prepared && "cardsSystem" in prepared && "cardsMessages" in prepared && "targetCardCount" in prepared && prepared.notesPrompts && prepared.cardsSystem && Array.isArray(prepared.cardsMessages)) {
         const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setProgressMsg, onDelta: (chunk) => setProgressMsg((old) => `${old}\n${chunk}`.slice(-900)) });
         setProgressMsg("Generating flashcards…");
         const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgressMsg((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
           if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");
-          const candidates = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim(), kind: item["kind"] === "cloze" ? "cloze" as const : "qa" as const })).filter((item) => item.q && item.a && (item.kind !== "cloze" || /\{\{c1::.+?\}\}/.test(item.q)));
-          const seen = new Set<string>();
-          const valid = candidates.filter((item) => {
-            const key = item.q.toLowerCase().replace(/\{\{c\d+::(.*?)\}\}/g, "$1").replace(/[^a-z0-9]+/g, "");
-            if (!key || seen.has(key)) return false;
-            seen.add(key);
-            return true;
-          }).slice(0, 20);
-          if (!valid.length) throw new Error("No unique useful flashcards could be generated.");
+          const candidates = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim(), kind: item["kind"] === "cloze" ? "cloze" as const : "qa" as const })).filter((item) => item.q && item.a);
+          const valid = deduplicateFlashcards(candidates).slice(0, 60);
+          const target = Number(prepared.targetCardCount) || 5;
+          if (valid.length < target) throw new Error(`Only ${valid.length} distinct cards were generated; this material needs ${target}. No study materials were saved.`);
           const clozeCount = valid.filter((item) => item.kind === "cloze").length;
-          if (valid.length >= 4 && clozeCount === 0) throw new Error("The generated deck contained no valid cloze deletions. Please regenerate; no cards were saved.");
+          if (valid.length >= 4 && clozeCount === 0) throw new Error("No valid sentence-based cloze deletions were generated. No study materials were saved.");
           return valid;
         }});
         await process({ data: { setId: targetId, generatedNotes: notes, generatedCards: cards } });
