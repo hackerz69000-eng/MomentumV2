@@ -235,6 +235,7 @@ export type Database = {
       flashcards: {
         Row: {
           answer: string;
+          card_type: string;
           created_at: string;
           due_at: string;
           ease_factor: number;
@@ -253,6 +254,7 @@ export type Database = {
         };
         Insert: {
           answer: string;
+          card_type?: string;
           created_at?: string;
           due_at?: string;
           ease_factor?: number;
@@ -271,6 +273,7 @@ export type Database = {
         };
         Update: {
           answer?: string;
+          card_type?: string;
           created_at?: string;
           due_at?: string;
           ease_factor?: number;

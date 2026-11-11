@@ -152,7 +152,7 @@ function NewSet() {
         setProgressMsg("Generating flashcards…");
         const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgressMsg((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
           if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");
-          const valid = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim() })).filter((item) => item.q && item.a).slice(0, 20);
+          const valid = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim(), kind: item["kind"] === "cloze" ? "cloze" as const : "qa" as const })).filter((item) => item.q && item.a && (item.kind !== "cloze" || /\{\{c1::.+?\}\}/.test(item.q))).slice(0, 20);
           if (!valid.length) throw new Error("No useful flashcards could be generated.");
           return valid;
         }});

@@ -163,17 +163,41 @@ export async function streamAiJson<T>(options: {
   onDelta?: (text: string) => void;
   validate: (value: unknown) => T;
 }): Promise<T> {
-  const text = await streamAiText({
-    system: `${options.system}\n\nOUTPUT REQUIREMENT: Return a complete, syntactically valid JSON value only. Do not include markdown fences, commentary, or reasoning outside the JSON.`,
-    messages: options.messages,
-    ...(options.task ? { task: options.task } : {}),
-    jsonMode: true,
-    ...(options.signal ? { signal: options.signal } : {}),
-    onDelta: (chunk) => options.onDelta?.(chunk),
+  return retryGenerationStep("Structured AI generation", options.signal, async () => {
+    const text = await streamAiText({
+      system: `${options.system}\n\nOUTPUT REQUIREMENT: Return a complete, syntactically valid JSON value only. Do not include markdown fences, commentary, or reasoning outside the JSON.`,
+      messages: options.messages,
+      ...(options.task ? { task: options.task } : {}),
+      jsonMode: true,
+      ...(options.signal ? { signal: options.signal } : {}),
+      onDelta: (chunk) => options.onDelta?.(chunk),
+    });
+    // Permit fenced JSON because some models wrap structured responses despite
+    // explicit JSON-only instructions.
+    return parseStreamedJson(text, options.validate);
   });
-  // Permit fenced JSON because some models wrap structured responses despite
-  // explicit JSON-only instructions.
-  return parseStreamedJson(text, options.validate);
+}
+
+/** Retry a failed generation step without restarting already completed source chunks. */
+async function retryGenerationStep<T>(label: string, signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (signal?.aborted) throw new DOMException("The request was stopped.", "AbortError");
+    try { return await run(); }
+    catch (error) {
+      lastError = error;
+      if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      // Authentication, permission, quota and invalid-request failures cannot be
+      // repaired by repeating the same request.
+      if (/sign in|401|403|429|usage limit|quota|invalid.*prompt|too large/i.test(message)) throw error;
+      if (attempt < 2) await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 700 * (attempt + 1));
+        signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("The request was stopped.", "AbortError")); }, { once: true });
+      });
+    }
+  }
+  throw lastError instanceof Error ? new Error(`${label} failed after 3 attempts: ${lastError.message}`) : new Error(`${label} failed after 3 attempts.`);
 }
 
 /** Complete the lecture-first notes pipeline in the browser, including optional-reading enrichment. */
@@ -197,7 +221,11 @@ export async function streamPreparedNotes(options: {
   for (let i = 0; i < prepared.notesPrompts.length; i += 1) {
     const prompt = prepared.notesPrompts[i]!;
     onProgress?.(`Generating lecture notes (${i + 1}/${prepared.notesPrompts.length})…`);
-    const part = await streamAiText({ system: prompt.system, messages: prompt.messages, signal, onDelta });
+    const part = await retryGenerationStep(`Notes section ${i + 1}`, signal, async () => {
+      const generated = await streamAiText({ system: prompt.system, messages: prompt.messages, signal, onDelta });
+      if (generated.trim().length < 80) throw new Error(`Notes section ${i + 1} was unexpectedly short.`);
+      return generated;
+    });
     noteParts.push(part.trim());
   }
   let notes = prepared.notesHeader
@@ -209,23 +237,24 @@ export async function streamPreparedNotes(options: {
     const additions: string[] = [];
     for (let i = 0; i < plan.readingChunks.length; i += 1) {
       onProgress?.(`Comparing optional reading (${i + 1}/${plan.readingChunks.length})…`);
-      const result = await streamAiText({
+      const result = await retryGenerationStep(`Reading comparison ${i + 1}`, signal, () => streamAiText({
         system: `${plan.readingSystemPrefix}${notes.slice(0, 18000)}${plan.readingSystemSuffix}`,
         messages: [{ role: "user", content: `OPTIONAL READING PART ${i + 1}/${plan.readingChunks.length}:\n${plan.readingChunks[i]}` }],
         signal,
         onDelta,
-      });
+      }));
       const clean = result.trim();
       if (clean && !/^NO RELEVANT NEW ADDITIONS\.?$/i.test(clean)) additions.push(clean);
     }
     onProgress?.("Integrating reading additions into the lecture notes…");
-    notes = await streamAiText({
+    notes = await retryGenerationStep("Final notes integration", signal, () => streamAiText({
       system: plan.finalSystem,
       messages: [{ role: "user", content: `EXISTING LECTURE NOTES:\n${notes.slice(0, 36000)}\n\nREADING ENRICHMENT CANDIDATES (some may overlap; deduplicate carefully):\n${additions.length ? additions.join("\n\n").slice(0, 20000) : "No useful new reading additions were identified. Preserve the lecture notes, clean up any repeated chunk headings if possible, and add one concise Key Takeaways section."}` }],
       signal,
       onDelta,
-    });
+    }));
   }
-  if (!notes.trim()) throw new Error("The notes stream returned no content.");
+  if (notes.trim().length < 120) throw new Error("The notes stream returned incomplete notes. Your saved notes were left unchanged; retry generation.");
+  if (notes.length > 250000) throw new Error("The generated notes exceed the safe save limit. Use a smaller source or split the upload into sections.");
   return notes;
 }

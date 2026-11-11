@@ -1,9 +1,9 @@
 import { useServerFn } from "@tanstack/react-start";
 import { MarkdownContent } from "@/components/MarkdownContent";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Headphones, Lightbulb, Loader2, Play, RefreshCw, Square, X } from "lucide-react";
+import { Edit3, FileText, Headphones, Lightbulb, Loader2, Play, RefreshCw, Save, Square, X } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { prepareExplainPassageStream, regenerateNotes } from "@/lib/study.functions";
 import { streamAiText, streamPreparedNotes } from "@/lib/ai-stream";
@@ -52,6 +52,24 @@ export function Notes({ set }: { set: StudySet }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const regen = useServerFn(regenerateNotes);
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [draftNotes, setDraftNotes] = useState(set.notes ?? "");
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
+  const pdfsQ = useQuery({
+    queryKey: ["notes-pdf", set.id],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("study_files").select("id,name,mime,path").eq("set_id", set.id).order("created_at");
+      if (error) throw error;
+      const rows = (data ?? []).filter((file) => file.mime?.toLowerCase() === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"));
+      const signed = await Promise.all(rows.map(async (file) => {
+        const { data: urlData, error: urlError } = await supabase.storage.from("study-files").createSignedUrl(file.path, 1800);
+        if (urlError || !urlData?.signedUrl) return null;
+        return { id: file.id, name: file.name, url: urlData.signedUrl };
+      }));
+      return signed.filter((file): file is NonNullable<typeof file> => Boolean(file));
+    },
+  });
   const [busy, setBusy] = useState(false);
   const [streamedNotes, setStreamedNotes] = useState("");
   const streamController = useRef<AbortController | null>(null);
@@ -167,8 +185,20 @@ export function Notes({ set }: { set: StudySet }) {
     setBusy(false);
   };
   const sections = set.notes ? splitSections(set.notes) : [];
+  const saveEditedNotes = async () => {
+    if (draftNotes.trim().length < 50) { toast.error("Notes must contain at least 50 characters."); return; }
+    setSavingNotes(true);
+    try {
+      const { error } = await supabase.from("study_sets").update({ notes: draftNotes.trim(), updated_at: new Date().toISOString() }).eq("id", set.id);
+      if (error) throw error;
+      await qc.invalidateQueries({ queryKey: ["set", set.id] });
+      setEditingNotes(false);
+      toast.success("Your notes were saved.");
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Couldn't save notes."); }
+    finally { setSavingNotes(false); }
+  };
   return (
-    <div className="max-w-3xl">
+    <div className={cn("w-full", pdfsQ.data?.length ? "max-w-none" : "max-w-3xl")}>
       <div className="flex items-center justify-between gap-3 mb-4">
         <p className="text-xs text-soft inline-flex items-center gap-1.5">
           <Lightbulb className="size-3.5 text-cool2" /> Use "Explain" on any section for a simpler
@@ -195,14 +225,18 @@ export function Notes({ set }: { set: StudySet }) {
         </div>
       </div>
       {busy && streamedNotes && <div className="rounded-xl border border-line bg-panel p-5 mb-4"><p className="eyebrow text-cool2 mb-2">Notes streaming from NVIDIA</p><div className="md text-sm"><MarkdownContent>{streamedNotes}</MarkdownContent></div><button type="button" onClick={() => streamController.current?.abort()} className="mt-3 text-xs text-soft underline">Cancel generation</button></div>}
-      <div className={cn("space-y-4 transition-opacity", busy && "opacity-50")}>
-        {sections.length ? (
-          sections.map((sec, i) => <Section key={i} setId={set.id} md={sec} />)
-        ) : (
-          <div className="rounded-2xl bg-panel border border-line/70 p-8 text-soft">
-            No notes yet. Click regenerate to create them.
-          </div>
-        )}
+      <div className={cn("grid gap-4 items-start", pdfsQ.data?.length ? "xl:grid-cols-2" : "grid-cols-1")}>
+        <section className="min-w-0 rounded-2xl bg-panel border border-line/70 p-4 md:p-5">
+          <div className="flex items-center justify-between gap-2 mb-3"><p className="eyebrow text-cool2">Study notes</p>{editingNotes && <div className="flex gap-2"><button type="button" onClick={() => { setEditingNotes(false); setDraftNotes(set.notes ?? ""); }} className={btnGhost}>Cancel</button><button type="button" onClick={saveEditedNotes} disabled={savingNotes} className={btnGhost}>{savingNotes ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Save notes</button></div>}</div>
+          {editingNotes ? <textarea aria-label="Edit study notes" value={draftNotes} onChange={(event) => setDraftNotes(event.target.value)} className="w-full min-h-[65vh] resize-y rounded-xl border border-line bg-ink2 p-4 text-sm leading-relaxed font-mono focus:outline-none focus:border-cool2" /> : <div className={cn("space-y-4 transition-opacity", busy && "opacity-50")}>
+            {sections.length ? sections.map((sec, i) => <Section key={i} setId={set.id} md={sec} />) : <div className="rounded-xl bg-ink2 p-8 text-soft">No notes yet. Click regenerate to create them.</div>}
+          </div>}
+        </section>
+        {Boolean(pdfsQ.data?.length) && <section className="min-w-0 rounded-2xl bg-panel border border-line/70 p-4 md:p-5 xl:sticky xl:top-28">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3"><p className="eyebrow text-cool2 inline-flex items-center gap-2"><FileText className="size-4" /> Original PDF</p><select aria-label="Choose uploaded PDF" value={selectedPdf ?? pdfsQ.data?.[0]?.id ?? ""} onChange={(event) => setSelectedPdf(event.target.value)} className="max-w-full rounded-lg border border-line bg-ink2 px-2 py-1.5 text-xs">{pdfsQ.data?.map((file) => <option key={file.id} value={file.id}>{file.name}</option>)}</select></div>
+          {(() => { const file = pdfsQ.data?.find((item) => item.id === (selectedPdf ?? pdfsQ.data?.[0]?.id)); return file ? <iframe key={file.id} src={`${file.url}#toolbar=1&navpanes=1`} title={`PDF source: ${file.name}`} className="w-full h-[65vh] min-h-[520px] rounded-xl border border-line bg-white" /> : <p className="text-sm text-soft">The uploaded PDF could not be opened.</p>; })()}
+          <p className="text-xs text-soft mt-2">Scroll through the original pages here while comparing them with your notes. On smaller screens, the PDF appears below the notes.</p>
+        </section>}
       </div>
     </div>
   );

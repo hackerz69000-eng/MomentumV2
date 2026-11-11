@@ -208,16 +208,16 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
   };
 
   const saving = useRef(false);
-  const save = async (q: string, a: string, topic: string) => {
+  const save = async (q: string, a: string, topic: string, kind: "qa" | "cloze") => {
     if (!user || saving.current) return;
     saving.current = true;
     try {
-      await saveInner(q, a, topic);
+      await saveInner(q, a, topic, kind);
     } finally {
       saving.current = false;
     }
   };
-  const saveInner = async (q: string, a: string, topic: string) => {
+  const saveInner = async (q: string, a: string, topic: string, kind: "qa" | "cloze") => {
     if (!user) return;
     if (editing === "new") {
       const { error } = await supabase.from("flashcards").insert({
@@ -226,6 +226,7 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
         question: q,
         answer: a,
         topic,
+        card_type: kind,
         is_custom: true,
         position: cards.length,
       });
@@ -234,7 +235,7 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
     } else if (editing) {
       const { error } = await supabase
         .from("flashcards")
-        .update({ question: q, answer: a, topic })
+        .update({ question: q, answer: a, topic, card_type: kind })
         .eq("id", editing.id);
       if (error) return void toast.error("Couldn't save card");
     }
@@ -258,7 +259,7 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
       setStreamedJson("");
       const cards = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedJson((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The generated flashcards were not valid.");
-        const valid = (value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "" })).slice(0, 20);
+        const valid = (value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string; kind?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "", kind: card.kind === "cloze" && /\{\{c1::.+?\}\}/.test(card.q) ? "cloze" as const : "qa" as const })).slice(0, 20);
         if (!valid.length) throw new Error("No useful flashcards could be generated from the supplied study material.");
         return valid;
       }});
@@ -352,11 +353,11 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
             <div className={cn("flip-card relative w-full h-full", flipped && "is-flipped")}>
               <div className="flip-face rounded-2xl bg-ink2 border border-line/70 p-6 md:p-8 flex flex-col">
                 <div className="flex justify-between gap-2">
-                  <p className="eyebrow text-cool2 truncate">{card.topic || "Question"}</p>
+                  <p className="eyebrow text-cool2 truncate">{card.card_type === "cloze" ? "Cloze deletion" : card.topic || "Question"}</p>
                   <StatusTag card={card} />
                 </div>
                 <p className="font-display text-2xl md:text-3xl uppercase leading-tight m-auto text-center">
-                  {card.question}
+                  {card.card_type === "cloze" ? card.question.replace(/\{\{c1::(.+?)\}\}/g, flipped ? "$1" : "＿＿＿＿") : card.question}
                 </p>
                 <p className="text-xs text-soft text-center">
                   Tap to reveal · card {idx + 1} of {deckIds.length}
@@ -457,7 +458,7 @@ function CardDialog({
 }: {
   editing: Flashcard | "new" | null;
   onClose: () => void;
-  onSave: (q: string, a: string, t: string) => void;
+  onSave: (q: string, a: string, t: string, kind: "qa" | "cloze") => void;
 }) {
   const init = editing && editing !== "new" ? editing : null;
   return (
@@ -475,15 +476,18 @@ function CardDialog({
             const q = String(f.get("q") ?? "").trim();
             const a = String(f.get("a") ?? "").trim();
             if (!q || !a) return;
-            onSave(q, a, String(f.get("t") ?? "").trim());
+            const kind = String(f.get("kind") ?? "qa") === "cloze" ? "cloze" : "qa";
+            if (kind === "cloze" && !/\{\{c1::.+?\}\}/.test(q)) { toast.error("Add a hidden phrase using {{c1::answer}} in the cloze prompt."); return; }
+            onSave(q, a, String(f.get("t") ?? "").trim(), kind);
           }}
         >
+          <label className="block text-xs text-soft">Card format<select name="kind" defaultValue={init?.card_type ?? "qa"} className={inputCls + " w-full mt-1"}><option value="qa">Question and answer</option><option value="cloze">Cloze deletion</option></select></label>
           <textarea
             name="q"
             required
             rows={2}
             defaultValue={init?.question}
-            placeholder="Question or term"
+            placeholder="Question or cloze, e.g. {{c1::mitochondria}} produce ATP"
             className={inputCls + " w-full"}
           />
           <textarea

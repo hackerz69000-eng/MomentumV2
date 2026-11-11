@@ -61,9 +61,9 @@ QUALITY:
 - Use only information supported by the provided material.`;
 
 const CARDS_SYSTEM = `You create high-value review flashcards from the supplied STUDY MATERIAL and, when available, GENERATED STUDY NOTES. Treat the original source material as authoritative. Return ONLY JSON:
-{"cards":[{"q":"question or prompt","a":"concise answer","t":"short topic name (2-4 words)"}]}
+{"cards":[{"q":"question or cloze prompt using {{c1::hidden answer}}","a":"concise answer","t":"short topic name (2-4 words)","kind":"qa|cloze"}]}
 
-Create up to 20 cards, but never pad the deck with weak or generic cards. Every card must test something explicitly supported by the supplied source material and notes, when available.
+Create up to 20 cards, aiming for a balanced mix of question/answer (qa) and cloze-deletion (cloze) cards when the source supports both. A cloze card uses {{c1::exact source-supported phrase}} in q; its a field explains the hidden phrase. Never create a cloze by hiding an arbitrary word or changing source meaning. Create up to 20 cards, but never pad the deck with weak or generic cards. Every card must test something explicitly supported by the supplied source material and notes, when available.
 Prioritize:
 1. core definitions and terminology
 2. important mechanisms, processes, steps, formulas, and cause/effect relationships
@@ -199,7 +199,7 @@ export const processSet = createServerFn({ method: "POST" })
     setId: z.string().min(1).max(200),
     prepareOnly: z.boolean().optional(),
     generatedNotes: z.string().min(50).max(250000).optional(),
-    generatedCards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(80).optional() })).min(1).max(20).optional(),
+    generatedCards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(80).optional(), kind: z.enum(["qa", "cloze"]).optional() })).min(1).max(20).optional(),
   }).parse(d))
   .handler(async ({ data, context }) => {
     const supabase = context.supabase;
@@ -227,11 +227,11 @@ export const processSet = createServerFn({ method: "POST" })
         throw new Error("Study Set processing requires completed browser-streamed notes and flashcards. No server-side generation fallback is available.");
       }
       const notes = data.generatedNotes;
-      const cards = data.generatedCards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "" }));
+      const cards = data.generatedCards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "", kind: card.kind ?? "qa" }));
       const { error: replaceError } = await (supabase as any).rpc("replace_study_set_flashcards", {
         p_set_id: set.id,
         p_notes: notes,
-        p_cards: cards.map((card) => ({ q: card.q, a: card.a, t: card.t ?? "" })),
+        p_cards: cards.map((card) => ({ q: card.q, a: card.a, t: card.t ?? "", kind: card.kind })),
       });
       if (replaceError) throw new Error("The study materials couldn't be saved safely. Your existing cards and notes were kept.");
       return { ok: true };
@@ -287,16 +287,16 @@ export const prepareRegenerateCardsStream = createServerFn({ method: "POST" })
 
 export const saveRegenerateCardsStream = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), cards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(80).optional() })).min(1).max(20) }).parse(d))
+  .inputValidator((d: unknown) => z.object({ setId: z.string().min(1).max(200), cards: z.array(z.object({ q: z.string().min(1).max(1000), a: z.string().min(1).max(2000), t: z.string().max(80).optional(), kind: z.enum(["qa", "cloze"]).optional() })).min(1).max(20) }).parse(d))
   .handler(async ({ data, context }) => {
     const sb = context.supabase;
     const set = await loadSet(sb, data.setId);
-    const cards = data.cards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "" })).filter((card) => card.q && card.a);
+    const cards = data.cards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "", kind: card.kind ?? "qa" })).filter((card) => card.q && card.a);
     if (!cards.length) throw new Error("No useful flashcards could be generated from the supplied study material.");
     const { error } = await (sb as any).rpc("replace_study_set_flashcards", {
       p_set_id: set.id,
       p_notes: set.notes ?? "",
-      p_cards: cards.map((card) => ({ q: card.q, a: card.a, t: card.t })),
+      p_cards: cards.map((card) => ({ q: card.q, a: card.a, t: card.t, kind: card.kind })),
     });
     if (error) throw new Error("The new flashcards couldn't be saved safely. Your existing cards were kept.");
     return { ok: true };
