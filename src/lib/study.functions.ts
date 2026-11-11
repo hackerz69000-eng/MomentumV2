@@ -243,8 +243,6 @@ export const processSet = createServerFn({ method: "POST" })
       const notes = data.generatedNotes;
       const cards = deduplicateFlashcards(data.generatedCards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "", kind: card.kind ?? "qa" })));
       if (!cards.length) throw new Error("No unique flashcards were generated. Your existing study materials were left unchanged.");
-      const clozeCount = cards.filter((card) => card.kind === "cloze" && /\{\{c1::.+?\}\}/.test(card.q) && card.q.replace(/\{\{c1::(.+?)\}\}/g, " ").trim().split(/\s+/).length >= 5).length;
-      if (cards.length >= 4 && clozeCount === 0) throw new Error("The flashcard response did not include any valid cloze deletions. Your existing study materials were left unchanged.");
       const { error: replaceError } = await (supabase as any).rpc("replace_study_set_flashcards", {
         p_set_id: set.id,
         p_notes: notes,

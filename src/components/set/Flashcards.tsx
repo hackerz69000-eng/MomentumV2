@@ -276,10 +276,8 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
         const candidates = readGeneratedFlashcards(value);
         const valid = deduplicateFlashcards(candidates).slice(0, 60);
         if (!valid.length) throw new Error("No unique flashcards could be generated from the supplied study material.");
-        const target = Number(prompt.targetCardCount) || 5;
-        if (valid.length < target) throw new Error(`Only ${valid.length} distinct cards were generated; this material needs ${target}. Existing cards were not changed. Please regenerate.`);
-        const clozeCount = valid.filter((item) => item.kind === "cloze").length;
-        if (valid.length >= 4 && clozeCount === 0) throw new Error("The generated deck contained no valid cloze deletions. Your existing cards were not changed.");
+        if (!valid.length) throw new Error("No valid flashcards could be generated. Your existing cards were not changed.");
+        // A partial but valid deck is useful; do not reject it for missing the estimate.
         return valid;
       }});
       await saveRegen({ data: { setId, cards } });

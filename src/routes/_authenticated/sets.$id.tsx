@@ -355,10 +355,9 @@ function Processing({ set }: { set: StudySet }) {
         const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgress((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
           const candidates = readGeneratedFlashcards(value);
           const valid = deduplicateFlashcards(candidates).slice(0, 60);
-          const target = Number(prepared.targetCardCount) || 5;
-          if (valid.length < target) throw new Error(`Only ${valid.length} distinct cards were generated; this material needs ${target}. No study materials were saved.`);
-          const clozeCount = valid.filter((item) => item.kind === "cloze").length;
-          if (valid.length >= 4 && clozeCount === 0) throw new Error("No valid sentence-based cloze deletions were generated. No study materials were saved.");
+          if (!valid.length) throw new Error("No valid flashcards could be generated. Your notes were generated, but no flashcards were available to save.");
+          // Keep partial generation results; never throw away notes and valid cards
+          // merely because the model returned fewer than the estimated target.
           return valid;
         }});
         await process({ data: { setId: set.id, generatedNotes: notes, generatedCards: cards } });
