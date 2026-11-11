@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { deduplicateFlashcards, isValidClozePrompt, targetFlashcardCount } from "@/lib/flashcard-quality";
+import { deduplicateFlashcards, isValidClozePrompt, readGeneratedFlashcards, targetFlashcardCount } from "@/lib/flashcard-quality";
 
 describe("flashcard quality controls", () => {
+  it("normalizes common AI response wrappers and field names", () => {
+    expect(readGeneratedFlashcards({ flashcards: [{ question: "What is ATP?", answer: "Cell energy currency", topic: "Cellular energy", type: "qa" }] })).toEqual([
+      { q: "What is ATP?", a: "Cell energy currency", t: "Cellular energy", kind: "qa" },
+    ]);
+    expect(readGeneratedFlashcards({ data: { cards: [{ q: "Respiration uses {{c1::oxygen}} as the final electron acceptor in aerobic cells.", a: "Oxygen", kind: "cloze" }] } })).toHaveLength(1);
+    expect(readGeneratedFlashcards('[{"q":"Question","a":"Answer"}]')).toHaveLength(1);
+  });
+
+  it("reports a useful error when no card list is present", () => {
+    expect(() => readGeneratedFlashcards({ message: "no cards" })).toThrow(/did not contain a flashcard list/i);
+  });
   it("requires a complete contextual sentence for cloze cards", () => {
     expect(isValidClozePrompt("During aerobic respiration, the electron transport chain drives {{c1::ATP synthase}} to produce ATP." )).toBe(true);
     expect(isValidClozePrompt("________")).toBe(false);

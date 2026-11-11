@@ -23,7 +23,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { prepareTutorStream, saveTutorStreamReply, processSet } from "@/lib/study.functions";
 import { streamAiText, streamAiJson, streamPreparedNotes } from "@/lib/ai-stream";
 import { setStats, type Attempt } from "@/lib/stats";
-import { deduplicateFlashcards } from "@/lib/flashcard-quality";
+import { deduplicateFlashcards, readGeneratedFlashcards } from "@/lib/flashcard-quality";
 import { cn } from "@/lib/utils";
 import { ErrorBox } from "@/components/set/ui";
 import { Overview, type Tab } from "@/components/set/Overview";
@@ -353,8 +353,7 @@ function Processing({ set }: { set: StudySet }) {
         const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setProgress, onDelta: (chunk) => setProgress((old) => `${old}\n${chunk}`.slice(-900)) });
         setProgress("Generating flashcards…");
         const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgress((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
-          if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");
-          const candidates = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim(), kind: item["kind"] === "cloze" ? "cloze" as const : "qa" as const })).filter((item) => item.q && item.a);
+          const candidates = readGeneratedFlashcards(value);
           const valid = deduplicateFlashcards(candidates).slice(0, 60);
           const target = Number(prepared.targetCardCount) || 5;
           if (valid.length < target) throw new Error(`Only ${valid.length} distinct cards were generated; this material needs ${target}. No study materials were saved.`);

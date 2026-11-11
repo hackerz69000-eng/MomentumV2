@@ -1,4 +1,5 @@
 import { useServerFn } from "@tanstack/react-start";
+import { readGeneratedFlashcards } from "@/lib/flashcard-quality";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef, useState, type FormEvent } from "react";
@@ -159,8 +160,7 @@ export function ReadingCompanion({ set }: { set: StudySet }) {
       const prompt = await generatePrepareFn({ data: { setId: set.id } });
       setCardsStreamText("");
       const generated = await streamAiJson({ system: prompt.system, messages: prompt.messages, ...(generationController.current ? { signal: generationController.current.signal } : {}), onDelta: (chunk) => setCardsStreamText((old) => old + chunk), validate: (value) => {
-        if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The generated flashcards were not valid.");
-        return (value as { cards: unknown[] }).cards.filter((card): card is DraftCard => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "" })).slice(0, 15);
+        return readGeneratedFlashcards(value).map((card) => ({ q: card.q, a: card.a, t: card.t ?? "" })).slice(0, 15);
       }});
       if (!generated.length) throw new Error("No flashcards could be generated from these sources.");
       return { cards: generated };

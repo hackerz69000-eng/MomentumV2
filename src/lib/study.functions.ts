@@ -78,8 +78,7 @@ QUALITY:
 - Do not include a preamble or commentary about being an AI.
 - Use only information supported by the provided material.`;
 
-const CARDS_SYSTEM = `You create high-value review flashcards from the supplied STUDY MATERIAL and GENERATED STUDY NOTES. Treat the original source material as authoritative. Return ONLY valid JSON in this exact shape:
-{"cards":[{"q":"a complete question OR a complete sentence containing {{c1::hidden answer}}","a":"concise answer/explanation","t":"short topic name (2-4 words)","kind":"qa|cloze"}]}
+const CARDS_SYSTEM = `You create high-value review flashcards from the supplied STUDY MATERIAL and GENERATED STUDY NOTES. Treat the original source material as authoritative. Return ONLY one JSON object with a top-level cards array. Every card must use these exact fields: q (string), a (string), t (string), and kind (either the exact string qa or the exact string cloze). Example: {"cards":[{"q":"What is ATP?","a":"The cell energy currency.","t":"Cellular energy","kind":"qa"},{"q":"During respiration, the electron transport chain builds a gradient that drives {{c1::ATP synthase}}.","a":"ATP synthase uses the proton gradient to make ATP.","t":"Cellular respiration","kind":"cloze"}]}. Do not rename the top-level cards key or wrap the object in another object.
 
 This instruction includes an exact TARGET CARD COUNT. Generate that many distinct, useful cards whenever the source contains enough examinable information. Do not stop at 5 cards by default. Scale coverage across all major sections and topics. Never pad with generic, repeated, or unsupported facts; if the source genuinely cannot support the target, return the maximum number of distinct supported cards and no filler.
 

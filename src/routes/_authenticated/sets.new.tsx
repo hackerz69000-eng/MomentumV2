@@ -10,7 +10,7 @@ import { processSet, ocrFile } from "@/lib/study.functions";
 import { streamAiJson, streamPreparedNotes } from "@/lib/ai-stream";
 import { ACCEPT, MAX_BYTES, extractFile, fileKind, storeOriginal } from "@/lib/extract";
 import { cn } from "@/lib/utils";
-import { deduplicateFlashcards } from "@/lib/flashcard-quality";
+import { deduplicateFlashcards, readGeneratedFlashcards } from "@/lib/flashcard-quality";
 
 export const Route = createFileRoute("/_authenticated/sets/new")({
   ssr: false,
@@ -152,8 +152,7 @@ function NewSet() {
         const notes = await streamPreparedNotes({ prepared, signal: controller.signal, onProgress: setProgressMsg, onDelta: (chunk) => setProgressMsg((old) => `${old}\n${chunk}`.slice(-900)) });
         setProgressMsg("Generating flashcards…");
         const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgressMsg((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
-          if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");
-          const candidates = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim(), kind: item["kind"] === "cloze" ? "cloze" as const : "qa" as const })).filter((item) => item.q && item.a);
+          const candidates = readGeneratedFlashcards(value);
           const valid = deduplicateFlashcards(candidates).slice(0, 60);
           const target = Number(prepared.targetCardCount) || 5;
           if (valid.length < target) throw new Error(`Only ${valid.length} distinct cards were generated; this material needs ${target}. No study materials were saved.`);

@@ -1,5 +1,48 @@
 export type FlashcardDraft = { q: string; a: string; t?: string; kind?: "qa" | "cloze" };
 
+/** Normalize common provider/model wrappers into the app's canonical flashcard shape. */
+export function readGeneratedFlashcards(value: unknown): FlashcardDraft[] {
+  const parseNested = (input: unknown, depth = 0): unknown => {
+    if (depth > 2) return input;
+    if (typeof input === "string") {
+      const text = input.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+      if (!text.startsWith("{") && !text.startsWith("[")) return input;
+      try { return parseNested(JSON.parse(text), depth + 1); } catch { return input; }
+    }
+    return input;
+  };
+  const root = parseNested(value);
+  const findArray = (input: unknown, depth = 0): unknown[] | null => {
+    if (Array.isArray(input)) return input;
+    if (!input || typeof input !== "object" || depth > 3) return null;
+    const record = input as Record<string, unknown>;
+    for (const key of ["cards", "flashcards", "generated_cards", "flashcard_set", "card_list", "items", "results"]) {
+      if (Array.isArray(record[key])) return record[key] as unknown[];
+    }
+    for (const key of ["cards", "flashcards", "generated_cards", "flashcard_set", "card_list", "items", "results", "data", "result", "output", "response", "payload"]) {
+      const nested = parseNested(record[key]);
+      const found = findArray(nested, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+  const items = findArray(root);
+  if (!items) throw new Error("The AI response did not contain a flashcard list. The original study materials were left unchanged.");
+  return items.flatMap((item): FlashcardDraft[] => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const card = item as Record<string, unknown>;
+    const stringField = (...keys: string[]) => {
+      for (const key of keys) if (typeof card[key] === "string" && (card[key] as string).trim()) return (card[key] as string).trim();
+      return "";
+    };
+    const q = stringField("q", "question", "front", "prompt");
+    const a = stringField("a", "answer", "back", "explanation");
+    if (!q || !a) return [];
+    const rawKind = stringField("kind", "type", "card_type", "format").toLowerCase();
+    return [{ q, a, t: stringField("t", "topic", "subject"), kind: rawKind.includes("cloze") ? "cloze" : "qa" }];
+  });
+}
+
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "can", "does", "for", "from", "how", "in", "into", "is", "it", "of", "on", "or", "that", "the", "their", "this", "to", "was", "what", "when", "where", "which", "who", "why", "with",
 ]);
