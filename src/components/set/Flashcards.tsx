@@ -259,8 +259,12 @@ export function Flashcards({ setId, cards }: { setId: string; cards: Flashcard[]
       setStreamedJson("");
       const cards = await streamAiJson({ system: prompt.system, messages: prompt.messages, signal: controller.signal, onDelta: (chunk) => setStreamedJson((old) => old + chunk), validate: (value) => {
         if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The generated flashcards were not valid.");
-        const valid = (value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string; kind?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "", kind: card.kind === "cloze" && /\{\{c1::.+?\}\}/.test(card.q) ? "cloze" as const : "qa" as const })).slice(0, 20);
-        if (!valid.length) throw new Error("No useful flashcards could be generated from the supplied study material.");
+        const candidates = (value as { cards: unknown[] }).cards.filter((card): card is { q: string; a: string; t?: string; kind?: string } => !!card && typeof card === "object" && typeof (card as { q?: unknown }).q === "string" && typeof (card as { a?: unknown }).a === "string" && !!(card as { q: string }).q.trim() && !!(card as { a: string }).a.trim()).map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: typeof card.t === "string" ? card.t.trim() : "", kind: card.kind === "cloze" && /\{\{c1::.+?\}\}/.test(card.q) ? "cloze" as const : "qa" as const }));
+        const seen = new Set<string>();
+        const valid = candidates.filter((item) => { const key = item.q.toLowerCase().replace(/\{\{c\d+::(.*?)\}\}/g, "$1").replace(/[^a-z0-9]+/g, ""); if (!key || seen.has(key)) return false; seen.add(key); return true; }).slice(0, 20);
+        if (!valid.length) throw new Error("No unique flashcards could be generated from the supplied study material.");
+        const clozeCount = valid.filter((item) => item.kind === "cloze").length;
+        if (valid.length >= 4 && clozeCount === 0) throw new Error("The generated deck contained no valid cloze deletions. Your existing cards were not changed.");
         return valid;
       }});
       await saveRegen({ data: { setId, cards } });

@@ -55,6 +55,7 @@ export function Notes({ set }: { set: StudySet }) {
   const [editingNotes, setEditingNotes] = useState(false);
   const [draftNotes, setDraftNotes] = useState(set.notes ?? "");
   const [savingNotes, setSavingNotes] = useState(false);
+  useEffect(() => { if (!editingNotes) setDraftNotes(set.notes ?? ""); }, [set.notes, editingNotes]);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
   const pdfsQ = useQuery({
     queryKey: ["notes-pdf", set.id],
@@ -186,7 +187,7 @@ export function Notes({ set }: { set: StudySet }) {
   };
   const sections = set.notes ? splitSections(set.notes) : [];
   const saveEditedNotes = async () => {
-    if (draftNotes.trim().length < 50) { toast.error("Notes must contain at least 50 characters."); return; }
+    if (!draftNotes.trim()) { toast.error("Notes cannot be empty. You can replace them with your own content or regenerate them."); return; }
     setSavingNotes(true);
     try {
       const { error } = await supabase.from("study_sets").update({ notes: draftNotes.trim(), updated_at: new Date().toISOString() }).eq("id", set.id);
@@ -198,8 +199,8 @@ export function Notes({ set }: { set: StudySet }) {
     finally { setSavingNotes(false); }
   };
   return (
-    <div className={cn("w-full", pdfsQ.data?.length ? "max-w-none" : "max-w-3xl")}>
-      <div className="flex items-center justify-between gap-3 mb-4">
+    <div className="w-full max-w-none min-w-0">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <p className="text-xs text-soft inline-flex items-center gap-1.5">
           <Lightbulb className="size-3.5 text-cool2" /> Use "Explain" on any section for a simpler
           or deeper take.
@@ -218,24 +219,27 @@ export function Notes({ set }: { set: StudySet }) {
           >
             <Headphones className="size-4" /> Audio Study
           </button>
-          <button onClick={run} disabled={busy} className={btnGhost}>
+          {!editingNotes && <button type="button" onClick={() => { setDraftNotes(set.notes ?? ""); setEditingNotes(true); }} className={btnGhost}>
+            <Edit3 className="size-4" /> Edit notes
+          </button>}
+          <button onClick={run} disabled={busy || editingNotes} className={btnGhost}>
             {busy ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}{" "}
             Regenerate
           </button>
         </div>
       </div>
       {busy && streamedNotes && <div className="rounded-xl border border-line bg-panel p-5 mb-4"><p className="eyebrow text-cool2 mb-2">Notes streaming from NVIDIA</p><div className="md text-sm"><MarkdownContent>{streamedNotes}</MarkdownContent></div><button type="button" onClick={() => streamController.current?.abort()} className="mt-3 text-xs text-soft underline">Cancel generation</button></div>}
-      <div className={cn("grid gap-4 items-start", pdfsQ.data?.length ? "xl:grid-cols-2" : "grid-cols-1")}>
-        <section className="min-w-0 rounded-2xl bg-panel border border-line/70 p-4 md:p-5">
+      <div className={cn("grid gap-4 items-start", pdfsQ.data?.length ? "lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] 2xl:grid-cols-2" : "grid-cols-1")}>
+        <section className={cn("min-w-0 rounded-2xl bg-panel border border-line/70 p-4 md:p-5", pdfsQ.data?.length && "lg:max-h-[82vh] lg:overflow-y-auto overscroll-contain")}>
           <div className="flex items-center justify-between gap-2 mb-3"><p className="eyebrow text-cool2">Study notes</p>{editingNotes && <div className="flex gap-2"><button type="button" onClick={() => { setEditingNotes(false); setDraftNotes(set.notes ?? ""); }} className={btnGhost}>Cancel</button><button type="button" onClick={saveEditedNotes} disabled={savingNotes} className={btnGhost}>{savingNotes ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Save notes</button></div>}</div>
           {editingNotes ? <textarea aria-label="Edit study notes" value={draftNotes} onChange={(event) => setDraftNotes(event.target.value)} className="w-full min-h-[65vh] resize-y rounded-xl border border-line bg-ink2 p-4 text-sm leading-relaxed font-mono focus:outline-none focus:border-cool2" /> : <div className={cn("space-y-4 transition-opacity", busy && "opacity-50")}>
             {sections.length ? sections.map((sec, i) => <Section key={i} setId={set.id} md={sec} />) : <div className="rounded-xl bg-ink2 p-8 text-soft">No notes yet. Click regenerate to create them.</div>}
           </div>}
         </section>
-        {Boolean(pdfsQ.data?.length) && <section className="min-w-0 rounded-2xl bg-panel border border-line/70 p-4 md:p-5 xl:sticky xl:top-28">
+        {Boolean(pdfsQ.data?.length) && <section className="min-w-0 rounded-2xl bg-panel border border-line/70 p-4 md:p-5">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3"><p className="eyebrow text-cool2 inline-flex items-center gap-2"><FileText className="size-4" /> Original PDF</p><select aria-label="Choose uploaded PDF" value={selectedPdf ?? pdfsQ.data?.[0]?.id ?? ""} onChange={(event) => setSelectedPdf(event.target.value)} className="max-w-full rounded-lg border border-line bg-ink2 px-2 py-1.5 text-xs">{pdfsQ.data?.map((file) => <option key={file.id} value={file.id}>{file.name}</option>)}</select></div>
-          {(() => { const file = pdfsQ.data?.find((item) => item.id === (selectedPdf ?? pdfsQ.data?.[0]?.id)); return file ? <iframe key={file.id} src={`${file.url}#toolbar=1&navpanes=1`} title={`PDF source: ${file.name}`} className="w-full h-[65vh] min-h-[520px] rounded-xl border border-line bg-white" /> : <p className="text-sm text-soft">The uploaded PDF could not be opened.</p>; })()}
-          <p className="text-xs text-soft mt-2">Scroll through the original pages here while comparing them with your notes. On smaller screens, the PDF appears below the notes.</p>
+          {(() => { const file = pdfsQ.data?.find((item) => item.id === (selectedPdf ?? pdfsQ.data?.[0]?.id)); return file ? <iframe key={file.id} src={`${file.url}#toolbar=1&navpanes=1`} title={`PDF source: ${file.name}`} className="w-full h-[78vh] min-h-[620px] max-h-[1100px] rounded-xl border border-line bg-white" /> : <p className="text-sm text-soft">The uploaded PDF could not be opened.</p>; })()}
+          <p className="text-xs text-soft mt-2">The PDF and notes stay in separate scroll areas on larger screens, so you can compare them without losing your place.</p>
         </section>}
       </div>
     </div>

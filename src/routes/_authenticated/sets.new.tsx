@@ -152,8 +152,17 @@ function NewSet() {
         setProgressMsg("Generating flashcards…");
         const cards = await streamAiJson({ system: prepared.cardsSystem, messages: prepared.cardsMessages, signal: controller.signal, onDelta: (chunk) => setProgressMsg((old) => `${old}${chunk}`.slice(-700)), validate: (value) => {
           if (!value || typeof value !== "object" || !Array.isArray((value as { cards?: unknown }).cards)) throw new Error("The flashcard response was not valid.");
-          const valid = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim(), kind: item["kind"] === "cloze" ? "cloze" as const : "qa" as const })).filter((item) => item.q && item.a && (item.kind !== "cloze" || /\{\{c1::.+?\}\}/.test(item.q))).slice(0, 20);
-          if (!valid.length) throw new Error("No useful flashcards could be generated.");
+          const candidates = (value as { cards: unknown[] }).cards.filter((item): item is Record<string, unknown> => !!item && typeof item === "object").map((item) => ({ q: String(item["q"] ?? "").trim(), a: String(item["a"] ?? "").trim(), t: String(item["t"] ?? "").trim(), kind: item["kind"] === "cloze" ? "cloze" as const : "qa" as const })).filter((item) => item.q && item.a && (item.kind !== "cloze" || /\{\{c1::.+?\}\}/.test(item.q)));
+          const seen = new Set<string>();
+          const valid = candidates.filter((item) => {
+            const key = item.q.toLowerCase().replace(/\{\{c\d+::(.*?)\}\}/g, "$1").replace(/[^a-z0-9]+/g, "");
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          }).slice(0, 20);
+          if (!valid.length) throw new Error("No unique useful flashcards could be generated.");
+          const clozeCount = valid.filter((item) => item.kind === "cloze").length;
+          if (valid.length >= 4 && clozeCount === 0) throw new Error("The generated deck contained no valid cloze deletions. Please regenerate; no cards were saved.");
           return valid;
         }});
         await process({ data: { setId: targetId, generatedNotes: notes, generatedCards: cards } });

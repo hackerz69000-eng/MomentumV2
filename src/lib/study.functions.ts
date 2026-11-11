@@ -80,7 +80,7 @@ QUALITY:
 const CARDS_SYSTEM = `You create high-value review flashcards from the supplied STUDY MATERIAL and, when available, GENERATED STUDY NOTES. Treat the original source material as authoritative. Return ONLY JSON:
 {"cards":[{"q":"question or cloze prompt using {{c1::hidden answer}}","a":"concise answer","t":"short topic name (2-4 words)","kind":"qa|cloze"}]}
 
-Create up to 20 cards, aiming for a balanced mix of question/answer (qa) and cloze-deletion (cloze) cards when the source supports both. A cloze card uses {{c1::exact source-supported phrase}} in q; its a field explains the hidden phrase. Never create a cloze by hiding an arbitrary word or changing source meaning. Create up to 20 cards, but never pad the deck with weak or generic cards. Every card must test something explicitly supported by the supplied source material and notes, when available.
+Create up to 20 cards, aiming for a balanced mix of question/answer (qa) and cloze-deletion (cloze) cards when the source supports both. A cloze card uses {{c1::exact source-supported phrase}} in q; its a field explains the hidden phrase. Never create a cloze by hiding an arbitrary word or changing source meaning. When the material supports it, at least 5 of the 20 cards MUST be cloze deletions, distributed across different topics; do not return an all-Q&A deck. For fewer than 20 cards, aim for at least 25% cloze cards. Create up to 20 cards, but never pad the deck with weak or generic cards. Every card must test something explicitly supported by the supplied source material and notes, when available.
 Prioritize:
 1. core definitions and terminology
 2. important mechanisms, processes, steps, formulas, and cause/effect relationships
@@ -89,6 +89,25 @@ Prioritize:
 5. concepts that require actual recall rather than recognition
 
 Avoid trivial wording, vague prompts, duplicate questions, questions whose answer is obvious from the question, and generic study advice. Answers should be concise but complete (normally under 60 words). Each card's topic must match the section/topic it came from.`;
+
+function normalizeFlashcardPrompt(value: string): string {
+  return value.toLowerCase()
+    .replace(/\{\{c\d+::(.*?)\}\}/g, "$1")
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
+function deduplicateGeneratedCards<T extends { q: string; a: string; t?: string; kind?: "qa" | "cloze" }>(cards: T[]): T[] {
+  const seen = new Set<string>();
+  const unique: T[] = [];
+  for (const card of cards) {
+    const key = normalizeFlashcardPrompt(card.q);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(card);
+  }
+  return unique;
+}
 
 function splitPrimaryAndOptionalReadings(material: string): { lecture: string; readings: string | null } {
   const marker = "=== OPTIONAL READINGS — USE ONLY TO ENRICH MATCHING LECTURE TOPICS ===";
@@ -244,7 +263,10 @@ export const processSet = createServerFn({ method: "POST" })
         throw new Error("Study Set processing requires completed browser-streamed notes and flashcards. No server-side generation fallback is available.");
       }
       const notes = data.generatedNotes;
-      const cards = data.generatedCards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "", kind: card.kind ?? "qa" }));
+      const cards = deduplicateGeneratedCards(data.generatedCards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "", kind: card.kind ?? "qa" })));
+      if (!cards.length) throw new Error("No unique flashcards were generated. Your existing study materials were left unchanged.");
+      const clozeCount = cards.filter((card) => card.kind === "cloze" && /\{\{c1::.+?\}\}/.test(card.q)).length;
+      if (cards.length >= 4 && clozeCount === 0) throw new Error("The flashcard response did not include any valid cloze deletions. Your existing study materials were left unchanged.");
       const { error: replaceError } = await (supabase as any).rpc("replace_study_set_flashcards", {
         p_set_id: set.id,
         p_notes: notes,
@@ -311,7 +333,7 @@ export const saveRegenerateCardsStream = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const sb = context.supabase;
     const set = await loadSet(sb, data.setId);
-    const cards = data.cards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "", kind: card.kind ?? "qa" })).filter((card) => card.q && card.a);
+    const cards = deduplicateGeneratedCards(data.cards.map((card) => ({ q: card.q.trim(), a: card.a.trim(), t: card.t?.trim() ?? "", kind: card.kind ?? "qa" })).filter((card) => card.q && card.a));
     if (!cards.length) throw new Error("No useful flashcards could be generated from the supplied study material.");
     const { error } = await (sb as any).rpc("replace_study_set_flashcards", {
       p_set_id: set.id,

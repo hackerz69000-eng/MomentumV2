@@ -280,7 +280,7 @@ function SetPage() {
           </nav>
         )}
       </header>
-      <div className="p-5 md:p-8">
+      <div className={cn("p-5 md:p-8", tab === "notes" && "px-3 md:px-5 xl:px-6")}>
         {set.status !== "ready" && tab !== "materials" && tab !== "lectures" ? (
           <Processing set={set} />
         ) : (
