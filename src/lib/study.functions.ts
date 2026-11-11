@@ -19,7 +19,24 @@ import {
   readInQuizState,
   readQuestionCandidates,
   type QuizQuestion,
+
 } from "./quiz-questions";
+
+// Server-side diagnostics only. Never send raw database details to the browser.
+function logSupabaseFailure(operation: string, error: unknown) {
+  const dbError = error as {
+    code?: string;
+    message?: string;
+    details?: string;
+    hint?: string;
+  } | null;
+  console.error(`[study-set] ${operation} failed`, {
+    code: dbError?.code ?? null,
+    message: dbError?.message ?? String(error),
+    details: dbError?.details ?? null,
+    hint: dbError?.hint ?? null,
+  });
+}
 
 const lectureIdField = z.string().uuid().optional();
 const mistakeLines = (ms: MistakeRow[]) =>
@@ -233,7 +250,10 @@ export const processSet = createServerFn({ method: "POST" })
         p_notes: notes,
         p_cards: cards.map((card) => ({ q: card.q, a: card.a, t: card.t ?? "", kind: card.kind })),
       });
-      if (replaceError) throw new Error("The study materials couldn't be saved safely. Your existing cards and notes were kept.");
+      if (replaceError) {
+        logSupabaseFailure("replace_study_set_flashcards (create study set)", replaceError);
+        throw new Error("The study materials couldn't be saved safely. Your existing cards and notes were kept.");
+      }
       return { ok: true };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Processing failed";
@@ -298,7 +318,10 @@ export const saveRegenerateCardsStream = createServerFn({ method: "POST" })
       p_notes: set.notes ?? "",
       p_cards: cards.map((card) => ({ q: card.q, a: card.a, t: card.t, kind: card.kind })),
     });
-    if (error) throw new Error("The new flashcards couldn't be saved safely. Your existing cards were kept.");
+    if (error) {
+      logSupabaseFailure("replace_study_set_flashcards (regenerate cards)", error);
+      throw new Error("The new flashcards couldn't be saved safely. Your existing cards were kept.");
+    }
     return { ok: true };
   });
 
